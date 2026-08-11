@@ -23,18 +23,27 @@ from triage_agent_lab.contracts import (
     canonical_action_hash,
 )
 from triage_agent_lab.control.model_proposal import (
+    _MODEL_CAPABILITIES,
     AnthropicCompletionClient,
     CompletionRequest,
     CompletionResult,
     ModelAgentProposer,
     PricingSnapshot,
+    model_accepts_sampling,
 )
 from triage_agent_lab.control.models import Caller
 from triage_agent_lab.control.proposal import ProposalError
 
 HAIKU = "claude-haiku-4-5-20251001"
-OPUS = "claude-opus-4-8"
-SONNET = "claude-sonnet-4-6"
+OPUS = "claude-opus-5"
+SONNET = "claude-sonnet-5"
+# The sampling-allowed side of the capability table: these 4.6-era ids accept temperature, and a
+# family-prefix guess used to reject them for a configuration the API would have taken.
+OPUS_4_6 = "claude-opus-4-6"
+SONNET_4_6 = "claude-sonnet-4-6"
+OPUS_4_8 = "claude-opus-4-8"
+FABLE = "claude-fable-5"
+UNKNOWN = "claude-unlisted-model-9"
 OBSERVED = datetime(2026, 1, 1, tzinfo=UTC)
 EXPIRES = OBSERVED + timedelta(hours=1)
 
@@ -157,8 +166,14 @@ def pricing() -> PricingSnapshot:
     return PricingSnapshot(
         snapshot_id="anthropic-2026-01-test",
         currency="USD",
-        input_usd_per_token={HAIKU: 1e-6, OPUS: 5e-6, SONNET: 3e-6},
-        output_usd_per_token={HAIKU: 5e-6, OPUS: 25e-6, SONNET: 15e-6},
+        input_usd_per_token={
+            HAIKU: 1e-6, OPUS: 5e-6, SONNET: 3e-6, OPUS_4_6: 5e-6,
+            SONNET_4_6: 3e-6, OPUS_4_8: 5e-6, FABLE: 10e-6,
+        },
+        output_usd_per_token={
+            HAIKU: 5e-6, OPUS: 25e-6, SONNET: 15e-6, OPUS_4_6: 25e-6,
+            SONNET_4_6: 15e-6, OPUS_4_8: 25e-6, FABLE: 50e-6,
+        },
     )
 
 
@@ -358,15 +373,107 @@ def test_strong_model_sends_no_sampling_params() -> None:
     client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=fake)
     proposer = ModelAgentProposer(client=client, model=OPUS, temperature=None)
     proposer.propose(incident(), caller(), context(), records())
-    # Opus/sonnet 400 on temperature/top_p, so neither may be sent.
+    # Opus 5 400s on temperature/top_p, so neither may be sent.
     assert "temperature" not in fake.calls[0]
     assert "top_p" not in fake.calls[0]
 
 
-@pytest.mark.parametrize("model", [OPUS, SONNET])
-def test_strong_model_construction_rejects_temperature(model: str) -> None:
-    with pytest.raises(ValueError, match="strong models reject sampling params"):
-        ModelAgentProposer(client=FakeClient(model_output()), model=model, temperature=0)
+@pytest.mark.parametrize("model", sorted(_MODEL_CAPABILITIES))
+def test_capability_table_gates_temperature_per_exact_model_id(model: str) -> None:
+    """Every documented row is exercised in both directions, not guessed from a family prefix."""
+    accepts = _MODEL_CAPABILITIES[model].accepts_sampling
+    assert model_accepts_sampling(model) is accepts
+    client = FakeClient(model_output())
+    if accepts:
+        assert ModelAgentProposer(client=client, model=model, temperature=0) is not None
+    else:
+        with pytest.raises(ValueError, match="rejects sampling params"):
+            ModelAgentProposer(client=client, model=model, temperature=0)
+
+
+@pytest.mark.parametrize("model", [OPUS_4_6, SONNET_4_6, HAIKU])
+def test_sampling_allowed_models_really_send_temperature(model: str) -> None:
+    """The other direction of the defect: these ids accept temperature, so it must reach the API."""
+    fake = FakeAnthropic(text=model_output(), input_tokens=10, output_tokens=5)
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=fake)
+    ModelAgentProposer(client=client, model=model, temperature=0).propose(
+        incident(), caller(), context(), records()
+    )
+    assert fake.calls[0]["temperature"] == 0
+
+
+def test_unknown_model_fails_closed_on_both_capability_axes() -> None:
+    """An unlisted id costs a loud ValueError here, never an HTTP 400 or a truncation later."""
+    with pytest.raises(ValueError, match="rejects sampling params"):
+        ModelAgentProposer(client=FakeClient(model_output()), model=UNKNOWN, temperature=0)
+    client = FakeClient(model_output())
+    ModelAgentProposer(client=client, model=UNKNOWN, temperature=None).propose(
+        incident(), caller(), context(), records()
+    )
+    # Omitting `thinking` is the one setting no model rejects, and the budget covers thinking.
+    assert client.requests[0].thinking is None
+    reserved = ModelAgentProposer._OUTPUT_TOKENS + ModelAgentProposer._THINKING_TOKENS
+    assert client.requests[0].max_tokens == reserved
+
+
+@pytest.mark.parametrize(
+    ("model", "thinking", "reserves_budget"),
+    [
+        (OPUS, {"type": "disabled"}, False),
+        (SONNET, {"type": "disabled"}, False),
+        (OPUS_4_8, None, False),
+        (HAIKU, None, False),
+        (FABLE, None, True),
+        (UNKNOWN, None, True),
+    ],
+)
+def test_thinking_policy_and_token_budget_follow_the_capability_table(
+    model: str, thinking: dict[str, str] | None, reserves_budget: bool
+) -> None:
+    """max_tokens caps thinking plus text, so the budget has to track the thinking decision."""
+    client = FakeClient(model_output())
+    temperature = 0 if model_accepts_sampling(model) else None
+    ModelAgentProposer(client=client, model=model, temperature=temperature).propose(
+        incident(), caller(), context(), records()
+    )
+    request = client.requests[0]
+    assert request.thinking == thinking
+    expected = ModelAgentProposer._OUTPUT_TOKENS
+    if reserves_budget:
+        expected += ModelAgentProposer._THINKING_TOKENS
+    assert request.max_tokens == expected
+    # Both are provider-visible request shape, so both belong in the replay key.
+    canonical = json.loads(request.canonical_prompt)
+    assert canonical["thinking"] == thinking
+    assert canonical["max_tokens"] == expected
+
+
+def test_opus_5_disables_thinking_and_sends_no_effort() -> None:
+    """Disabled thinking is accepted on opus 5 only at effort `high` or below, which is default.
+
+    This proposer therefore must never send `output_config.effort`; if one is ever added above
+    `high`, opus 5 and sonnet 5 have to move to the reserve-budget policy instead.
+    """
+    fake = FakeAnthropic(text=model_output(), input_tokens=10, output_tokens=5)
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=fake)
+    ModelAgentProposer(client=client, model=OPUS, temperature=None).propose(
+        incident(), caller(), context(), records()
+    )
+    call = fake.calls[0]
+    assert call["thinking"] == {"type": "disabled"}
+    assert "effort" not in call["output_config"]
+    assert call["max_tokens"] == ModelAgentProposer._OUTPUT_TOKENS
+
+
+def test_fable_5_is_never_sent_a_disabled_thinking_block() -> None:
+    """Fable 5 400s on `thinking: {"type": "disabled"}` at any effort, so it must be omitted."""
+    fake = FakeAnthropic(text=model_output(), input_tokens=10, output_tokens=5)
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=fake)
+    ModelAgentProposer(client=client, model=FABLE, temperature=None).propose(
+        incident(), caller(), context(), records()
+    )
+    assert "thinking" not in fake.calls[0]
+    assert fake.calls[0]["max_tokens"] > ModelAgentProposer._OUTPUT_TOKENS
 
 
 def test_haiku_allows_temperature_zero() -> None:
@@ -374,11 +481,25 @@ def test_haiku_allows_temperature_zero() -> None:
     assert proposer is not None
 
 
-def test_provider_stop_reason_or_usage_problems_fail_closed() -> None:
+def test_truncated_output_fails_closed_with_a_distinct_reason() -> None:
+    """A max_tokens stop is a budget bug, not a parse failure, and must not be conflated."""
     truncated = FakeAnthropic(
         text=model_output(), input_tokens=1, output_tokens=1, stop_reason="max_tokens"
     )
     client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=truncated)
+    proposer = ModelAgentProposer(client=client, model=HAIKU, temperature=0)
+    with pytest.raises(ProposalError) as raised:
+        proposer.propose(incident(), caller(), context(), records())
+    assert raised.value.reason == "proposal_model_output_truncated"
+    # The reason is the whole message: no provider text, token counts, or prompt may escape.
+    assert str(raised.value) == "proposal_model_output_truncated"
+
+
+def test_provider_stop_reason_or_usage_problems_fail_closed() -> None:
+    paused = FakeAnthropic(
+        text=model_output(), input_tokens=1, output_tokens=1, stop_reason="pause_turn"
+    )
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=paused)
     proposer = ModelAgentProposer(client=client, model=HAIKU, temperature=0)
     with pytest.raises(ProposalError) as raised:
         proposer.propose(incident(), caller(), context(), records())
@@ -405,8 +526,8 @@ def test_live_model_proposer_smoke() -> None:
     client = AnthropicCompletionClient(
         api_key=os.environ["ANTHROPIC_API_KEY"], pricing=snapshot, timeout_seconds=30
     )
-    # Strong models 400 on sampling params; only the cheap tier may pin temperature.
-    temperature = None if model.startswith(("claude-opus", "claude-sonnet")) else 0
+    # The capability table decides, per exact model id, whether temperature may be sent at all.
+    temperature = 0 if model_accepts_sampling(model) else None
     proposer = ModelAgentProposer(client=client, model=model, temperature=temperature)
     _, action = proposer.propose(incident(), caller(), context(), records())
     assert action.tool_name.startswith("operations.")

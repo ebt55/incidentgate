@@ -40,7 +40,7 @@ from triage_agent_lab.control.response_cache import (
 )
 
 HAIKU = "claude-haiku-4-5-20251001"
-OPUS = "claude-opus-4-8"
+OPUS = "claude-opus-5"
 COMMITTED_CACHE = Path(__file__).resolve().parent.parent / "fixtures" / "model_cache"
 OBSERVED = datetime(2026, 1, 1, tzinfo=UTC)
 EXPIRES = OBSERVED + timedelta(hours=1)
@@ -119,7 +119,7 @@ def committed_fixture_key() -> str:
 def _request(model: str, prompt_sha256: str) -> CompletionRequest:
     return CompletionRequest(
         model=model, system="system", user_content="user", max_tokens=512, temperature=None,
-        schema={}, canonical_prompt="canonical", prompt_sha256=prompt_sha256,
+        thinking=None, schema={}, canonical_prompt="canonical", prompt_sha256=prompt_sha256,
     )
 
 

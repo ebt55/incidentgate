@@ -1,7 +1,8 @@
 """Deterministic replay of model outputs, keyed by (model_id, canonical prompt hash).
 
-The strong tier (opus/sonnet) rejects temperature/top_p, so bit-level determinism cannot come
-from sampling params - it comes from replaying a committed output for an identical prompt. This
+Current flagship models reject temperature/top_p (see the per-model capability table in
+``model_proposal``), so bit-level determinism cannot come from sampling params - it comes from
+replaying a committed output for an identical prompt. This
 module is that store. In CI a cache hit returns a ``fixture_no_call`` invocation (no provider was
 contacted, so no usage or cost may be claimed). ``record_mode`` is the only path that contacts a
 real client, and it is off by default so the default and CI paths never touch the network.

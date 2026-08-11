@@ -20,9 +20,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -106,9 +107,67 @@ _BASE_SYSTEM = (
 )
 
 
-def _rejects_sampling(model: str) -> bool:
-    """Strong models (opus/sonnet) HTTP-400 on temperature/top_p; only cache gives them determinism."""
-    return model.startswith(("claude-opus", "claude-sonnet"))
+# Provider capability is a per-model fact, not a family-prefix one: Opus 4.6 and Sonnet 4.6 still
+# accept temperature/top_p while every Opus/Sonnet released after them rejects them with an HTTP
+# 400, and thinking flipped to on-by-default in the 5 generation. A prefix guess is wrong in both
+# directions - it forbids configurations the API accepts and hides ones it rejects - so the two
+# facts this proposer depends on are stated per exact model id below, and adding a model is a
+# deliberate edit here rather than an accident of its name.
+#
+# The thinking policies, and why the request shape differs per model:
+#   "omit_is_off"    - omitting the parameter means no thinking (Opus 4.8/4.7/4.6, Sonnet 4.6,
+#                      Haiku 4.5). Send nothing; max_tokens only has to cover the JSON object.
+#   "send_disabled"  - thinking is ON when the parameter is omitted, and an explicit
+#                      {"type": "disabled"} is accepted (Opus 5, Sonnet 5). This proposer emits
+#                      one small fixed JSON object, so deep reasoning is not the point and
+#                      adaptive thinking would silently consume the shared max_tokens budget.
+#   "reserve_budget" - thinking cannot be turned off: Fable 5 rejects {"type": "disabled"} at any
+#                      effort. Send nothing - omitting is the one setting no model rejects - and
+#                      size max_tokens to cover thinking *and* the JSON, because the cap bounds
+#                      them together.
+#
+# "send_disabled" depends on this proposer never sending output_config.effort: on Opus 5 a
+# disabled-thinking request is a 400 at effort xhigh/max and accepted at the default high or
+# below. If an effort knob above high is ever added, those rows must move to "reserve_budget";
+# test_opus_5_disables_thinking_and_sends_no_effort pins that dependency.
+_ThinkingPolicy = Literal["omit_is_off", "send_disabled", "reserve_budget"]
+
+
+@dataclass(frozen=True)
+class _ModelCapability:
+    """The two provider facts this proposer must get right, for one exact model id."""
+
+    accepts_sampling: bool
+    thinking: _ThinkingPolicy
+
+
+_MODEL_CAPABILITIES: Mapping[str, _ModelCapability] = MappingProxyType({
+    "claude-opus-5": _ModelCapability(accepts_sampling=False, thinking="send_disabled"),
+    "claude-opus-4-8": _ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
+    "claude-opus-4-7": _ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
+    "claude-opus-4-6": _ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+    "claude-sonnet-5": _ModelCapability(accepts_sampling=False, thinking="send_disabled"),
+    "claude-sonnet-4-6": _ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+    "claude-haiku-4-5": _ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+    "claude-haiku-4-5-20251001": _ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+    "claude-fable-5": _ModelCapability(accepts_sampling=False, thinking="reserve_budget"),
+})
+
+# An id this table has never seen fails closed on both axes. Sampling: treated as rejected, so a
+# wrong guess costs a loud ValueError at construction rather than an HTTP 400 mid-incident, and it
+# matches the direction the API has moved since Opus 4.7. Thinking: treated as un-disableable,
+# because omitting the parameter is accepted by every model while {"type": "disabled"} is not, and
+# the larger budget can only overpay, never truncate.
+_UNKNOWN_MODEL = _ModelCapability(accepts_sampling=False, thinking="reserve_budget")
+
+
+def _capability(model: str) -> _ModelCapability:
+    return _MODEL_CAPABILITIES.get(model, _UNKNOWN_MODEL)
+
+
+def model_accepts_sampling(model: str) -> bool:
+    """Public read of the table: may a request for this model id carry temperature/top_p?"""
+    return _capability(model).accepts_sampling
 
 
 def _provider_schema() -> dict[str, Any]:
@@ -128,6 +187,7 @@ class CompletionRequest:
     user_content: str
     max_tokens: int
     temperature: float | None
+    thinking: dict[str, str] | None
     schema: dict[str, Any]
     canonical_prompt: str
     prompt_sha256: str
@@ -211,8 +271,16 @@ class AnthropicCompletionClient:
         }
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
+        if request.thinking is not None:
+            kwargs["thinking"] = request.thinking
         response = self._get_client().messages.create(**kwargs)
-        if getattr(response, "stop_reason", None) != "end_turn":
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "max_tokens":
+            # max_tokens bounds thinking and response text together, so a truncated body is a
+            # budget bug, not a transport or parser failure. Name it distinctly instead of
+            # hiding it behind the generic reasons; the string is fixed, so nothing leaks.
+            raise ProposalError("proposal_model_output_truncated")
+        if stop_reason != "end_turn":
             raise ValueError("incomplete response")
         content = getattr(response, "content", None)
         if not isinstance(content, list) or len(content) != 1:
@@ -243,7 +311,13 @@ class AnthropicCompletionClient:
 class ModelAgentProposer:
     """Model chooses diagnosis + one action; code re-imposes citation and schema discipline."""
 
-    _MAX_TOKENS = 512
+    # The whole output is one bounded JSON object: up to 32 evidence ids of up to 128 chars, a
+    # 500-char diagnosis, a 64-char hypothesis id, and one small typed argument object. The
+    # previous 512 could truncate a fully cited proposal even with thinking off.
+    _OUTPUT_TOKENS = 2048
+    # max_tokens caps thinking and response text together, so a model whose thinking cannot be
+    # turned off (see the capability table) needs the reasoning budget on top of the output one.
+    _THINKING_TOKENS = 14_000
     _MAX_REQUEST_BYTES = 16_000
     _MAX_RESPONSE_BYTES = 8_000
     _MAX_EVIDENCE_RECORDS = 32
@@ -267,13 +341,20 @@ class ModelAgentProposer:
             raise ValueError("model proposer requires a model id")
         if temperature is not None and not 0 <= temperature <= 1:
             raise ValueError("temperature must be within [0, 1]")
-        if temperature is not None and _rejects_sampling(model):
-            raise ValueError("strong models reject sampling params; construct with temperature=None")
+        capability = _capability(model)
+        if temperature is not None and not capability.accepts_sampling:
+            raise ValueError("this model rejects sampling params; construct with temperature=None")
         if steering_prompt is not None and (not steering_prompt.strip() or len(steering_prompt) > 4000):
             raise ValueError("steering prompt must be non-empty and bounded")
         self._client = client
         self._model = model
         self._temperature = temperature
+        self._thinking: dict[str, str] | None = (
+            {"type": "disabled"} if capability.thinking == "send_disabled" else None
+        )
+        self._max_tokens = self._OUTPUT_TOKENS + (
+            self._THINKING_TOKENS if capability.thinking == "reserve_budget" else 0
+        )
         self._steering_prompt = steering_prompt
         # Read by the wiring seam after propose() for honest cost accounting; None means no call.
         self.last_invocation: ModelInvocationRecord | None = None
@@ -360,8 +441,9 @@ class ModelAgentProposer:
                 "system": system,
                 "user": user_content,
                 "model": self._model,
-                "max_tokens": self._MAX_TOKENS,
+                "max_tokens": self._max_tokens,
                 "temperature": self._temperature,
+                "thinking": self._thinking,
                 "schema_fingerprint": _SCHEMA_FINGERPRINT,
             },
             sort_keys=True,
@@ -372,8 +454,9 @@ class ModelAgentProposer:
             model=self._model,
             system=system,
             user_content=user_content,
-            max_tokens=self._MAX_TOKENS,
+            max_tokens=self._max_tokens,
             temperature=self._temperature,
+            thinking=self._thinking,
             schema=_provider_schema(),
             canonical_prompt=canonical,
             prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),

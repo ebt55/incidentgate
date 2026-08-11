@@ -28,7 +28,10 @@ artifacts/chaos/
 # not project documentation, and they record local paths and scheduling context.
 IMMEDIATE-PROJECT-OPSPILOT.md
 PROJECT-HANDOFF.md
-docs/audits/
+# Exactly one historical working-notes audit, not the docs/audits/ directory:
+# honest audit documents are content this project should publish, so a future
+# docs/audits/*.md must be committable without editing this file.
+docs/audits/2026-08-11-r09-r12-wip-audit.md
 
 # Local agent/editor workspaces.
 .claude/worktrees/

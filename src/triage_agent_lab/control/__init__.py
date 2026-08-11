@@ -1,6 +1,7 @@
 """Approval-gated D1 control plane; production may inject a durable checkpointer later."""
 
 from .evidence import EvidenceValidator
+from .model_capabilities import is_known_model, model_accepts_sampling
 from .models import Caller
 from .monitor import AdvisoryMonitor, AnthropicAdvisoryMonitor, FixtureMonitor
 from .policy import DeterministicPolicyEngine
@@ -30,4 +31,6 @@ __all__ = [
     "ProposalError",
     "build_d1_graph",
     "build_deferred_graph",
+    "is_known_model",
+    "model_accepts_sampling",
 ]

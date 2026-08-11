@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Self
 
@@ -11,6 +11,8 @@ from triage_agent_lab.host.app import (
     settings_from_env,
     telemetry_config,
 )
+
+MONITOR_MODEL = "claude-haiku-4-5-20251001"
 
 
 class RecordingRepository:
@@ -65,7 +67,7 @@ def test_anthropic_settings_are_explicit_complete_and_repr_safe() -> None:
         settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret"})
     with pytest.raises(ValueError, match="ADVISORY_MONITOR_PROVIDER"):
         settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "unknown"})
-    settings = settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret", "ANTHROPIC_MODEL": "configured-model"})
+    settings = settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret", "ANTHROPIC_MODEL": MONITOR_MODEL})
     assert settings.monitor_provider == "anthropic"
     assert "secret" not in repr(settings)
 
@@ -74,7 +76,7 @@ def test_anthropic_settings_are_explicit_complete_and_repr_safe() -> None:
     "kwargs",
     [
         {"anthropic_api_key": "secret"},
-        {"anthropic_model": "configured-model"},
+        {"anthropic_model": MONITOR_MODEL},
     ],
 )
 def test_direct_partial_anthropic_settings_are_rejected_consistently(
@@ -82,6 +84,31 @@ def test_direct_partial_anthropic_settings_are_rejected_consistently(
 ) -> None:
     with pytest.raises(ValueError, match="Anthropic configuration"):
         HostSettings(database_url="postgresql://example", **kwargs)
+
+
+def test_unknown_anthropic_model_is_rejected_at_settings_construction() -> None:
+    """The monitor is built per request, so a typo'd model id must fail at startup instead.
+
+    Without this the process starts happily and every incident receives a monitor that can only
+    ever return the generic BLOCK, which is indistinguishable from a real block verdict.
+    """
+    env = {
+        "DATABASE_URL": "postgresql://example",
+        "ADVISORY_MONITOR_PROVIDER": "anthropic",
+        "ANTHROPIC_API_KEY": "secret",
+        "ANTHROPIC_MODEL": "claude-opus-5-20260801",  # a plausible but unlisted id
+    }
+    with pytest.raises(ValueError, match="capability table"):
+        settings_from_env(env)
+    with pytest.raises(ValueError, match="capability table") as raised:
+        HostSettings(
+            database_url="postgresql://example",
+            anthropic_api_key="secret",
+            anthropic_model="sk-ant-pasted-into-the-wrong-variable",
+        )
+    assert "sk-ant" not in str(raised.value)  # the rejected value is never echoed
+    # A listed id is accepted, so the check gates only ids the capability table cannot shape.
+    assert settings_from_env({**env, "ANTHROPIC_MODEL": MONITOR_MODEL}).anthropic_model == MONITOR_MODEL
 
 
 def test_anthropic_runtime_factory_selects_provider_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +131,7 @@ def test_anthropic_runtime_factory_selects_provider_without_network(monkeypatch:
         database_url="postgresql://example",
         monitor_provider="anthropic",
         anthropic_api_key="secret",
-        anthropic_model="configured-model",
+        anthropic_model=MONITOR_MODEL,
     )
     with build_runtime_factory(settings, telemetry_config(settings))():
         pass

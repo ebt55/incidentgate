@@ -1,4 +1,4 @@
-"""Unit tests for the model-in-the-loop proposer. DB-free and network-free.
+﻿"""Unit tests for the model-in-the-loop proposer. DB-free and network-free.
 
 Every provider call is an injected fake; the proposer's safety guarantees are enforced in
 code after the model returns, so a hostile steering prompt cannot make it fabricate evidence
@@ -22,14 +22,17 @@ from triage_agent_lab.contracts import (
     RollbackArgs,
     canonical_action_hash,
 )
+from triage_agent_lab.control.model_capabilities import (
+    MODEL_CAPABILITIES,
+    THINKING_HEADROOM_TOKENS,
+    model_accepts_sampling,
+)
 from triage_agent_lab.control.model_proposal import (
-    _MODEL_CAPABILITIES,
     AnthropicCompletionClient,
     CompletionRequest,
     CompletionResult,
     ModelAgentProposer,
     PricingSnapshot,
-    model_accepts_sampling,
 )
 from triage_agent_lab.control.models import Caller
 from triage_agent_lab.control.proposal import ProposalError
@@ -378,10 +381,10 @@ def test_strong_model_sends_no_sampling_params() -> None:
     assert "top_p" not in fake.calls[0]
 
 
-@pytest.mark.parametrize("model", sorted(_MODEL_CAPABILITIES))
+@pytest.mark.parametrize("model", sorted(MODEL_CAPABILITIES))
 def test_capability_table_gates_temperature_per_exact_model_id(model: str) -> None:
     """Every documented row is exercised in both directions, not guessed from a family prefix."""
-    accepts = _MODEL_CAPABILITIES[model].accepts_sampling
+    accepts = MODEL_CAPABILITIES[model].accepts_sampling
     assert model_accepts_sampling(model) is accepts
     client = FakeClient(model_output())
     if accepts:
@@ -412,7 +415,7 @@ def test_unknown_model_fails_closed_on_both_capability_axes() -> None:
     )
     # Omitting `thinking` is the one setting no model rejects, and the budget covers thinking.
     assert client.requests[0].thinking is None
-    reserved = ModelAgentProposer._OUTPUT_TOKENS + ModelAgentProposer._THINKING_TOKENS
+    reserved = ModelAgentProposer._OUTPUT_TOKENS + THINKING_HEADROOM_TOKENS
     assert client.requests[0].max_tokens == reserved
 
 
@@ -440,7 +443,7 @@ def test_thinking_policy_and_token_budget_follow_the_capability_table(
     assert request.thinking == thinking
     expected = ModelAgentProposer._OUTPUT_TOKENS
     if reserves_budget:
-        expected += ModelAgentProposer._THINKING_TOKENS
+        expected += THINKING_HEADROOM_TOKENS
     assert request.max_tokens == expected
     # Both are provider-visible request shape, so both belong in the replay key.
     canonical = json.loads(request.canonical_prompt)

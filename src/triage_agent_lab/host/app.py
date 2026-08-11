@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from triage_agent_lab.contracts import IncidentIdentity, IncidentState, MonitorVerdict
-from triage_agent_lab.control import AnthropicAdvisoryMonitor, FixtureMonitor
+from triage_agent_lab.control import AnthropicAdvisoryMonitor, FixtureMonitor, is_known_model
 from triage_agent_lab.integration import IncidentRuntime
 from triage_agent_lab.lab.repository import D1Repository
 from triage_agent_lab.scenario_registry import RUNNABLE_SCENARIOS
@@ -39,6 +39,12 @@ class HostSettings:
             raise ValueError("ADVISORY_MONITOR_PROVIDER must be fixture or anthropic")
         if bool(self.anthropic_api_key) != bool(self.anthropic_model):
             raise ValueError("Anthropic configuration must provide API key and model together")
+        if self.anthropic_model is not None and not is_known_model(self.anthropic_model):
+            # The monitor is built per request, so its own guard would first fire mid-incident.
+            # Checking here makes a typo'd model id a startup failure instead, before any
+            # incident sees a monitor that could only ever return BLOCK. The value is not
+            # echoed: a mis-set ANTHROPIC_MODEL could hold a credential.
+            raise ValueError("ANTHROPIC_MODEL is not in the advisory monitor capability table")
         if self.monitor_provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError("Anthropic provider requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL")
         if not 0 < self.anthropic_timeout_seconds <= 60:

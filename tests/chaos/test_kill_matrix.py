@@ -3,6 +3,21 @@
 The full matrix stays a command (``python -m triage_agent_lab.chaos.matrix``).
 The live tests here run a representative subset: D1 across the interesting
 windows, and one no-action scenario, all against real killed subprocesses.
+
+Known unresolved flake (observed 2026-08-12).
+``test_every_executed_cell_reaches_the_golden_end_state`` failed once during a
+full-suite run on a clean tree and has not reproduced since: it passed on an
+immediate rerun of the same suite, in eight consecutive isolated runs of this
+module, and in every full-suite run afterwards. It is recorded here rather than
+hidden behind a retry, a sleep, or a skip, because those turn a real signal into
+a silent one. Ruled out so far: cross-test mutation of Postgres between the
+golden capture and a cell capture - pytest runs serially, this package collects
+first, the module-scoped ``subset`` fixture runs the whole matrix in one call,
+and every cell re-runs ``reset_scenario`` before driving workers. Not yet known:
+which cell failed and with what verdict, because that run was not captured with
+a traceback. Capture the next occurrence with ``--tb=long``; the assertion below
+already reports the failing cell's verdict and diff differences, and the cell's
+``resume_outcome.error`` distinguishes a lost worker from a state divergence.
 """
 
 from __future__ import annotations

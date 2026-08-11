@@ -163,6 +163,10 @@ class PricingSnapshot:
         return (input_tokens * self.input_usd_per_token[model]
                 + output_tokens * self.output_usd_per_token[model])
 
+    def prices(self, model: str) -> bool:
+        """Whether this snapshot can price the model, asked before a call is turned into cost."""
+        return model in self.input_usd_per_token and model in self.output_usd_per_token
+
 
 class AnthropicCompletionClient:
     """Real transport: bounded, secret-free, structured output against the pinned anthropic SDK."""
@@ -235,6 +239,10 @@ class AnthropicCompletionClient:
         output_tokens = getattr(usage, "output_tokens", None)
         if usage is None or not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
             raise ValueError("missing provider usage")
+        # The call is already made and already billed. A snapshot that cannot price this model is
+        # a gap in our price list, not a reason to drop the usage: raising here would lose real
+        # spend from the record entirely, which is worse than recording the cost as unknown.
+        priced = self._pricing.prices(request.model)
         invocation = ModelInvocationRecord(
             provider="anthropic",
             model=request.model,
@@ -242,8 +250,8 @@ class AnthropicCompletionClient:
             usage_source="anthropic_messages_usage",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost=self._pricing.cost(request.model, input_tokens, output_tokens),
-            currency=self._pricing.currency,
+            cost=self._pricing.cost(request.model, input_tokens, output_tokens) if priced else None,
+            currency=self._pricing.currency if priced else None,
             pricing_snapshot=self._pricing.snapshot_id,
         )
         return CompletionResult(raw_json=text, invocation=invocation)

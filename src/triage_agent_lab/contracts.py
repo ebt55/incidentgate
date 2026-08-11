@@ -406,6 +406,15 @@ class ModelInvocationRecord(ContractModel):
 
     @model_validator(mode="after")
     def provider_metrics_are_complete(self) -> ModelInvocationRecord:
+        """Never fabricate usage or cost - and never lose usage a real call already incurred.
+
+        A provider call must always carry its usage and name the pricing snapshot it was
+        evaluated against. ``cost`` and ``currency`` may both be absent, and only both: that is
+        the honest record for a call that really happened and really was billed, but whose model
+        the named snapshot does not price. Dropping the record instead would erase measured
+        spend, which for a project that publishes cost-per-incident is a worse lie than an
+        explicit unknown. A cost without a currency, or either without a snapshot, stays invalid.
+        """
         if self.invocation_kind != "provider_call":
             if any(value is not None for value in (self.input_tokens, self.output_tokens, self.cost, self.currency, self.usage_source)):
                 raise ValueError("fixture/disabled invocations must not fabricate usage or cost")
@@ -415,11 +424,11 @@ class ModelInvocationRecord(ContractModel):
             or not self.usage_source
             or self.input_tokens is None
             or self.output_tokens is None
-            or self.cost is None
-            or not self.currency
             or not self.pricing_snapshot
         ):
-            raise ValueError("provider calls require complete provider usage and pricing")
+            raise ValueError("provider calls require complete provider usage and a pricing snapshot")
+        elif (self.cost is None) != (self.currency is None):
+            raise ValueError("provider call cost and currency must be present or absent together")
         return self
 
 

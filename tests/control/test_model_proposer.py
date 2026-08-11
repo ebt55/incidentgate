@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, get_args
 
 import pytest
+from pydantic import ValidationError
 
 from triage_agent_lab.contracts import (
     CanonicalAction,
@@ -369,6 +370,50 @@ def test_provider_call_records_complete_invocation_and_leaks_no_secret() -> None
         assert forbidden not in blob
     assert "sk-secret-key" not in repr(client)
     assert action.tool_name == "operations.rollback"
+
+
+def test_unpriced_but_billed_call_still_records_its_usage() -> None:
+    """A gap in the price list must not erase real spend from the measurement record.
+
+    ``PricingSnapshot.cost`` raised ``KeyError`` for an unlisted model *after* the request was
+    made and billed, and the proposer only records an invocation from a returned result, so the
+    call disappeared entirely behind ``proposal_model_unavailable``.
+    """
+    gapped = PricingSnapshot(
+        snapshot_id="anthropic-2026-01-test",
+        currency="USD",
+        input_usd_per_token={HAIKU: 1e-6},  # OPUS_4_6 is deliberately absent
+        output_usd_per_token={HAIKU: 5e-6},
+    )
+    fake = FakeAnthropic(text=model_output(), input_tokens=1200, output_tokens=80)
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=gapped, client=fake)
+    proposer = ModelAgentProposer(client=client, model=OPUS_4_6, temperature=0)
+    _, action = proposer.propose(incident(), caller(), context(), records())
+
+    invocation = proposer.last_invocation
+    assert invocation is not None
+    assert invocation.invocation_kind == "provider_call"  # the call really happened
+    assert invocation.input_tokens == 1200 and invocation.output_tokens == 80
+    # Cost is explicitly unknown, and says which price list failed to price it.
+    assert invocation.cost is None and invocation.currency is None
+    assert invocation.pricing_snapshot == "anthropic-2026-01-test"
+    assert action.tool_name == "operations.rollback"
+
+
+def test_provider_call_may_not_report_a_cost_without_a_currency() -> None:
+    """Unknown cost is honest only as a complete absence; a half-priced record is still a lie."""
+    with pytest.raises(ValidationError, match="present or absent together"):
+        ModelInvocationRecord(
+            provider="anthropic", model=HAIKU, invocation_kind="provider_call",
+            usage_source="anthropic_messages_usage", input_tokens=1, output_tokens=1,
+            cost=0.5, currency=None, pricing_snapshot="snap",
+        )
+    with pytest.raises(ValidationError, match="usage and a pricing snapshot"):
+        ModelInvocationRecord(
+            provider="anthropic", model=HAIKU, invocation_kind="provider_call",
+            usage_source="anthropic_messages_usage", input_tokens=1, output_tokens=1,
+            cost=None, currency=None, pricing_snapshot=None,
+        )
 
 
 def test_strong_model_sends_no_sampling_params() -> None:

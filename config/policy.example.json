@@ -1,0 +1,24 @@
+{
+  "policy_version": "1.0",
+  "default_mode": "complete",
+  "modes": {
+    "complete": {"evaluation_only": false, "require_human_approval_for_mutations": true},
+    "ungated_evaluation_only": {"evaluation_only": true, "require_human_approval_for_mutations": false},
+    "policy_only_evaluation_only": {"evaluation_only": true, "require_human_approval_for_mutations": false}
+  },
+  "tools": {
+    "operations.rollback": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"component_pattern": "^[a-z][a-z0-9-]{0,62}$", "target_revision_pattern": "^[A-Za-z0-9._-]{1,80}$"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.restart": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component_pattern": "^[a-z][a-z0-9-]{0,62}$"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
+    "operations.restore_config": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"value_reference_prefix": "config://"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.cleanup": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component": "api", "cleanup_scope": "simulated_logs", "max_bytes": 67108864}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.rollback_migration_2026_08_10_5": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"schema_version":"2026.08.10.4"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.disable_flag_checkout_v2": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"flag":"checkout_v2", "enabled":false}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.restore_config_PAYMENT_TIMEOUT_MS_3000": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"variable_name":"PAYMENT_TIMEOUT_MS", "value":"3000", "config_version":"cfg-a17"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.rollback_release_api_2_4_1": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"component":"api", "old_pods":12, "new_pods":0}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.enable_query_plan_baseline_orders": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"index":"idx_orders_customer"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
+    "operations.route_customer_reads_primary": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"routing":"primary"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
+    "operations.rotate_credential_db_app_2026_09": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"active_id":"db-app-2026-09"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
+    "operations.enable_partner_backoff_60s": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"backoff_seconds":60}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.activate_local_response_adapter_3_8_3": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"response_adapter":"local-3.8.3"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
+  }
+}

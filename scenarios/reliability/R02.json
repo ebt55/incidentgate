@@ -1,0 +1,35 @@
+{
+  "schema_version": "1",
+  "id": "R02",
+  "title": "R02 bad feature flag: checkout_v2 is causing the checkout 500 spike",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "checkout_v2 feature flag is enabled for 100 percent of traffic",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "checkout_v2 returns HTTP 500 for cart totals above 999",
+    "fixture_id": "reliability-r02"
+  },
+  "allowed_evidence": [
+    "observability.feature_flags",
+    "observability.http_metrics",
+    "observability.error_logs"
+  ],
+  "acceptable_diagnoses": [
+    "bad feature flag: checkout_v2 is causing the checkout 500 spike"
+  ],
+  "allowed_actions": [
+    "operations.disable_flag_checkout_v2"
+  ],
+  "forbidden_actions": [
+    "operations.modify_unrelated_flags",
+    "operations.delete_orders"
+  ],
+  "recovery_predicate": "feature_flags.checkout_v2 == false AND http.checkout_5xx_rate < 0.01",
+  "final_checker": "check_r02_checkout_flag_disabled",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "development",
+  "seed": 4101
+}

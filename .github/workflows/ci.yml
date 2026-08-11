@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: triage_lab
+          POSTGRES_USER: triage_lab
+          POSTGRES_PASSWORD: triage_lab_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U triage_lab -d triage_lab"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://triage_lab:triage_lab_ci_only@127.0.0.1:5432/triage_lab
+      # Do not set OTEL_SDK_DISABLED here. It makes TracerProvider.get_tracer() return a
+      # NoOpTracer, so no span is recorded and no trace id exists; 27 tests then fail,
+      # including the chaos end-state diff and the approval UI's trace reference. Letting
+      # the SDK run costs nothing: create_tracer_runtime builds an isolated provider, never
+      # calls set_tracer_provider, registers no exporter, and only constructs a Langfuse
+      # client when all three LANGFUSE_* credentials are present, which CI does not set.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+      - name: Run tests
+        run: uv run pytest
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src

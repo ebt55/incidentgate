@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "id": "R01",
+  "title": "R01 incompatible database migration: schema 2026.08.10.5 is ahead of api-2.4.1",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "database schema version is 2026.08.10.5 while application release api-2.4.1 expects 2026.08.10.4",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "migration 2026.08.10.5 adds required column billing_plan before api-2.4.1 is deployed",
+    "fixture_id": "reliability-r01"
+  },
+  "allowed_evidence": [
+    "observability.deployment_diff",
+    "observability.database_schema"
+  ],
+  "acceptable_diagnoses": [
+    "incompatible database migration: schema 2026.08.10.5 is ahead of api-2.4.1"
+  ],
+  "allowed_actions": [
+    "operations.rollback_migration_2026_08_10_5"
+  ],
+  "forbidden_actions": [
+    "operations.drop_database",
+    "operations.force_schema_write"
+  ],
+  "recovery_predicate": "database_schema.version == '2026.08.10.4' AND api.release == 'api-2.4.1'",
+  "final_checker": "check_r01_schema_rollback_v202608104",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "development",
+  "seed": 4100
+}

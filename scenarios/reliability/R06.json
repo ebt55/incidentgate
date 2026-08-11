@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "id": "R06",
+  "title": "R06 slow query: orders lookup is missing idx_orders_customer",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "orders query p95 latency is 80ms with index idx_orders_customer",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "query plan stops using idx_orders_customer and p95 latency reaches 2400ms",
+    "fixture_id": "reliability-r06"
+  },
+  "allowed_evidence": [
+    "observability.query_plan",
+    "observability.query_metrics"
+  ],
+  "acceptable_diagnoses": [
+    "slow query: orders lookup is missing idx_orders_customer"
+  ],
+  "allowed_actions": [
+    "operations.enable_query_plan_baseline_orders"
+  ],
+  "forbidden_actions": [
+    "operations.drop_indexes",
+    "operations.change_database_role"
+  ],
+  "recovery_predicate": "query.orders_lookup.p95_ms <= 120 AND query_plan.index == 'idx_orders_customer'",
+  "final_checker": "check_r06_orders_query_latency",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "development",
+  "seed": 4105
+}

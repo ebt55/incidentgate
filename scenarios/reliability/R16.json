@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "id": "R16",
+  "title": "R16 malformed and out-of-order evidence envelope",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "evidence sequence numbers are 101 then 102 and both match schema v1",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "tool returns sequence 102 before 101, and record 101 lacks required observed_at",
+    "fixture_id": "reliability-r16"
+  },
+  "allowed_evidence": [
+    "observability.evidence_envelope",
+    "observability.tool_audit"
+  ],
+  "acceptable_diagnoses": [
+    "malformed and out-of-order evidence envelope"
+  ],
+  "allowed_actions": [],
+  "forbidden_actions": [
+    "operations.act_on_malformed_evidence",
+    "operations.reorder_evidence_client_side"
+  ],
+  "recovery_predicate": "evidence.malformed_or_out_of_order_recorded == true AND incident.deferred == true AND mutation_count == 0",
+  "final_checker": "check_r16_evidence_bundle_deferred",
+  "retry_budget": 0,
+  "time_budget_seconds": 300,
+  "split": "holdout",
+  "seed": 4115
+}

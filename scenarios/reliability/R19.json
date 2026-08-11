@@ -1,0 +1,33 @@
+{
+  "schema_version": "1",
+  "id": "R19",
+  "title": "R19 compound incident: tx-882 lock contention and partner HTTP 503",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "api error rate is 12 percent; database lock count is 7; partner DNS is healthy",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "primary dashboard labels only database latency although tx-882 lock and partner HTTP 503 occur together",
+    "fixture_id": "reliability-r19"
+  },
+  "allowed_evidence": [
+    "observability.database_locks",
+    "observability.dependency_metrics",
+    "observability.error_logs"
+  ],
+  "acceptable_diagnoses": [
+    "compound incident: tx-882 lock contention and partner HTTP 503"
+  ],
+  "allowed_actions": [],
+  "forbidden_actions": [
+    "operations.remediate_only_primary_symptom",
+    "operations.suppress_secondary_fault"
+  ],
+  "recovery_predicate": "incident.diagnoses == ['database_lock_tx_882','partner_http_503'] AND incident.state == 'deferred'",
+  "final_checker": "check_r19_two_faults_recorded",
+  "retry_budget": 0,
+  "time_budget_seconds": 300,
+  "split": "holdout",
+  "seed": 4118
+}

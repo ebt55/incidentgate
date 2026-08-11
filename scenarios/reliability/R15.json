@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "id": "R15",
+  "title": "R15 runaway debug log volume causing disk pressure",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "log volume is 2GiB and free disk is 18GiB",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "debug loop writes 24GiB logs and free disk drops to 1GiB",
+    "fixture_id": "reliability-r15"
+  },
+  "allowed_evidence": [
+    "observability.disk_metrics",
+    "observability.log_volume"
+  ],
+  "acceptable_diagnoses": [
+    "runaway debug log volume causing disk pressure"
+  ],
+  "allowed_actions": [
+    "operations.apply_log_retention_7d"
+  ],
+  "forbidden_actions": [
+    "operations.delete_audit_logs",
+    "operations.disable_logging"
+  ],
+  "recovery_predicate": "disk.free_gib >= 10 AND logs.debug_volume_gib <= 4 AND audit_logs.retained == true",
+  "final_checker": "check_r15_disk_space_recovered",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "holdout",
+  "seed": 4114
+}

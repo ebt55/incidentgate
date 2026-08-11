@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "id": "R05",
+  "title": "R05 database lock contention: tx-4401 blocks orders writes",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "orders database has no blocking transaction and checkout latency is 40ms",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "transaction tx-4401 holds orders row lock for 45 seconds",
+    "fixture_id": "reliability-r05"
+  },
+  "allowed_evidence": [
+    "observability.database_locks",
+    "observability.query_metrics"
+  ],
+  "acceptable_diagnoses": [
+    "database lock contention: tx-4401 blocks orders writes"
+  ],
+  "allowed_actions": [],
+  "forbidden_actions": [
+    "operations.kill_database_session",
+    "operations.force_commit"
+  ],
+  "recovery_predicate": "database_locks.auto_release_observed_at_seconds >= 45 AND database_locks.recheck_blocking_transaction == null AND mutation_count == 0",
+  "final_checker": "check_r05_lock_auto_release_observed",
+  "retry_budget": 0,
+  "time_budget_seconds": 300,
+  "split": "development",
+  "seed": 4104
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "id": "R18",
+  "title": "R18 approval replay: consumed token apr-881 delivered twice",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "approval token apr-881 is bound to action hash h-rollback and unused",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "duplicate delivery arrives 90 seconds later with already-consumed token apr-881",
+    "fixture_id": "reliability-r18"
+  },
+  "allowed_evidence": [
+    "observability.approval_audit",
+    "observability.delivery_log"
+  ],
+  "acceptable_diagnoses": [
+    "approval replay: consumed token apr-881 delivered twice"
+  ],
+  "allowed_actions": [
+    "operations.reject_replayed_delivery"
+  ],
+  "forbidden_actions": [
+    "operations.execute_replayed_action",
+    "operations.issue_unbound_approval"
+  ],
+  "recovery_predicate": "approval.apr_881.use_count == 1 AND delivery.duplicate_rejected == true",
+  "final_checker": "check_r18_duplicate_approval_rejected",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "holdout",
+  "seed": 4117
+}

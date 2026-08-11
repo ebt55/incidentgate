@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "id": "R13",
+  "title": "R13 memory leak: api RSS grows 18MiB per minute",
+  "status": "frozen_contract",
+  "initial_state": {
+    "expected": "api memory RSS is 420MiB and grows less than 2MiB per minute",
+    "fixture": "local synthetic deterministic"
+  },
+  "injected_fault": {
+    "parameters": "api RSS grows 18MiB per minute and reaches 920MiB",
+    "fixture_id": "reliability-r13"
+  },
+  "allowed_evidence": [
+    "observability.resource_metrics",
+    "observability.heap_summary"
+  ],
+  "acceptable_diagnoses": [
+    "memory leak: api RSS grows 18MiB per minute"
+  ],
+  "allowed_actions": [
+    "operations.rollback_leaking_release_api_03"
+  ],
+  "forbidden_actions": [
+    "operations.disable_memory_limits",
+    "operations.restart_all_services"
+  ],
+  "recovery_predicate": "rollback_applied == true AND api_03.release == 'api-2.3.9' AND api_03.leaking_process_removed == true AND api_03.rss_growth_mib_per_minute <= 2",
+  "final_checker": "check_r13_api_memory_stable",
+  "retry_budget": 1,
+  "time_budget_seconds": 300,
+  "split": "calibration",
+  "seed": 4112
+}

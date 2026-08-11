@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage.*
+htmlcov/
+.hypothesis/
+.tox/
+.nox/
+.recovery/
+*.dump
+*.sql.gz
+*.sqlite3
+dist/
+build/
+*.egg-info/
+coverage.xml
+.coverage
+artifacts/chaos/
+
+# Local planning and multi-session handoff notes. These are working documents,
+# not project documentation, and they record local paths and scheduling context.
+IMMEDIATE-PROJECT-OPSPILOT.md
+PROJECT-HANDOFF.md
+docs/audits/
+
+# Local agent/editor workspaces.
+.claude/worktrees/

@@ -27,7 +27,22 @@ from .models import Caller
 
 
 class ProposalError(Exception):
-    """A stable, non-authorizing terminal reason from D1 proposal generation."""
+    """A stable, non-authorizing terminal reason from D1 proposal generation.
+
+    ``reason`` is a wire value, not a free-form message. The D1 workflow copies it verbatim into
+    ``D1Result.reasons``, the audit timeline persists it, the evaluation artifacts publish it, and
+    the chaos end-state differ compares ``terminal_reasons`` for exact equality - its comparison
+    spec even documents the field as "fixed vocabulary values; no normalization needed". Nothing
+    in code enforces that vocabulary today, so adding a reason silently widens what all of those
+    consumers compare on.
+
+    Freezing it is the better contract, and is deliberately not done here: the vocabulary is
+    produced by this module, ``policy``, ``evidence``, ``workflow``, and the scenario registry,
+    and includes parameterized forms (``argument_constraint:<name>``, ``unknown_evidence:<id>``),
+    so it needs a registry plus prefix rules across the evaluation schema and the differ rather
+    than one Literal. Until that lands, treat adding a reason as a contract change, not a string
+    edit: check the differ and the evaluation artifacts before introducing one.
+    """
 
     def __init__(self, reason: str) -> None:
         self.reason = reason

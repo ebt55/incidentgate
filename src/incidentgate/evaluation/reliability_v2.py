@@ -74,7 +74,11 @@ from incidentgate.lab.service import ObservabilityService, OperationsService
 from incidentgate.manifests import ReliabilityManifest
 from incidentgate.planned_checkers import PLANNED_CHECKER_SPECS, evaluate
 from incidentgate.reasons import unknown_reasons
-from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
+from incidentgate.scenario_registry import (
+    ALLOWED_EVIDENCE_SOURCES,
+    NO_ACTION_CATALOG,
+    validate_no_action_evidence,
+)
 
 _ROOT = Path(__file__).parents[3]
 _PROPOSERS: dict[str, type[Any]] = {
@@ -882,7 +886,13 @@ class ReliabilityEvaluationRunnerV2:
                 validation = EvidenceValidator(
                     config,
                     lambda: datetime.now(UTC),
-                    allowed_sources=frozenset(r.tool_name for r in records),
+                    # The declared surface, not one derived from the records
+                    # being judged. See the same fix in evaluation/runner.py:
+                    # a set built from ``records`` contains every cited record's
+                    # tool_name by construction, so ``unallowed_evidence_source``
+                    # could never fire and this lane's evidence-source claim was
+                    # unfalsifiable rather than merely untested.
+                    allowed_sources=ALLOWED_EVIDENCE_SOURCES[m.id],
                 ).validate(action, records, context)
                 policy = (
                     DeterministicPolicyEngine(config)

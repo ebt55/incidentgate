@@ -55,6 +55,7 @@ from incidentgate.lab.repository import (
 )
 from incidentgate.lab.service import ObservabilityService, OperationsService
 from incidentgate.reasons import TOKEN_EXPIRED, TOKEN_VALID
+from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
 
 # The largest host/container disagreement this system is designed to absorb.
 #
@@ -73,9 +74,7 @@ MAX_TOLERATED_CLOCK_SKEW_SECONDS = 5.0
 # of a quiet clock.
 INJECTED_SKEW = timedelta(seconds=2)
 
-D1_SOURCES = frozenset(
-    {"observability.health", "observability.deployment_diff", "observability.logs"}
-)
+D1_SOURCES = ALLOWED_EVIDENCE_SOURCES["D1"]
 ROLLBACK = "operations.rollback"
 
 

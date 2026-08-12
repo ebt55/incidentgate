@@ -14,6 +14,46 @@ from incidentgate.evaluation.artifacts import load_raw, render_reports
 from incidentgate.evaluation.regression import compare_semantics
 from incidentgate.evaluation.runner import CheckpointBEvaluationRunner, run_checkpoint_b
 
+COMMITTED_RAW = (
+    Path(__file__).resolve().parents[2]
+    / "artifacts"
+    / "evaluations"
+    / "checkpoint-b"
+    / "raw-results.json"
+)
+
+
+def _assert_matches_the_committed_baseline(fresh: object) -> None:
+    """Compare a fresh derivation against the artifact this repo publishes.
+
+    Nothing did this before, and the gap was invisible because two tests looked
+    like they covered it. ``test_checkpoint_b_v1_artifact_is_unchanged`` only
+    re-hashes the committed bytes, so it detects edits to the file and nothing
+    about the code that produced it; the replay assertions in the caller compare
+    one fresh run against another fresh run, which proves determinism and not
+    fidelity. Between them a change to evaluation semantics could leave the
+    published numbers stale with every test green -- which is exactly the
+    situation the allowed-sources fix had to be checked against by hand.
+
+    Semantic level, not byte level, on purpose: ``compare_semantics`` already
+    excludes ``latency_ms`` and ``trace_id``, so this pins what the run *means*
+    without pinning wall-clock noise. ``git_revision`` is the one expected
+    difference -- the caller stamps a synthetic revision -- so it is required to
+    be the *only* one rather than filtered out silently.
+
+    The consequence is deliberate: a change that genuinely moves evaluation
+    semantics now fails here until the artifact is regenerated honestly, which
+    is this repo's discipline for published measurement anyway.
+    """
+    committed = load_raw(COMMITTED_RAW)
+    report = compare_semantics(committed, fresh)  # type: ignore[arg-type]
+    assert report.compared == 30, report.compared
+    assert report.expected_semantic_hash == report.actual_semantic_hash, (
+        "a fresh checkpoint-B derivation no longer matches the committed artifact; "
+        f"regenerate it or explain the change: {report.mismatches}"
+    )
+    assert report.mismatches == ("git_revision",), report.mismatches
+
 
 @pytest.mark.integration
 def test_checkpoint_b_artifacts_are_raw_bound_and_replayable(
@@ -80,6 +120,7 @@ def test_checkpoint_b_artifacts_are_raw_bound_and_replayable(
         row["deferred_correctly"] == "N/A" or "/" in row["deferred_correctly"] for row in rows
     )
     raw = load_raw(raw_path)
+    _assert_matches_the_committed_baseline(raw)
     for rendered in rows:
         latencies = sorted(
             row.latency_ms for row in raw.results if row.requested_mode.value == rendered["mode"]

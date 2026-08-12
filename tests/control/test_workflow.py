@@ -40,11 +40,13 @@ from incidentgate.control import (
     build_workflow_graph,
 )
 from incidentgate.control.models import ControlAuditEvent
+from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
-ALLOWED_SOURCES = frozenset(
-    {"observability.health", "observability.deployment_diff", "observability.logs"}
-)
+# The declared surface, not a copy of it. A hand-copied duplicate is what let the
+# sabotage harness diverge from production, and a test holding its own copy can
+# keep passing while the surface it claims to exercise moves underneath it.
+ALLOWED_SOURCES = ALLOWED_EVIDENCE_SOURCES["D1"]
 
 
 def policy_config() -> PolicyConfiguration:

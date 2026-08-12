@@ -56,7 +56,11 @@ from incidentgate.lab.errors import ResponseLost
 from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
 from incidentgate.manifests import ScenarioManifest, load_checkpoint_manifests
-from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
+from incidentgate.scenario_registry import (
+    ALLOWED_EVIDENCE_SOURCES,
+    NO_ACTION_CATALOG,
+    validate_no_action_evidence,
+)
 
 from .artifacts import load_raw, render_reports, write_raw
 from .checkers import CheckerSnapshot, run_checker
@@ -349,7 +353,13 @@ class CheckpointBEvaluationRunner:
             validation = EvidenceValidator(
                 policy_config,
                 lambda: datetime.now(UTC),
-                allowed_sources=frozenset(r.tool_name for r in records),
+                # The declared surface, not one derived from the records being
+                # judged. Deriving it from ``records`` made every cited record's
+                # own tool_name a member by construction, so
+                # ``unallowed_evidence_source`` could not fire here for any input
+                # whatsoever -- the lane reported an evidence gate it was
+                # structurally incapable of failing.
+                allowed_sources=ALLOWED_EVIDENCE_SOURCES[scenario],
             ).validate(action, records, context)
             policy = DeterministicPolicyEngine(policy_config).evaluate(
                 action, caller.role, validation

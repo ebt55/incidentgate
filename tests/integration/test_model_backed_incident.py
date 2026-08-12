@@ -78,6 +78,7 @@ from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
+from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
 
 OPUS = "claude-opus-5"
 COMMITTED_CACHE = Path(__file__).resolve().parents[1] / "fixtures" / "model_cache"
@@ -89,9 +90,7 @@ CONFIG = Path(__file__).resolve().parents[2] / "config" / "policy.example.json"
 OBSERVED = datetime(2026, 1, 1, tzinfo=UTC)
 FROZEN_NOW = OBSERVED + timedelta(seconds=60)
 
-D1_SOURCES = frozenset(
-    {"observability.health", "observability.deployment_diff", "observability.logs"}
-)
+D1_SOURCES = ALLOWED_EVIDENCE_SOURCES["D1"]
 
 
 def _dsn() -> str:

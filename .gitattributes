@@ -1,0 +1,17 @@
+# Line endings are part of this repository's published claims.
+#
+# Git stores text with LF. Without this file, a Windows checkout with
+# core.autocrlf=true materializes CRLF in the working tree while a Linux
+# checkout materializes LF, so the same commit has different bytes on disk
+# depending on who checked it out. Anything that hashes working-tree bytes then
+# gets a different answer per platform.
+#
+# That is not hypothetical here: the checkpoint-B artifact regression gate
+# hashes artifacts/evaluations/checkpoint-b/raw-results.json as checked out. Its
+# committed expectation was generated on Windows (CRLF), so CI on Linux computed
+# a different digest and failed on every push since the first public commit.
+#
+# Normalizing the working tree to LF everywhere makes a checkout byte-identical
+# on every platform, which is the property a byte-level gate needs to mean
+# anything. text=auto still leaves genuinely binary files alone.
+* text=auto eol=lf

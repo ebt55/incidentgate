@@ -107,9 +107,16 @@ def test_checkpoint_b_v1_artifact_is_unchanged() -> None:
         / "checkpoint-b"
         / "raw-results.json"
     )
+    # This digest is over the file AS CHECKED OUT, so it only means anything if a
+    # checkout produces the same bytes everywhere. The previous expectation was
+    # generated on Windows, where core.autocrlf materialized CRLF; Linux CI
+    # materialized LF, computed a different digest, and failed on every push since
+    # the first public commit. .gitattributes now pins the working tree to LF, so
+    # the digest below is the LF one -- the same value CI computes. The artifact's
+    # committed content is unchanged; only its on-disk line endings are.
     assert (
         hashlib.sha256(raw.read_bytes()).hexdigest()
-        == "ddf30df0f933f07095c33ccbafa6e0f0cce22fa1c0d069920b5598ac6001133d"
+        == "9e9f389378e989071823f9ef94115142a4b6939a3f2e8509fbbb9217dc1dd368"
     )
     assert len(load_raw(raw).results) == 30
 

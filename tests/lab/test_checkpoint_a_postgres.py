@@ -23,7 +23,9 @@ from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 
 @pytest.fixture
 def repository() -> D1Repository:
-    dsn = os.environ.get("DATABASE_URL", "postgresql://triage_lab:triage_lab_dev_only@127.0.0.1:5432/triage_lab")
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("Checkpoint A Postgres integration requires DATABASE_URL")
     repo = D1Repository(dsn)
     try:
         repo.migrate()

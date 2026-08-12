@@ -64,6 +64,8 @@ at-least-golden fields may only grow through crash replay; the paired equality f
 - `orphaned_approvals`: 60 unconsumed approval rows left by kills inside the approval window.
 - boundaries that orphan an approval: `approve/approval:entry`, `approve/approval:exit`, `approve/approval_token:committed`, `approve/execute:entry`
 
+`replayed_reads` is the one number in this table that is not expected to reproduce exactly. How many reads a kill replays depends on where the process died relative to the last checkpoint, so it drifts by a few rows between regenerations of an otherwise identical tree. That is precisely why it is an at-least field rather than an equality one: its paired equality field, `evidence_read_kinds`, pins the replay to payloads the golden run already contained, so a drifting count cannot hide a different read. Every other number here is expected to reproduce exactly from the recorded revision.
+
 ### What `orphaned_approvals` counts
 
 An **orphaned approval** is a durable approval row with no matching executed operation: `approvals_total` exceeded the golden run while `approvals_consumed`, `ledger_max_rows_per_key` and `fixture_mutation_count` all matched it exactly. It is neither a lost incident nor a duplicate mutation - both of those are separate verdicts in the table above, and both are zero.

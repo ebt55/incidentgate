@@ -607,6 +607,19 @@ def totals(cells: Sequence[dict[str, Any]]) -> dict[str, int]:
     return counted
 
 
+#: Spelled small counts, so generated prose can read as prose and still derive.
+#: The footnote below interpolated one boundary count and then hardcoded the word
+#: "four" for that same number in the next sentence - fine until the approval
+#: window gains or loses a boundary, at which point the published table would
+#: contradict itself in adjacent sentences. Every headline number in this module
+#: is counted rather than written by hand; this makes the prose obey that too.
+_COUNT_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def _count_word(value: int) -> str:
+    return _COUNT_WORDS[value] if 0 <= value < len(_COUNT_WORDS) else str(value)
+
+
 _CELL_LABELS = {STATUS_OK: "OK", STATUS_NA: "n/a", STATUS_ERROR: "ERR"}
 _VERDICT_LABELS = {
     enddiff.DUPLICATE_MUTATION: "FAIL-dup",
@@ -815,6 +828,22 @@ def _render_observations(
             "- boundaries that orphan an approval: " + ", ".join(f"`{b}`" for b in orphaned)
         )
     lines.append("")
+    # Said in the artifact rather than only in a commit message, because a
+    # published number that does not reproduce is exactly the kind of thing a
+    # reader is entitled to be warned about before they try to reproduce it.
+    # Deliberately non-numeric: this paragraph is re-rendered for every future
+    # run, so quoting one run's drift here would make the prose stale the moment
+    # it were true.
+    lines.append(
+        "`replayed_reads` is the one number in this table that is not expected to reproduce "
+        "exactly. How many reads a kill replays depends on where the process died relative to "
+        "the last checkpoint, so it drifts by a few rows between regenerations of an otherwise "
+        "identical tree. That is precisely why it is an at-least field rather than an equality "
+        "one: its paired equality field, `evidence_read_kinds`, pins the replay to payloads the "
+        "golden run already contained, so a drifting count cannot hide a different read. Every "
+        "other number here is expected to reproduce exactly from the recorded revision."
+    )
+    lines.append("")
     lines.extend(_render_orphaned_approval_footnote(report, orphaning, orphaned))
     return lines
 
@@ -856,7 +885,8 @@ def _render_orphaned_approval_footnote(
             f"{len(orphaning)} cells. Those scenarios are exactly the "
             f"{len(minted)} whose golden run mints an approval at all; the remaining "
             f"{len(report['scenarios']) - len(minted)} defer, block, or take no action, so "
-            "they have no token to orphan. The four boundaries are exactly the kill points "
+            f"they have no token to orphan. The {_count_word(len(boundaries))} boundaries are "
+            "exactly the kill points "
             "between the approval commit and the operation commit."
         ),
         "",

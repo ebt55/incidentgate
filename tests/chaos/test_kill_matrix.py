@@ -136,6 +136,20 @@ def test_the_published_table_covers_every_enrolled_scenario() -> None:
     )
 
 
+def test_the_committed_markdown_is_derived_from_the_committed_json() -> None:
+    """The prose table is the thing most worth editing by hand, so derive it.
+
+    The sabotage artifact has had this guard since it was published; the chaos
+    artifact did not, so its rendered table could drift from the raw envelope
+    beside it - by a hand-rounded number, a softened caveat, or a generator
+    change nobody re-rendered for. Both artifacts now hold the same line: the
+    markdown is a pure function of the committed JSON.
+    """
+    report = json.loads(PUBLISHED_TABLE.read_text(encoding="utf-8"))
+    committed = (PUBLISHED_TABLE.parent / "kill-matrix.md").read_text(encoding="utf-8")
+    assert committed == matrix.render_markdown(report)
+
+
 def test_the_ci_subset_samples_every_tier_and_every_boundary_class() -> None:
     """Guard the documented subset choice against being quietly narrowed."""
     tiers = {scenario[0] for scenario in SUBSET_SCENARIOS}

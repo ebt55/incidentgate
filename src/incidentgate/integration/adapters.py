@@ -352,7 +352,14 @@ class LabRecoveryVerifier:
         caller: Caller,
         context: ToolCallContext,
         clock: Callable[[], datetime],
-        repository: LabRepository | None = None,
+        # Required, not optional. The ledger cross-check below is half of the
+        # verification predicate, not an enrichment: without it ``passed`` rests
+        # entirely on re-read observability payloads, which for T1 is a healthy
+        # checkout and an empty note store -- true of a run whose ledger row does
+        # not correspond to the operation being verified. Every caller already
+        # passes one; making it required is what stops a future caller from
+        # silently downgrading verification by omitting an argument.
+        repository: LabRepository,
     ) -> None:
         self._service, self._caller, self._context, self._clock, self._repository = (
             service,
@@ -501,10 +508,7 @@ class LabRecoveryVerifier:
                 and records[1].payload.get("auth_status") == "ok"
             )
             predicate = "database_credential_rotated_and_authenticated"
-        if (
-            scenario in {"D8", "R01", "R02", "R03", "R04", "R06", "R07", "R08", "R09", "R12", "T1"}
-            and self._repository is not None
-        ):
+        if scenario in {"D8", "R01", "R02", "R03", "R04", "R06", "R07", "R08", "R09", "R12", "T1"}:
             passed = passed and self._repository.operation_matches(operation)
         passed = (
             operation.status in {OperationStatus.SUCCEEDED, OperationStatus.DUPLICATE} and passed

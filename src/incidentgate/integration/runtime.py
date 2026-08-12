@@ -174,6 +174,15 @@ class IncidentRuntime:
         # incident, matching how the monitor is built.
         proposer_factory: Callable[[], ProposalGenerator] | None = None,
         collection_crash_after_attempt: int | None = None,
+        # The acceptance gate's only escape hatch, and deliberately a loud one.
+        # A T-tier scenario needs a working runtime *before* it can be promoted
+        # into RUNNABLE_SCENARIOS -- that is the order the acceptance gate
+        # requires -- so the development window between "has a graph" and "is
+        # promoted" is real and recurring: T1 lived in it, T2-T8 will. Passing
+        # this is how a caller says so out loud at the call site, where review
+        # can see it. It is not how the chaos worker, the host, or any published
+        # measurement is constructed.
+        allow_unpromoted_scenario: bool = False,
     ) -> None:
         if telemetry is not None and telemetry_config is not None:
             raise ValueError("provide either telemetry or telemetry_config, not both")
@@ -224,6 +233,7 @@ class IncidentRuntime:
         self._monitor_factory = monitor_factory
         self._proposer_factory = proposer_factory
         self._collection_crash_after_attempt = collection_crash_after_attempt
+        self._allow_unpromoted_scenario = allow_unpromoted_scenario
         self._graph: Any | None = None
 
     def close(self) -> None:
@@ -615,6 +625,22 @@ class IncidentRuntime:
             "actor": caller.actor if caller is not None else None,
             "permission": context.permission if context is not None else None,
         }
+        # The acceptance gate, enforced before anything runs and independently of
+        # how this runtime was wired. It used to live inside the telemetry branch
+        # below, which made it an accident of observability: ``_telemetry``
+        # defaults to None, so every default-constructed runtime -- the chaos
+        # worker, the evaluation harnesses, and every runtime test -- skipped it
+        # entirely, and only the host path (which always builds a tracer) ever
+        # enforced it. The evidence that it was not gating is that unpromoted T1
+        # drove cleanly through the chaos worker across all 22 boundaries.
+        #
+        # ``_build_graph`` already refuses a scenario it has no graph for, so
+        # this is the narrower question that check cannot answer: the scenario is
+        # buildable, but has it been accepted? Same shape as ``_scenario_span``,
+        # which validates unconditionally and only then decides on a span.
+        scenario_id = getattr(incident, "scenario_id", None)
+        if not self._allow_unpromoted_scenario and scenario_id not in RUNNABLE_SCENARIOS:
+            raise ValueError("unsupported checkpoint scenario")
         if self._telemetry is None:
             payload: Any = (
                 initial
@@ -623,18 +649,18 @@ class IncidentRuntime:
             )
             return cast(dict[str, Any], graph.invoke(payload, self._config(thread_id)))
         try:
-            scenario_id = getattr(incident, "scenario_id", None)
-            if scenario_id not in RUNNABLE_SCENARIOS:
-                raise ValueError("unsupported checkpoint scenario")
+            # Only reachable with the opt-out, which is the one path that can
+            # carry a scenario id the registry has never seen.
+            span_scenario = (scenario_id or "unknown").lower()
             with self._telemetry.start_as_current_span(
-                f"{scenario_id.lower()}.workflow", attributes=attributes, parent_context=parent
+                f"{span_scenario}.workflow", attributes=attributes, parent_context=parent
             ):
                 if initial is not None:
                     initial["trace_carrier"] = dict(inject_trace_context({}))
                     result = graph.invoke(initial, self._config(thread_id))
                 elif approval:
                     with self._telemetry.start_as_current_span(
-                        f"{scenario_id.lower()}.approval", attributes=attributes
+                        f"{span_scenario}.approval", attributes=attributes
                     ):
                         result = graph.invoke(Command(resume=resume), self._config(thread_id))
                 else:

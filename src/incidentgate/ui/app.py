@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
 from html import escape
 from secrets import token_urlsafe
@@ -33,10 +33,13 @@ class Runtime(Protocol):
 
 
 class ScenarioController(Protocol):
-    def prepare_d1(self) -> Any: ...
+    def prepare(self, scenario_id: str, thread_id: str, correlation_id: str) -> Any: ...
 
 
 RuntimeFactory = Callable[[], AbstractContextManager[Runtime]]
+# The host owns startup work but this module owns the FastAPI construction, and
+# lifespan can only be supplied there -- unlike the deprecated on_event hook.
+AppLifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
 ACTORS = {"observer-1": Role.OBSERVER, "operator-1": Role.OPERATOR, "approver-1": Role.APPROVER}
 
 
@@ -69,9 +72,15 @@ def create_ui_app(
     *,
     clock: Callable[[], float] = monotonic,
     nonce_limit: int = 256,
+    lifespan: AppLifespan | None = None,
 ) -> FastAPI:
     """Create a local demonstration UI; identity is an allowlisted mock actor only."""
-    app = FastAPI(title="Triage Agent Lab checkpoint", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Triage Agent Lab checkpoint",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
+    )
     app.state.nonces = {}
     app.state.incidents = {}
 
@@ -434,33 +443,11 @@ def create_ui_app(
         thread = f"{scenario_id.lower()}-{uuid4().hex[:12]}"
         correlation_id = f"ui-{thread}"
         try:
-            generic_prepare = getattr(controller, "prepare", None)
-            identity = (
-                generic_prepare(scenario_id, thread, correlation_id)
-                if callable(generic_prepare)
-                else None
-            )
-            if identity is None:
-                if scenario_id != "D1":
-                    raise ValueError("unsupported checkpoint scenario")
-                controller.prepare_d1()
-                identity = IncidentIdentity(
-                    incident_id="INC-D1",
-                    scenario_id="D1",
-                    thread_id=thread,
-                    correlation_id=correlation_id,
-                    state=IncidentState.OPEN,
-                )
+            identity = controller.prepare(scenario_id, thread, correlation_id)
         except Exception as error:
             raise HTTPException(409, "checkpoint fault could not be prepared") from error
         app.state.incidents[thread] = identity
         return RedirectResponse(f"/incidents/{thread}/start", 303)
-
-    @app.post("/incidents/d1/prepare")
-    async def prepare_d1(
-        request: Request, x_incidentgate_actor: str | None = Header(default=None)
-    ) -> RedirectResponse:
-        return await _prepare("D1", request, x_incidentgate_actor)
 
     @app.post("/incidents/{scenario_id}/prepare")
     async def prepare(

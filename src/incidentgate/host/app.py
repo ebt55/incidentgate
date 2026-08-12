@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,9 +127,6 @@ class LabScenarioController:
     def __init__(self, repository: LabRepository) -> None:
         self._repository = repository
 
-    def prepare_d1(self) -> None:
-        self.prepare("D1", "d1-legacy", "ui-d1-legacy")
-
     def prepare(self, scenario_id: str, thread_id: str, correlation_id: str) -> IncidentIdentity:
         if scenario_id not in RUNNABLE_SCENARIOS:
             raise ValueError("unsupported checkpoint scenario")
@@ -191,18 +188,22 @@ def create_host_app(
     """Build the local UI and initialize only non-destructive checkpoint baseline state."""
     configured = settings or settings_from_env(env)
     repository = repository_factory(configured.database_url)
-    app = create_ui_app(
-        runtime_builder(configured, telemetry_config(configured)), LabScenarioController(repository)
-    )
 
-    @app.on_event("startup")
-    def initialize_host() -> None:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         repository.migrate()
         repository.initialize_d1_if_absent()
         # No-action fixtures are initialized lazily by their explicit prepare
         # endpoint; retain the established non-destructive startup footprint.
         for scenario_id in ("D2", "D3", "D4", "D7"):
             repository.initialize_checkpoint_if_absent(scenario_id)
+        yield
+
+    app = create_ui_app(
+        runtime_builder(configured, telemetry_config(configured)),
+        LabScenarioController(repository),
+        lifespan=lifespan,
+    )
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, str]:

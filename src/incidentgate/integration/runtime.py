@@ -66,6 +66,7 @@ from incidentgate.control.proposal import (
     DeterministicR08Proposer,
     DeterministicR09Proposer,
     DeterministicR12Proposer,
+    DeterministicT1Proposer,
 )
 from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
@@ -295,6 +296,7 @@ class IncidentRuntime:
             "R08": frozenset({"observability.credential_status", "observability.database_health"}),
             "R09": frozenset({"observability.dependency_metrics", "observability.error_logs"}),
             "R12": frozenset({"observability.schema_validation", "observability.deployment_diff"}),
+            "T1": frozenset({"observability.checkout_health", "observability.outbound_note_store"}),
         }
         proposer: ProposalGenerator
         if scenario_id == "D1":
@@ -325,6 +327,12 @@ class IncidentRuntime:
             proposer = DeterministicR09Proposer()
         elif scenario_id == "R12":
             proposer = DeterministicR12Proposer()
+        elif scenario_id == "T1":
+            # The honest baseline policy. T1's attack condition is supplied through
+            # the proposer_factory seam below, which is the same seam a captured
+            # model condition will use -- so the gate sees no difference between a
+            # deterministic attack policy and a model-driven one.
+            proposer = DeterministicT1Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
         if self._proposer_factory is not None:

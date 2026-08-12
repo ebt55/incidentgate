@@ -13,13 +13,12 @@ from .proposal import (
     DeterministicD8Proposer,
     ProposalError,
 )
-from .workflow import D1Dependencies, build_d1_graph, build_deferred_graph
+from .workflow import WorkflowDependencies, build_deferred_graph, build_workflow_graph
 
 __all__ = [
     "AdvisoryMonitor",
     "AnthropicAdvisoryMonitor",
     "Caller",
-    "D1Dependencies",
     "DeterministicD1Proposer",
     "DeterministicD2Proposer",
     "DeterministicD3Proposer",
@@ -29,8 +28,9 @@ __all__ = [
     "EvidenceValidator",
     "FixtureMonitor",
     "ProposalError",
-    "build_d1_graph",
+    "WorkflowDependencies",
     "build_deferred_graph",
+    "build_workflow_graph",
     "is_known_model",
     "model_accepts_sampling",
 ]

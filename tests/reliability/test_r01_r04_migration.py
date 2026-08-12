@@ -10,7 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
 ROOT = Path(__file__).parents[2]
 
@@ -56,7 +56,7 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
                 "INSERT INTO operation_ledger (operation_scope, idempotency_key, action_hash, approval_token_id, one_time_use_id, incident_id, thread_id, correlation_id, actor, permission, approver, result, committed_at) VALUES ('upgrade-scope', %s, %s, %s, %s, 'INC-D5', 'upgrade-thread', 'upgrade-correlation', 'operator-1', 'operations:write', 'approver-1', '{\"retained\":true}'::jsonb, now())",
                 (operation_key, "a" * 64, token_id, one_time_id),
             )
-        repository = D1Repository(scoped_dsn)
+        repository = LabRepository(scoped_dsn)
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")

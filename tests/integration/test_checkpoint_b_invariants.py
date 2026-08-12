@@ -21,7 +21,7 @@ from triage_agent_lab.control.models import Caller
 from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied, ResponseLost
-from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, D1Repository
+from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 
 MUTATING = ("D1", "D2", "D3", "D5", "D8")
@@ -30,11 +30,11 @@ ALL_SCENARIOS = MUTATING + NO_ACTION
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("checkpoint-B invariant integration requires DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     return repo
 
@@ -61,7 +61,7 @@ def inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     )
 
 
-def reset_and_inject(repo: D1Repository, scenario: str) -> None:
+def reset_and_inject(repo: LabRepository, scenario: str) -> None:
     if scenario == "D1":
         repo.reset_d1()
         repo.inject_d1()
@@ -70,7 +70,7 @@ def reset_and_inject(repo: D1Repository, scenario: str) -> None:
         repo.inject_checkpoint(scenario)
 
 
-def authority_rows(repo: D1Repository, incident_id: str, thread_id: str) -> tuple[int, int]:
+def authority_rows(repo: LabRepository, incident_id: str, thread_id: str) -> tuple[int, int]:
     with repo._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT count(*) AS total FROM approvals WHERE incident_id=%s", (incident_id,)
@@ -83,7 +83,7 @@ def authority_rows(repo: D1Repository, incident_id: str, thread_id: str) -> tupl
         return approvals, int(cursor.fetchone()["total"])
 
 
-def mutation_count(repo: D1Repository, scenario: str) -> int:
+def mutation_count(repo: LabRepository, scenario: str) -> int:
     state = repo.state() if scenario == "D1" else repo.checkpoint_state(scenario)
     return int(state["mutation_count"])
 
@@ -105,7 +105,7 @@ def execute(
     return service.cleanup(context, principal, action, token)
 
 
-def persisted_token(repo: D1Repository, incident_id: str, action: CanonicalAction) -> ApprovalToken:
+def persisted_token(repo: LabRepository, incident_id: str, action: CanonicalAction) -> ApprovalToken:
     now = datetime.now(UTC)
     token = ApprovalToken(
         action_hash=canonical_action_hash(action),
@@ -121,7 +121,7 @@ def persisted_token(repo: D1Repository, incident_id: str, action: CanonicalActio
 
 
 def direct_action(
-    repository: D1Repository, scenario: str, context: ToolCallContext
+    repository: LabRepository, scenario: str, context: ToolCallContext
 ) -> CanonicalAction:
     evidence_kinds = {
         "D1": ("health", "deployment_diff", "logs"),
@@ -176,7 +176,7 @@ def direct_action(
 
 @pytest.mark.parametrize("scenario", MUTATING)
 def test_i1_all_mutations_interrupt_before_execution_and_reject_stays_empty(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """Every complete-mode mutation pauses durably before an approval is issued."""
     reset_and_inject(repository, scenario)
@@ -198,7 +198,7 @@ def test_i1_all_mutations_interrupt_before_execution_and_reject_stays_empty(
 
 @pytest.mark.parametrize("scenario", MUTATING)
 def test_i1_missing_bound_approval_is_denied_by_each_public_mutation_service(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """A structurally valid but unrecorded approval cannot authorize any operation."""
     reset_and_inject(repository, scenario)
@@ -226,7 +226,7 @@ def test_i1_missing_bound_approval_is_denied_by_each_public_mutation_service(
 
 @pytest.mark.parametrize("scenario", MUTATING)
 def test_i2_response_loss_retry_is_exactly_once_across_fresh_runtime(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     reset_and_inject(repository, scenario)
     incident, caller, context = inputs(scenario)
@@ -253,7 +253,7 @@ def test_i2_response_loss_retry_is_exactly_once_across_fresh_runtime(
 
 @pytest.mark.parametrize("scenario", MUTATING)
 def test_i3_cross_thread_evidence_cannot_spend_an_otherwise_valid_approval(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     reset_and_inject(repository, scenario)
     incident, _, context = inputs(scenario)
@@ -282,7 +282,7 @@ def test_i3_cross_thread_evidence_cannot_spend_an_otherwise_valid_approval(
 
 @pytest.mark.parametrize("scenario", NO_ACTION)
 def test_i4_i5_i6_no_action_scenarios_are_durable_safe_terminals(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     expected = {
         "D4": "deferred",
@@ -371,7 +371,7 @@ def test_i4_i5_i6_no_action_scenarios_are_durable_safe_terminals(
 
 @pytest.mark.parametrize("scenario", MUTATING)
 def test_i6_pending_approval_survives_close_then_fresh_runtime_execution(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     reset_and_inject(repository, scenario)
     incident, caller, context = inputs(scenario)
@@ -392,7 +392,7 @@ def test_i6_pending_approval_survives_close_then_fresh_runtime_execution(
 
 @pytest.mark.parametrize("scenario", ALL_SCENARIOS)
 def test_i3_i7_durable_evidence_and_ledger_envelopes_match_the_thread(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """Inspect persisted records, not adapter return values, for every frozen scenario."""
     reset_and_inject(repository, scenario)
@@ -494,7 +494,7 @@ def test_i3_i7_durable_evidence_and_ledger_envelopes_match_the_thread(
 
 
 def test_i5_i7_reject_malformed_context_and_authorization_before_collection(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """The public context envelope and runtime deny malformed or unauthorized calls."""
     with pytest.raises(ValidationError):

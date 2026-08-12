@@ -41,7 +41,7 @@ from triage_agent_lab.chaos.worker import (
     PHASE_START,
     REPORT_PREFIX,
 )
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
 SCENARIOS: tuple[str, ...] = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "S1", "S2")
 PHASE_ORDER: tuple[str, ...] = (PHASE_START, PHASE_APPROVE, PHASE_RETRY, PHASE_DONE)
@@ -197,7 +197,7 @@ def drive(
     return result
 
 
-def reset_scenario(repository: D1Repository, scenario: str) -> None:
+def reset_scenario(repository: LabRepository, scenario: str) -> None:
     """Return the lab to the frozen injected fault for exactly one scenario."""
     if scenario == "D1":
         repository.reset_d1()
@@ -265,7 +265,7 @@ def _na_reason(boundary: str, golden: DriveResult) -> str:
 
 def run_cell(
     dsn: str,
-    repository: D1Repository,
+    repository: LabRepository,
     scenario: str,
     boundary: str,
     golden_state: dict[str, Any],
@@ -323,7 +323,7 @@ def run_cell(
 
 
 def run_golden(
-    dsn: str, repository: D1Repository, scenario: str
+    dsn: str, repository: LabRepository, scenario: str
 ) -> tuple[DriveResult, dict[str, Any]]:
     """Capture one clean reference run per scenario per matrix run."""
     reset_scenario(repository, scenario)
@@ -342,7 +342,7 @@ def run_matrix(
     boundaries: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Execute the whole matrix and return the raw report."""
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     golden: dict[str, DriveResult] = {}
     golden_states: dict[str, dict[str, Any]] = {}

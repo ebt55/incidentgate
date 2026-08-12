@@ -10,7 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
 ROOT = Path(__file__).parents[2]
 
@@ -31,7 +31,7 @@ def test_012_upgrades_001_through_011_once_and_retains_prior_durable_rows() -> N
                 cursor.execute(path.read_text(encoding="utf-8"))
                 cursor.execute("INSERT INTO schema_migrations (name) VALUES (%s)", (path.name,))
             cursor.execute("INSERT INTO tickets (ticket_id, incident_id, title) VALUES ('r012-retained', 'INC-D1', 'retained')")
-        repository = D1Repository(scoped_dsn)
+        repository = LabRepository(scoped_dsn)
         repository.migrate()
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:

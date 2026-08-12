@@ -3,9 +3,9 @@
 import os
 
 from .app import create_app
-from .repository import D1Repository
+from .repository import LabRepository
 
-repository = D1Repository(os.environ["DATABASE_URL"])
+repository = LabRepository(os.environ["DATABASE_URL"])
 repository.migrate()
 repository.initialize_d1_if_absent()
 app = create_app(repository, os.environ["D1_LAB_ADMIN_TOKEN"])

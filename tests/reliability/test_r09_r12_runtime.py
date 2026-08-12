@@ -31,7 +31,7 @@ from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.mcp_servers.entrypoints import observability_server, operations_server
 from triage_agent_lab.telemetry import create_tracer_runtime
@@ -47,11 +47,11 @@ FORBIDDEN_TEXT = (
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("R09-R12 integration requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     return repository
 
@@ -69,7 +69,7 @@ def _inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     )
 
 
-def _fixture_row(repository: D1Repository, scenario: str) -> dict[str, object]:
+def _fixture_row(repository: LabRepository, scenario: str) -> dict[str, object]:
     with psycopg.connect(repository.dsn) as connection, connection.cursor() as cursor:
         cursor.execute(
             f"SELECT * FROM {scenario.lower()}_fixture_state WHERE scenario_id=%s", (scenario,)
@@ -83,7 +83,7 @@ def _fixture_row(repository: D1Repository, scenario: str) -> dict[str, object]:
 
 @pytest.mark.parametrize("scenario", ACTION_SCENARIOS)
 def test_r09_r12_approval_and_response_loss_replay_are_exactly_once(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """A lost response must replay the existing result, never mutate a second time."""
     repository.reset_checkpoint(scenario)
@@ -119,7 +119,7 @@ def test_r09_r12_approval_and_response_loss_replay_are_exactly_once(
 
 @pytest.mark.parametrize("scenario", ACTION_SCENARIOS)
 def test_r09_r12_diagnosis_and_approval_view_are_bound_to_the_contract(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """The interrupt must cite the frozen capability and invent no argument fields."""
     repository.reset_checkpoint(scenario)
@@ -144,7 +144,7 @@ def test_r09_r12_diagnosis_and_approval_view_are_bound_to_the_contract(
 
 @pytest.mark.parametrize("scenario", NO_ACTION_SCENARIOS)
 def test_r10_r11_defer_with_zero_authority_and_resume_after_process_loss(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """A durable two-read observation that ends deferred with no authority at all."""
     repository.reset_checkpoint(scenario)
@@ -194,7 +194,7 @@ def test_r10_r11_defer_with_zero_authority_and_resume_after_process_loss(
 
 @pytest.mark.parametrize("scenario", ACTION_SCENARIOS + NO_ACTION_SCENARIOS)
 def test_r09_r12_telemetry_uses_safe_workflow_trace(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """Spans share one trace and carry only allowlisted, non-sensitive attributes."""
     repository.reset_checkpoint(scenario)
@@ -239,7 +239,7 @@ def test_r09_r12_telemetry_uses_safe_workflow_trace(
     ),
 )
 async def test_public_fastmcp_r09_r12_capabilities_and_safe_denials(
-    repository: D1Repository, scenario: str, reads: tuple[str, ...], operation: str,
+    repository: LabRepository, scenario: str, reads: tuple[str, ...], operation: str,
     proposer: type[object], bad_argument: tuple[str, object], other_operation: str,
 ) -> None:
     """Forged context, forged arguments, and cross-tool substitution are all refused."""
@@ -313,7 +313,7 @@ async def test_public_fastmcp_r09_r12_capabilities_and_safe_denials(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", NO_ACTION_SCENARIOS)
 async def test_r10_r11_fastmcp_exposes_only_ordered_read_capabilities(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """No operation capability applies, and the reads stay ordered and role-bound."""
     repository.reset_checkpoint(scenario)
@@ -368,7 +368,7 @@ async def test_r10_r11_fastmcp_exposes_only_ordered_read_capabilities(
     ),
 )
 def test_r09_r12_fresh_host_pending_role_nonce_and_safe_text(
-    repository: D1Repository, scenario: str, proposed: str, decision: str
+    repository: LabRepository, scenario: str, proposed: str, decision: str
 ) -> None:
     """A fresh host renders the real action, enforces role and nonce, and leaks nothing."""
     repository.reset_checkpoint(scenario)
@@ -406,7 +406,7 @@ def test_r09_r12_fresh_host_pending_role_nonce_and_safe_text(
 
 @pytest.mark.parametrize("scenario", NO_ACTION_SCENARIOS)
 def test_r10_r11_fresh_host_terminal_page_states_the_local_referral(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """The deferral page must say what was observed and that nothing was changed."""
     repository.reset_checkpoint(scenario)

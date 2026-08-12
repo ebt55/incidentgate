@@ -20,7 +20,7 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.control.models import Caller, ControlAuditEvent
 from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.scenario_registry import NO_ACTION_CATALOG, NO_ACTION_SCENARIOS
 
@@ -100,7 +100,7 @@ class LabEvidenceCollector:
 
 class DeferredEvidenceCollector(LabEvidenceCollector):
     """Collection-only D4/D7 evidence; D7 retry state is durable and bounded."""
-    def __init__(self, service: ObservabilityService, caller: Caller, context: ToolCallContext, *, repository: D1Repository, clock: Callable[[], datetime], scenario_id: str, after_attempt: Callable[[int], None] | None = None) -> None:
+    def __init__(self, service: ObservabilityService, caller: Caller, context: ToolCallContext, *, repository: LabRepository, clock: Callable[[], datetime], scenario_id: str, after_attempt: Callable[[int], None] | None = None) -> None:
         super().__init__(service, caller, context, scenario_id=scenario_id, clock=clock)
         self._repository, self._now = repository, clock
         self._after_attempt = after_attempt
@@ -190,7 +190,7 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
 
 
 class LabTokenValidator:
-    def __init__(self, repository: D1Repository) -> None:
+    def __init__(self, repository: LabRepository) -> None:
         self._repository = repository
 
     def validate(
@@ -257,7 +257,7 @@ class LabRecoveryVerifier:
         caller: Caller,
         context: ToolCallContext,
         clock: Callable[[], datetime],
-        repository: D1Repository | None = None,
+        repository: LabRepository | None = None,
     ) -> None:
         self._service, self._caller, self._context, self._clock, self._repository = service, caller, context, clock, repository
 
@@ -355,7 +355,7 @@ class LabRecoveryVerifier:
 
 
 class LabAuditEmitter:
-    def __init__(self, repository: D1Repository, actor: str) -> None:
+    def __init__(self, repository: LabRepository, actor: str) -> None:
         self._repository, self._actor = repository, actor
 
     def emit(self, event: ControlAuditEvent) -> None:

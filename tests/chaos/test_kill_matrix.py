@@ -30,9 +30,9 @@ import pytest
 
 from triage_agent_lab.chaos import enddiff, matrix
 from triage_agent_lab.chaos.killpoints import BoundaryEvent, boundary_id
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
-D1_BOUNDARIES = (
+SELECTED_BOUNDARIES = (
     "start/collect:entry",
     "start/collect:exit",
     "start/approval:interrupt",
@@ -114,7 +114,7 @@ def subset() -> dict[str, Any]:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("chaos kill matrix requires DATABASE_URL")
-    return matrix.run_matrix(dsn, SUBSET_SCENARIOS, boundaries=D1_BOUNDARIES)
+    return matrix.run_matrix(dsn, SUBSET_SCENARIOS, boundaries=SELECTED_BOUNDARIES)
 
 
 def _cells(report: dict[str, Any], scenario: str) -> dict[str, dict[str, Any]]:
@@ -149,7 +149,7 @@ def test_every_kill_is_a_real_process_exit(subset: dict[str, Any]) -> None:
 
 @pytest.mark.integration
 def test_d1_covers_every_requested_window(subset: dict[str, Any]) -> None:
-    assert set(_cells(subset, "D1")) == set(D1_BOUNDARIES)
+    assert set(_cells(subset, "D1")) == set(SELECTED_BOUNDARIES)
 
 
 @pytest.mark.integration
@@ -179,7 +179,7 @@ def test_no_action_scenario_marks_the_approval_windows_not_applicable(
     cells = _cells(subset, "S1")
     executed = {name for name, cell in cells.items() if cell["status"] != matrix.STATUS_NA}
     assert executed == set(NO_ACTION_BOUNDARIES)
-    for name in set(D1_BOUNDARIES) - set(NO_ACTION_BOUNDARIES):
+    for name in set(SELECTED_BOUNDARIES) - set(NO_ACTION_BOUNDARIES):
         assert cells[name]["status"] == matrix.STATUS_NA
         assert cells[name]["reason"]
 
@@ -202,7 +202,7 @@ def test_the_differ_catches_a_real_duplicate_mutation_in_postgres() -> None:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("chaos kill matrix requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     matrix.reset_scenario(repository, "D1")
     baseline = enddiff.capture(dsn, "D1", final_state="resolved", reasons=("recovery_verified",))

@@ -16,16 +16,16 @@ from triage_agent_lab.host.app import HostSettings, create_host_app
 from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.telemetry import create_tracer_runtime
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("D5/D8 integration requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     return repository
 
@@ -39,7 +39,7 @@ def inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
         actor="operator-1", permission="operations:write")
 
 
-def test_d5_approved_cleanup_is_exactly_bounded_and_reject_is_side_effect_free(repository: D1Repository) -> None:
+def test_d5_approved_cleanup_is_exactly_bounded_and_reject_is_side_effect_free(repository: LabRepository) -> None:
     repository.reset_checkpoint("D5"); repository.inject_checkpoint("D5")
     incident, caller, context = inputs("D5")
     with IncidentRuntime(repository.dsn) as runtime:
@@ -65,7 +65,7 @@ def test_d5_approved_cleanup_is_exactly_bounded_and_reject_is_side_effect_free(r
     repository.reset_checkpoint("D5")
 
 
-def test_d8_fresh_runtime_retry_replays_one_committed_restart(repository: D1Repository) -> None:
+def test_d8_fresh_runtime_retry_replays_one_committed_restart(repository: LabRepository) -> None:
     repository.reset_checkpoint("D8"); repository.inject_checkpoint("D8")
     incident, caller, context = inputs("D8")
     with IncidentRuntime(repository.dsn, response_loss_once=True) as first:
@@ -91,7 +91,7 @@ def test_d8_fresh_runtime_retry_replays_one_committed_restart(repository: D1Repo
 
 
 @pytest.mark.parametrize("scenario", ("D5", "D8"))
-def test_d5_d8_runtime_emits_one_safe_workflow_phase_trace(repository: D1Repository, scenario: str) -> None:
+def test_d5_d8_runtime_emits_one_safe_workflow_phase_trace(repository: LabRepository, scenario: str) -> None:
     repository.reset_checkpoint(scenario); repository.inject_checkpoint(scenario)
     incident, caller, context = inputs(scenario)
     exporter = InMemorySpanExporter()
@@ -116,7 +116,7 @@ def _nonce(page: str, position: int = 0) -> str:
     (("D5", "bounded simulated-log cleanup (cap 64 MiB)", "approve", 1), ("D5", "bounded simulated-log cleanup (cap 64 MiB)", "reject", 0), ("D8", "operations.restart api", "approve", 1)),
 )
 def test_fresh_host_ui_resumes_d5_d8_pending_without_sensitive_action_material(
-    repository: D1Repository, scenario: str, proposed: str, decision: str, expected_operations: int
+    repository: LabRepository, scenario: str, proposed: str, decision: str, expected_operations: int
 ) -> None:
     """A newly built host resumes each mutable checkpoint without secret material."""
     repository.reset_checkpoint(scenario)

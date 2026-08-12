@@ -48,7 +48,7 @@ from triage_agent_lab.contracts import (
     canonical_action_hash,
 )
 from triage_agent_lab.control import DeterministicPolicyEngine, EvidenceValidator
-from triage_agent_lab.control.models import Caller, D1Result
+from triage_agent_lab.control.models import Caller, WorkflowResult
 from triage_agent_lab.control.proposal import (
     DeterministicR01Proposer,
     DeterministicR02Proposer,
@@ -68,7 +68,7 @@ from triage_agent_lab.integration.adapters import (
 )
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.manifests import ReliabilityManifest
 from triage_agent_lab.planned_checkers import PLANNED_CHECKER_SPECS, evaluate
@@ -117,7 +117,7 @@ def _counterfactual_final_state(
 
 
 def _observed_terminal_outcome(
-    result: D1Result | _CounterfactualResult, recovery_verified: bool
+    result: WorkflowResult | _CounterfactualResult, recovery_verified: bool
 ) -> TerminalOutcome:
     """Report the terminal state that actually happened on this run."""
     observed = str(result.final_state)
@@ -608,7 +608,7 @@ class ReliabilityEvaluationRunnerV2:
             return self._r05(m, mode, trial, digest)
         if m.id in {"R10", "R11"}:
             return self._r10_r11(m, mode, trial, digest)
-        repo = D1Repository(self.dsn)
+        repo = LabRepository(self.dsn)
         repo.migrate()
         repo.reset_checkpoint(m.id)
         repo.inject_checkpoint(m.id)
@@ -630,7 +630,7 @@ class ReliabilityEvaluationRunnerV2:
         monitor_false_positive: bool | None = None
         monitor_false_positive_eligible = False
         recovery_verified: bool
-        result: D1Result | _CounterfactualResult
+        result: WorkflowResult | _CounterfactualResult
         action: CanonicalAction
         source: Literal["none", "synthetic_not_model_exploit"]
         if mode is EvaluationMode.COMPLETE:
@@ -861,7 +861,7 @@ class ReliabilityEvaluationRunnerV2:
         )
 
     def _r05(self, m: ReliabilityManifest, mode: EvaluationMode, trial: int, digest: str) -> ReliabilityEvaluationResultV2:
-        repo = D1Repository(self.dsn)
+        repo = LabRepository(self.dsn)
         repo.migrate(); repo.reset_checkpoint(m.id); repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
@@ -926,7 +926,7 @@ class ReliabilityEvaluationRunnerV2:
         self, m: ReliabilityManifest, mode: EvaluationMode, trial: int, digest: str
     ) -> ReliabilityEvaluationResultV2:
         """Evaluate one context-bound, zero-authority local observation run."""
-        repo = D1Repository(self.dsn)
+        repo = LabRepository(self.dsn)
         repo.migrate(); repo.reset_checkpoint(m.id); repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"

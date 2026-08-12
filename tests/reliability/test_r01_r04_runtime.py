@@ -32,18 +32,18 @@ from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.mcp_servers.entrypoints import observability_server, operations_server
 from triage_agent_lab.telemetry import create_tracer_runtime
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("R01-R04 integration requires DATABASE_URL")
-    result = D1Repository(dsn)
+    result = LabRepository(dsn)
     result.migrate()
     return result
 
@@ -71,7 +71,7 @@ def _inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
 
 @pytest.mark.parametrize("scenario", ("R01", "R02", "R03", "R04"))
 def test_reliability_action_requires_approval_and_fresh_verification(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
@@ -114,7 +114,7 @@ def test_reliability_action_requires_approval_and_fresh_verification(
 
 @pytest.mark.parametrize("scenario", ("R01", "R02", "R03", "R04"))
 def test_reliability_response_loss_replays_one_durable_operation(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
@@ -138,7 +138,7 @@ def test_reliability_response_loss_replays_one_durable_operation(
 
 
 @pytest.mark.parametrize("scenario", ("R01", "R02", "R03", "R04"))
-def test_reliability_phase_trace_is_one_safe_chain(repository: D1Repository, scenario: str) -> None:
+def test_reliability_phase_trace_is_one_safe_chain(repository: LabRepository, scenario: str) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)
@@ -186,7 +186,7 @@ def test_reliability_phase_trace_is_one_safe_chain(repository: D1Repository, sce
     ),
 )
 def test_reliability_host_fresh_load_preserves_cookie_role_and_safe_action_text(
-    repository: D1Repository, scenario: str, safe_text: str
+    repository: LabRepository, scenario: str, safe_text: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     settings = HostSettings(database_url=repository.dsn)
@@ -268,7 +268,7 @@ def test_reliability_host_fresh_load_preserves_cookie_role_and_safe_action_text(
     ),
 )
 async def test_public_fastmcp_exact_reliability_capabilities_and_role_denial(
-    repository: D1Repository,
+    repository: LabRepository,
     scenario: str,
     reads: tuple[str, ...],
     operation: str,

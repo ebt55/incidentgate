@@ -29,7 +29,7 @@ from triage_agent_lab.scenario_registry import NO_ACTION_CATALOG, validate_no_ac
 from triage_agent_lab.telemetry import TelemetryRuntime
 
 from .evidence import EvidenceValidator
-from .models import Caller, D1Result, EvidenceValidation, HumanDecision, audit_event
+from .models import Caller, EvidenceValidation, HumanDecision, WorkflowResult, audit_event
 from .monitor import AdvisoryMonitor
 from .policy import DeterministicPolicyEngine
 from .ports import (
@@ -43,7 +43,7 @@ from .ports import (
 from .proposal import ProposalError
 
 
-class D1State(TypedDict, total=False):
+class WorkflowState(TypedDict, total=False):
     incident: IncidentIdentity
     action: CanonicalAction
     context: ToolCallContext
@@ -57,11 +57,11 @@ class D1State(TypedDict, total=False):
     human: HumanDecision
     operation: Any
     verification: Any
-    result: D1Result
+    result: WorkflowResult
     trace_carrier: dict[str, str]
 
 
-class D1Dependencies:
+class WorkflowDependencies:
     def __init__(
         self,
         *,
@@ -94,13 +94,13 @@ def build_deferred_graph(
     collector: EvidenceCollector, audit: AuditEmitter, clock: Callable[[], datetime], *, checkpointer: Any = None, telemetry: TelemetryRuntime | None = None
 ) -> Any:
     """A collection-only graph for fixed no-action scenarios D4/D7."""
-    def collect(state: D1State) -> D1State:
+    def collect(state: WorkflowState) -> WorkflowState:
         incident, context = state["incident"], state["context"]
         caller = state["caller"]
         if (context.incident_id != incident.incident_id or context.thread_id != incident.thread_id
                 or context.correlation_id != incident.correlation_id or context.actor != caller.actor
                 or context.permission != "observability:read" or context.idempotency_key is not None):
-            return {"result": D1Result(final_state="blocked", reasons=("collection_context_mismatch",))}
+            return {"result": WorkflowResult(final_state="blocked", reasons=("collection_context_mismatch",))}
         span = f"{incident.scenario_id.lower()}.collection"
         with (telemetry.start_as_current_span(span, attributes={"incident_id": incident.incident_id, "thread_id": incident.thread_id, "correlation_id": incident.correlation_id, "actor": context.actor, "permission": context.permission}) if telemetry else nullcontext()):
             records = collector.collect(incident)
@@ -110,8 +110,8 @@ def build_deferred_graph(
             if final_state != "blocked" and reason == "time_budget_exhausted":
                 terminal = IncidentState(final_state)
                 audit.emit(audit_event("collection_deferred", incident_id=incident.incident_id, thread_id=incident.thread_id, now=clock(), reason=reason))
-                return {"records": records, "result": D1Result(final_state=final_state, reasons=(reason,), evidence_ids=tuple(record.evidence_id for record in records), report=IncidentReport(incident=incident.model_copy(update={"state": terminal}), diagnosis="stale health evidence", hypotheses=(), evidence_ids=tuple(record.evidence_id for record in records), final_state=terminal))}
-            return {"records": records, "result": D1Result(final_state="blocked", reasons=("no_action_evidence_validation_failed",), evidence_ids=tuple(record.evidence_id for record in records))}
+                return {"records": records, "result": WorkflowResult(final_state=final_state, reasons=(reason,), evidence_ids=tuple(record.evidence_id for record in records), report=IncidentReport(incident=incident.model_copy(update={"state": terminal}), diagnosis="stale health evidence", hypotheses=(), evidence_ids=tuple(record.evidence_id for record in records), final_state=terminal))}
+            return {"records": records, "result": WorkflowResult(final_state="blocked", reasons=("no_action_evidence_validation_failed",), evidence_ids=tuple(record.evidence_id for record in records))}
         metadata = NO_ACTION_CATALOG[incident.scenario_id]
         diagnosis = str(getattr(collector, "diagnosis", metadata["diagnosis"]))
         reason = str(getattr(collector, "deferred_reason", metadata["reason"]))
@@ -122,8 +122,8 @@ def build_deferred_graph(
         assert isinstance(confidence, float)
         hypothesis = Hypothesis(hypothesis_id=f"{incident.scenario_id.lower()}-deferred", statement=diagnosis, confidence=confidence, evidence_ids=tuple(record.evidence_id for record in records))
         report = IncidentReport(incident=incident.model_copy(update={"state": terminal}), diagnosis=diagnosis, hypotheses=(hypothesis,), evidence_ids=hypothesis.evidence_ids, final_state=terminal)
-        return {"records": records, "result": D1Result(final_state=final_state, reasons=(reason,), evidence_ids=hypothesis.evidence_ids, hypothesis=hypothesis, report=report)}
-    graph = StateGraph(D1State)
+        return {"records": records, "result": WorkflowResult(final_state=final_state, reasons=(reason,), evidence_ids=hypothesis.evidence_ids, hypothesis=hypothesis, report=report)}
+    graph = StateGraph(WorkflowState)
     graph.add_node("collect", collect)
     graph.add_edge(START, "collect")
     graph.add_edge("collect", END)
@@ -146,10 +146,13 @@ def _idempotency_key(action_hash: str, thread_id: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"{_IDEMPOTENCY_KEY_PREFIX}{thread_id}:{action_hash}")
 
 
-def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) -> Any:
-    """Compile D1. Invoke/resume with one caller-owned configurable ``thread_id``."""
+def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: Any = None) -> Any:
+    """Compile the approval-gated workflow graph shared by every action-taking scenario.
 
-    def _attributes(state: D1State) -> dict[str, object]:
+    Invoke/resume with one caller-owned configurable ``thread_id``.
+    """
+
+    def _attributes(state: WorkflowState) -> dict[str, object]:
         incident, context, caller = state.get("incident"), state.get("context"), state.get("caller")
         action = state.get("action")
         attributes: dict[str, object] = {}
@@ -169,12 +172,12 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             attributes["idempotency_key"] = str(state["idempotency_key"])
         return attributes
 
-    def _span(name: str, state: D1State) -> Any:
+    def _span(name: str, state: WorkflowState) -> Any:
         if dependencies.telemetry is None:
             return nullcontext()
         return dependencies.telemetry.start_as_current_span(name, attributes=_attributes(state))
 
-    def _scenario_span(phase: str, state: D1State) -> str:
+    def _scenario_span(phase: str, state: WorkflowState) -> str:
         """Map only the three supported fixed identities to telemetry names."""
         incident = state.get("incident")
         scenario_id = getattr(incident, "scenario_id", None)
@@ -182,33 +185,33 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             raise ValueError("unsupported checkpoint scenario")
         return f"{scenario_id.lower()}.{phase}"
 
-    def ingest(state: D1State) -> D1State:
+    def ingest(state: WorkflowState) -> WorkflowState:
         incident, context, caller = state["incident"], state["context"], state["caller"]
         if incident.thread_id != context.thread_id:
-            return {"result": D1Result(final_state="blocked", reasons=("thread_context_mismatch",))}
+            return {"result": WorkflowResult(final_state="blocked", reasons=("thread_context_mismatch",))}
         if incident.incident_id != context.incident_id:
             return {
-                "result": D1Result(final_state="blocked", reasons=("incident_context_mismatch",))
+                "result": WorkflowResult(final_state="blocked", reasons=("incident_context_mismatch",))
             }
         if caller.actor != context.actor:
-            return {"result": D1Result(final_state="blocked", reasons=("caller_actor_mismatch",))}
+            return {"result": WorkflowResult(final_state="blocked", reasons=("caller_actor_mismatch",))}
         return {}
 
-    def collect(state: D1State) -> D1State:
+    def collect(state: WorkflowState) -> WorkflowState:
         with _span("mcp.observability", state):
             return {"records": dependencies.collector.collect(state["incident"])}
 
-    def propose(state: D1State) -> D1State:
+    def propose(state: WorkflowState) -> WorkflowState:
         try:
             hypothesis, action = dependencies.proposer.propose(
                 state["incident"], state["caller"], state["context"], state["records"]
             )
         except ProposalError as error:
             _audit(state, "proposal", error.reason)
-            return {"result": D1Result(final_state="blocked", reasons=(error.reason,))}
+            return {"result": WorkflowResult(final_state="blocked", reasons=(error.reason,))}
         return {"hypothesis": hypothesis, "action": action}
 
-    def validate(state: D1State) -> D1State:
+    def validate(state: WorkflowState) -> WorkflowState:
         evidence = dependencies.evidence_validator.validate(
             state["action"], state["records"], state["context"]
         )
@@ -220,14 +223,14 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             "idempotency_key": _idempotency_key(policy.action_hash, state["incident"].thread_id),
         }
 
-    def monitor(state: D1State) -> D1State:
+    def monitor(state: WorkflowState) -> WorkflowState:
         evidence, policy = state["evidence"], state["policy"]
         if policy.decision is PolicyDecision.DENY:
             return {}
         with _span(_scenario_span("monitor", state), state):
             return {"monitor": dependencies.monitor.assess(state["action"], evidence.digest)}
 
-    def after_monitor(state: D1State) -> str:
+    def after_monitor(state: WorkflowState) -> str:
         if "result" in state:
             return "finish"
         if state["policy"].decision is PolicyDecision.DENY:
@@ -241,7 +244,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             else "approve"
         )
 
-    def _audit(state: D1State, transition: str, reason: str | None = None) -> None:
+    def _audit(state: WorkflowState, transition: str, reason: str | None = None) -> None:
         policy = state.get("policy")
         action_hash = policy.action_hash if policy is not None else None
         dependencies.audit.emit(
@@ -255,7 +258,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             )
         )
 
-    def _report(state: D1State, final_state: IncidentState) -> IncidentReport:
+    def _report(state: WorkflowState, final_state: IncidentState) -> IncidentReport:
         action, incident = state["action"], state["incident"]
         return IncidentReport(
             incident=incident.model_copy(update={"state": final_state}),
@@ -269,11 +272,11 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             final_state=final_state,
         )
 
-    def deny(state: D1State) -> D1State:
+    def deny(state: WorkflowState) -> WorkflowState:
         policy = state["policy"]
         _audit(state, "policy", ";".join(policy.reasons))
         return {
-            "result": D1Result(
+            "result": WorkflowResult(
                 final_state="blocked",
                 reasons=policy.reasons,
                 action_hash=policy.action_hash,
@@ -285,12 +288,12 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             )
         }
 
-    def blocked(state: D1State) -> D1State:
+    def blocked(state: WorkflowState) -> WorkflowState:
         monitor_result, policy = state["monitor"], state["policy"]
         _audit(state, "policy", "policy_valid")
         _audit(state, "monitor", "monitor_block")
         return {
-            "result": D1Result(
+            "result": WorkflowResult(
                 final_state="blocked",
                 reasons=("monitor_block",),
                 action_hash=policy.action_hash,
@@ -303,12 +306,12 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             )
         }
 
-    def monitor_mismatch(state: D1State) -> D1State:
+    def monitor_mismatch(state: WorkflowState) -> WorkflowState:
         policy = state["policy"]
         _audit(state, "policy", "policy_valid")
         _audit(state, "monitor", "action_hash_mismatch")
         return {
-            "result": D1Result(
+            "result": WorkflowResult(
                 final_state="blocked",
                 reasons=("monitor_action_hash_mismatch",),
                 action_hash=policy.action_hash,
@@ -321,7 +324,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             )
         }
 
-    def preapproval_audit(state: D1State) -> D1State:
+    def preapproval_audit(state: WorkflowState) -> WorkflowState:
         """Persist the decision chain before yielding control to a human.
 
         This node is deliberately separate from ``approval``: an interrupt does
@@ -335,7 +338,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "monitor", str(monitor_result.verdict))
         return {}
 
-    def approval(state: D1State) -> D1State:
+    def approval(state: WorkflowState) -> WorkflowState:
         with _span(_scenario_span("approval", state), state):
             payload = interrupt(
                 {
@@ -352,7 +355,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "approval", "rejected")
             return {
                 "human": human,
-                "result": D1Result(
+                "result": WorkflowResult(
                     final_state="blocked",
                     reasons=("human_rejected",),
                     action_hash=policy.action_hash,
@@ -373,7 +376,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "approval", "defer_reason_required")
             return {
                 "human": human,
-                "result": D1Result(
+                "result": WorkflowResult(
                     final_state="blocked",
                     reasons=("defer_reason_required",),
                     action_hash=policy.action_hash,
@@ -390,7 +393,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "approval", "token_required")
             return {
                 "human": human,
-                "result": D1Result(
+                "result": WorkflowResult(
                     final_state="blocked",
                     reasons=("approval_token_required",),
                     action_hash=policy.action_hash,
@@ -407,7 +410,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "approval", "approver_mismatch")
             return {
                 "human": human,
-                "result": D1Result(
+                "result": WorkflowResult(
                     final_state="blocked",
                     reasons=("approval_invalid:approver_mismatch",),
                     action_hash=policy.action_hash,
@@ -430,7 +433,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             _audit(state, "approval", f"invalid:{reason}")
             return {
                 "human": human,
-                "result": D1Result(
+                "result": WorkflowResult(
                     final_state="blocked",
                     reasons=(f"approval_invalid:{reason}",),
                     action_hash=policy.action_hash,
@@ -446,10 +449,10 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
         _audit(state, "approval", "approved")
         return {"human": human}
 
-    def after_approval(state: D1State) -> str:
+    def after_approval(state: WorkflowState) -> str:
         return "finish" if "result" in state else "execute"
 
-    def execute(state: D1State) -> D1State:
+    def execute(state: WorkflowState) -> WorkflowState:
         action, policy, human = state["action"], state["policy"], state["human"]
         context = state["context"].model_copy(update={"idempotency_key": state["idempotency_key"]})
         token = human.token
@@ -474,7 +477,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
         )
         return {"operation": operation}
 
-    def verify(state: D1State) -> D1State:
+    def verify(state: WorkflowState) -> WorkflowState:
         action, policy = state["action"], state["policy"]
         with _span(_scenario_span("verification", state), state):
             verification = dependencies.verifier.verify(state["incident"], state["operation"])
@@ -492,7 +495,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
         incident_state = IncidentState.RESOLVED if verification.passed else IncidentState.BLOCKED
         return {
             "verification": verification,
-            "result": D1Result(
+            "result": WorkflowResult(
                 final_state=final_state,
                 reasons=("recovery_verified" if verification.passed else "recovery_failed",),
                 action_hash=policy.action_hash,
@@ -508,7 +511,7 @@ def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) ->
             ),
         }
 
-    graph = StateGraph(D1State)
+    graph = StateGraph(WorkflowState)
     graph.add_node("ingest", ingest)
     graph.add_node("collect", collect)
     graph.add_node("propose", propose)

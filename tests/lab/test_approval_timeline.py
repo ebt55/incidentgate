@@ -16,23 +16,23 @@ from triage_agent_lab.contracts import (
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ApprovalConflict, ApprovalDenied
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Postgres D1 integration requires DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     repo.reset_d1()
     repo.inject_d1()
     return repo
 
 
-def approval_request(repository: D1Repository, now: datetime) -> tuple[ToolCallContext, CanonicalAction, ApprovalRequest]:
+def approval_request(repository: LabRepository, now: datetime) -> tuple[ToolCallContext, CanonicalAction, ApprovalRequest]:
     context = ToolCallContext(
         incident_id="INC-D1",
         thread_id="approval-thread",
@@ -67,11 +67,11 @@ def approval_request(repository: D1Repository, now: datetime) -> tuple[ToolCallC
     return context, action, request
 
 
-def issuer(repository: D1Repository, now: datetime) -> ApprovalService:
+def issuer(repository: LabRepository, now: datetime) -> ApprovalService:
     return ApprovalService(repository, lambda: now, incident_id="INC-D1", thread_id="approval-thread")
 
 
-def test_approver_issues_and_validates_persisted_token(repository: D1Repository) -> None:
+def test_approver_issues_and_validates_persisted_token(repository: LabRepository) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
     token = issuer(repository, now).approve(request, Principal("approver-1", Role.APPROVER))
@@ -81,14 +81,14 @@ def test_approver_issues_and_validates_persisted_token(repository: D1Repository)
 
 
 @pytest.mark.parametrize("role", [Role.OBSERVER, Role.OPERATOR])
-def test_non_approvers_are_explicitly_denied(repository: D1Repository, role: Role) -> None:
+def test_non_approvers_are_explicitly_denied(repository: LabRepository, role: Role) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
     with pytest.raises(ApprovalDenied, match="approver role"):
         issuer(repository, now).approve(request, Principal("not-an-approver", role))
 
 
-def test_inactive_or_expired_requests_are_denied(repository: D1Repository) -> None:
+def test_inactive_or_expired_requests_are_denied(repository: LabRepository) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
     future = request.model_copy(update={"requested_at": now + timedelta(seconds=1), "expires_at": now + timedelta(minutes=1)})
@@ -99,7 +99,7 @@ def test_inactive_or_expired_requests_are_denied(repository: D1Repository) -> No
         issuer(repository, now).approve(expired, Principal("approver-1", Role.APPROVER))
 
 
-def test_validation_rejects_every_substituted_binding_and_duplicate(repository: D1Repository) -> None:
+def test_validation_rejects_every_substituted_binding_and_duplicate(repository: LabRepository) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
     service = issuer(repository, now)
@@ -125,7 +125,7 @@ def test_validation_rejects_every_substituted_binding_and_duplicate(repository: 
     assert repository.validate(token, action_hash=request.action_hash, actor=request.actor, now=token.expires_at) == (False, "expired")
 
 
-def test_real_rollback_consumes_token_and_timeline_is_ordered_bounded(repository: D1Repository) -> None:
+def test_real_rollback_consumes_token_and_timeline_is_ordered_bounded(repository: LabRepository) -> None:
     now = datetime.now(UTC)
     context, action, request = approval_request(repository, now)
     token = issuer(repository, now).approve(request, Principal("approver-1", Role.APPROVER))

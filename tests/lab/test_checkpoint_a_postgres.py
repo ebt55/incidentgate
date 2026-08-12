@@ -17,16 +17,16 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ApprovalDenied, ResponseLost
-from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, D1Repository
+from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Checkpoint A Postgres integration requires DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     try:
         repo.migrate()
     except psycopg.Error as error:  # pragma: no cover - local Docker may be absent
@@ -48,7 +48,7 @@ def context(
                            permission="operations:write", idempotency_key=uuid4())
 
 
-def token(repo: D1Repository, incident: str, action: CanonicalAction) -> ApprovalToken:
+def token(repo: LabRepository, incident: str, action: CanonicalAction) -> ApprovalToken:
     now = datetime.now(UTC)
     approved = ApprovalToken(action_hash=canonical_action_hash(action), actor=action.actor, approver="approver-1",
                              one_time_use_id=uuid4(), requested_at=now, expires_at=now + timedelta(minutes=5), approved_at=now)
@@ -57,7 +57,7 @@ def token(repo: D1Repository, incident: str, action: CanonicalAction) -> Approva
 
 
 def citations(
-    repo: D1Repository,
+    repo: LabRepository,
     incident: str,
     thread: str,
     kinds: tuple[str, ...],
@@ -73,7 +73,7 @@ def citations(
     return tuple(service.get(read, principal, kind).evidence_id for kind in kinds)
 
 
-def action_for(repo: D1Repository, scenario: str, call: ToolCallContext, evidence_ids: tuple[str, ...]) -> CanonicalAction:
+def action_for(repo: LabRepository, scenario: str, call: ToolCallContext, evidence_ids: tuple[str, ...]) -> CanonicalAction:
     if scenario == "D2":
         return CanonicalAction(tool_name="operations.restore_config", incident_id=call.incident_id,
                                thread_id=call.thread_id, actor=call.actor, permission=call.permission,
@@ -86,7 +86,7 @@ def action_for(repo: D1Repository, scenario: str, call: ToolCallContext, evidenc
                            evidence_ids=evidence_ids, arguments={"kind": "restart", "component": "api"})
 
 
-def assert_denied_unchanged(repo: D1Repository, call: ToolCallContext, approved: ApprovalToken, scenario: str) -> None:
+def assert_denied_unchanged(repo: LabRepository, call: ToolCallContext, approved: ApprovalToken, scenario: str) -> None:
     with repo._connect() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT count(*) AS count FROM operation_ledger WHERE thread_id = %s", (call.thread_id,))
         assert cursor.fetchone()["count"] == 0
@@ -96,7 +96,7 @@ def assert_denied_unchanged(repo: D1Repository, call: ToolCallContext, approved:
     assert state["mutation_count"] == 0
 
 
-def test_d2_restores_only_bounded_reference_and_is_idempotent(repository: D1Repository) -> None:
+def test_d2_restores_only_bounded_reference_and_is_idempotent(repository: LabRepository) -> None:
     assert repository.checkpoint_state("D2")["health_status"] == 200
     repository.inject_checkpoint("D2")
     current = repository.checkpoint_state("D2")
@@ -119,7 +119,7 @@ def test_d2_restores_only_bounded_reference_and_is_idempotent(repository: D1Repo
     assert repository.checkpoint_state("D2")["mutation_count"] == 1
 
 
-def test_d3_response_loss_retries_once_and_reset_is_isolated(repository: D1Repository) -> None:
+def test_d3_response_loss_retries_once_and_reset_is_isolated(repository: LabRepository) -> None:
     repository.inject_checkpoint("D3")
     call = context("INC-D3")
     action = CanonicalAction(tool_name="operations.restart", incident_id="INC-D3", thread_id=call.thread_id,
@@ -141,7 +141,7 @@ def test_d3_response_loss_retries_once_and_reset_is_isolated(repository: D1Repos
     assert repository.checkpoint_state("D2")["health_status"] == 500
 
 
-def test_checkpoint_substitution_cross_thread_and_precondition_fail_safely(repository: D1Repository) -> None:
+def test_checkpoint_substitution_cross_thread_and_precondition_fail_safely(repository: LabRepository) -> None:
     repository.inject_checkpoint("D2")
     call = context("INC-D2")
     action = CanonicalAction(tool_name="operations.restore_config", incident_id="INC-D2", thread_id=call.thread_id,
@@ -164,7 +164,7 @@ def test_checkpoint_substitution_cross_thread_and_precondition_fail_safely(repos
 @pytest.mark.parametrize("scenario,kinds", [("D2", ("health", "config_diff", "logs")), ("D3", ("health", "db_pool_metrics", "logs"))])
 @pytest.mark.parametrize("attack", ["foreign_actor", "foreign_correlation", "cross_thread", "wrong_incident", "expired"])
 def test_checkpoint_evidence_binding_denies_adversarial_citations(
-    repository: D1Repository, scenario: str, kinds: tuple[str, ...], attack: str
+    repository: LabRepository, scenario: str, kinds: tuple[str, ...], attack: str
 ) -> None:
     incident = f"INC-{scenario}"
     repository.inject_checkpoint(scenario)
@@ -213,7 +213,7 @@ def test_checkpoint_evidence_binding_denies_adversarial_citations(
 
 @pytest.mark.parametrize("scenario,kinds", [("D2", ("health", "config_diff", "logs")), ("D3", ("health", "db_pool_metrics", "logs"))])
 def test_checkpoint_action_substitution_and_healthy_precondition_do_not_consume_approval(
-    repository: D1Repository, scenario: str, kinds: tuple[str, ...]
+    repository: LabRepository, scenario: str, kinds: tuple[str, ...]
 ) -> None:
     incident = f"INC-{scenario}"
     repository.inject_checkpoint(scenario)
@@ -241,7 +241,7 @@ def test_checkpoint_action_substitution_and_healthy_precondition_do_not_consume_
     assert repository.checkpoint_state(scenario)["mutation_count"] == 0
 
 
-def test_d1_repository_rejects_actor_and_correlation_foreign_evidence(repository: D1Repository) -> None:
+def test_d1_repository_rejects_actor_and_correlation_foreign_evidence(repository: LabRepository) -> None:
     repository.reset_d1()
     repository.inject_d1()
     call = context("INC-D1", thread="d1-boundary", correlation_id="corr-action")

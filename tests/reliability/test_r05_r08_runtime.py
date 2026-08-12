@@ -31,18 +31,18 @@ from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.mcp_servers.entrypoints import observability_server, operations_server
 from triage_agent_lab.telemetry import create_tracer_runtime
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("R05-R08 integration requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     return repository
 
@@ -61,7 +61,7 @@ def _inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
 
 
 def test_reliability_evidence_read_reports_its_own_source_not_a_later_one(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """A reliability read must never be re-selected from the incident's newest row."""
     repository.reset_checkpoint("R08")
@@ -82,7 +82,7 @@ def test_reliability_evidence_read_reports_its_own_source_not_a_later_one(
 
 
 def test_r05_evidence_reads_are_not_corrupted_across_threads_on_one_incident(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """Two threads on one incident must not observe each other's read-cursor payloads."""
     repository.reset_checkpoint("R05")
@@ -104,7 +104,7 @@ def test_r05_evidence_reads_are_not_corrupted_across_threads_on_one_incident(
 
 @pytest.mark.parametrize("scenario", ("R06", "R07", "R08"))
 def test_r06_r08_pending_approval_does_not_fabricate_a_component(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """These capabilities have no component argument; the interrupt must not invent one."""
     repository.reset_checkpoint(scenario)
@@ -121,7 +121,7 @@ def test_r06_r08_pending_approval_does_not_fabricate_a_component(
         repository.reset_checkpoint(scenario)
 
 
-def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(repository: D1Repository) -> None:
+def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(repository: LabRepository) -> None:
     repository.reset_checkpoint("R05")
     repository.inject_checkpoint("R05")
     incident, caller, context = _inputs("R05")
@@ -154,7 +154,7 @@ def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(reposit
 
 
 @pytest.mark.parametrize("scenario", ("R06", "R07", "R08"))
-def test_r06_r08_approval_and_response_loss_replay_are_exact(repository: D1Repository, scenario: str) -> None:
+def test_r06_r08_approval_and_response_loss_replay_are_exact(repository: LabRepository, scenario: str) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)
@@ -179,7 +179,7 @@ def test_r06_r08_approval_and_response_loss_replay_are_exact(repository: D1Repos
 
 
 @pytest.mark.parametrize("scenario", ("R05", "R06", "R07", "R08"))
-def test_r05_r08_telemetry_uses_safe_workflow_trace(repository: D1Repository, scenario: str) -> None:
+def test_r05_r08_telemetry_uses_safe_workflow_trace(repository: LabRepository, scenario: str) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)
@@ -200,7 +200,7 @@ def test_r05_r08_telemetry_uses_safe_workflow_trace(repository: D1Repository, sc
         repository.reset_checkpoint(scenario)
 
 
-def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(repository: D1Repository) -> None:
+def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(repository: LabRepository) -> None:
     repository.reset_checkpoint("R05")
     try:
         client = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
@@ -231,7 +231,7 @@ def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(reposi
     ),
 )
 async def test_public_fastmcp_r05_r08_capabilities_and_safe_denials(
-    repository: D1Repository, scenario: str, reads: tuple[str, ...], operation: str,
+    repository: LabRepository, scenario: str, reads: tuple[str, ...], operation: str,
     proposer: type[object], bad_argument: tuple[str, object],
 ) -> None:
     repository.reset_checkpoint(scenario)
@@ -270,7 +270,7 @@ async def test_public_fastmcp_r05_r08_capabilities_and_safe_denials(
 
 
 @pytest.mark.asyncio
-async def test_r05_fastmcp_exposes_only_read_capabilities(repository: D1Repository) -> None:
+async def test_r05_fastmcp_exposes_only_read_capabilities(repository: LabRepository) -> None:
     repository.reset_checkpoint("R05")
     repository.inject_checkpoint("R05")
     incident, _, context = _inputs("R05")
@@ -302,7 +302,7 @@ async def test_r05_fastmcp_exposes_only_read_capabilities(repository: D1Reposito
     ),
 )
 def test_r06_r08_approval_page_states_the_real_proposed_action(
-    repository: D1Repository, scenario: str, proposed: str
+    repository: LabRepository, scenario: str, proposed: str
 ) -> None:
     """The approval surface must describe the frozen capability, not a D1-shaped rollback."""
     repository.reset_checkpoint(scenario)
@@ -341,7 +341,7 @@ def test_r06_r08_approval_page_states_the_real_proposed_action(
     ),
 )
 def test_r06_r08_fresh_host_pending_role_nonce_and_safe_text(
-    repository: D1Repository, scenario: str, action_text: str, decision: str
+    repository: LabRepository, scenario: str, action_text: str, decision: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     try:

@@ -22,16 +22,16 @@ from triage_agent_lab.control.models import Caller
 from triage_agent_lab.integration import IncidentRuntime, PendingApproval
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, D1Repository
+from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, LabRepository
 from triage_agent_lab.telemetry import create_tracer_runtime
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Checkpoint A runtime integration requires DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     return repo
 
@@ -57,7 +57,7 @@ def inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     )
 
 
-def evidence_tools(repo: D1Repository, evidence_ids: tuple[str, ...]) -> set[str]:
+def evidence_tools(repo: LabRepository, evidence_ids: tuple[str, ...]) -> set[str]:
     with repo._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT tool_name FROM evidence_records WHERE evidence_id = ANY(%s)",
@@ -77,7 +77,7 @@ class RecordingMonitor:
 
 
 @pytest.mark.parametrize("scenario", ["D1", "D2", "D3"])
-def test_configured_monitor_factory_reconstructs_after_reopen(repository: D1Repository, scenario: str) -> None:
+def test_configured_monitor_factory_reconstructs_after_reopen(repository: LabRepository, scenario: str) -> None:
     if scenario == "D1":
         repository.reset_d1()
         repository.inject_d1()
@@ -101,7 +101,7 @@ def test_configured_monitor_factory_reconstructs_after_reopen(repository: D1Repo
     assert state["mutation_count"] == 1
 
 
-def test_d3_configured_monitor_block_is_terminal_across_reopen(repository: D1Repository) -> None:
+def test_d3_configured_monitor_block_is_terminal_across_reopen(repository: LabRepository) -> None:
     repository.reset_checkpoint("D3")
     repository.inject_checkpoint("D3")
     incident, caller, context = inputs("D3")
@@ -134,7 +134,7 @@ def test_d3_configured_monitor_block_is_terminal_across_reopen(repository: D1Rep
     ],
 )
 def test_checkpoint_start_is_durable_and_reject_is_zero_mutation(
-    repository: D1Repository, scenario: str, tool_name: str, tools: set[str]
+    repository: LabRepository, scenario: str, tool_name: str, tools: set[str]
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
@@ -164,7 +164,7 @@ def test_checkpoint_start_is_durable_and_reject_is_zero_mutation(
 
 @pytest.mark.parametrize("scenario", ["D2", "D3"])
 def test_checkpoint_approval_recreates_runtime_and_freshly_verifies(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
@@ -189,7 +189,7 @@ def test_checkpoint_approval_recreates_runtime_and_freshly_verifies(
     assert repository.checkpoint_state(scenario)["mutation_count"] == 1
 
 
-def test_d3_response_loss_retries_once_as_duplicate(repository: D1Repository) -> None:
+def test_d3_response_loss_retries_once_as_duplicate(repository: LabRepository) -> None:
     repository.reset_checkpoint("D3")
     repository.inject_checkpoint("D3")
     incident, caller, context = inputs("D3")
@@ -209,7 +209,7 @@ def test_d3_response_loss_retries_once_as_duplicate(repository: D1Repository) ->
 
 @pytest.mark.parametrize("scenario", ["D2", "D3"])
 def test_checkpoint_trace_is_scenario_named_and_continues_after_reopen(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)

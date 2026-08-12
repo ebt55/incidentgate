@@ -16,16 +16,16 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from triage_agent_lab.contracts import IncidentIdentity, Role, ToolCallContext
 from triage_agent_lab.control.models import Caller
 from triage_agent_lab.integration import IncidentRuntime
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.telemetry import create_tracer_runtime
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Checkpoint B runtime integration requires DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     return repo
 
@@ -43,7 +43,7 @@ def inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
 
 @pytest.mark.parametrize(("scenario", "attempts"), [("D4", 2), ("D7", 3)])
 def test_deferred_scenarios_use_exact_budget_without_authority_rows(
-    repository: D1Repository, scenario: str, attempts: int
+    repository: LabRepository, scenario: str, attempts: int
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
@@ -60,7 +60,7 @@ def test_deferred_scenarios_use_exact_budget_without_authority_rows(
         assert cursor.fetchone()["count"] == 0
 
 
-def test_d7_deadline_stops_attempts_and_restart_does_not_duplicate_numbers(repository: D1Repository) -> None:
+def test_d7_deadline_stops_attempts_and_restart_does_not_duplicate_numbers(repository: LabRepository) -> None:
     repository.reset_checkpoint("D7")
     repository.inject_checkpoint("D7")
     incident, caller, context = inputs("D7")
@@ -88,7 +88,7 @@ def test_d7_deadline_stops_attempts_and_restart_does_not_duplicate_numbers(repos
 
 
 def test_d6_crash_after_stale_reconstructs_it_then_performs_one_fresh_recheck(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     repository.reset_checkpoint("D6")
     repository.inject_checkpoint("D6")
@@ -147,7 +147,7 @@ def test_d6_crash_after_stale_reconstructs_it_then_performs_one_fresh_recheck(
 
 
 def test_d6_deadline_resume_defers_without_fresh_read_or_authority_rows(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """At the inclusive deadline, resume preserves stale state and stops safely."""
     repository.reset_checkpoint("D6")
@@ -220,7 +220,7 @@ def test_d6_deadline_resume_defers_without_fresh_read_or_authority_rows(
     [{"permission": "operations:write"}, {"idempotency_key": uuid4()}],
 )
 def test_deferred_runtime_rejects_write_or_idempotent_context_without_attempts(
-    repository: D1Repository, updates: dict[str, object]
+    repository: LabRepository, updates: dict[str, object]
 ) -> None:
     repository.reset_checkpoint("D4")
     repository.inject_checkpoint("D4")
@@ -239,7 +239,7 @@ def test_deferred_runtime_rejects_write_or_idempotent_context_without_attempts(
         assert cursor.fetchone()["count"] == 0
 
 
-def test_d4_workflow_and_collection_share_safe_trace(repository: D1Repository) -> None:
+def test_d4_workflow_and_collection_share_safe_trace(repository: LabRepository) -> None:
     repository.reset_checkpoint("D4")
     repository.inject_checkpoint("D4")
     incident, caller, context = inputs("D4")
@@ -254,7 +254,7 @@ def test_d4_workflow_and_collection_share_safe_trace(repository: D1Repository) -
 
 
 def test_collection_deadlines_are_per_thread_and_owner_binding_denies_cross_actor(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     repository.reset_checkpoint("D7")
     repository.inject_checkpoint("D7")
@@ -269,7 +269,7 @@ def test_collection_deadlines_are_per_thread_and_owner_binding_denies_cross_acto
         repository.begin_collection_attempt(cross_actor, "D7", now=base + timedelta(seconds=1))
 
 
-def test_collection_attempts_are_append_only_and_replays_allocate_contiguously(repository: D1Repository) -> None:
+def test_collection_attempts_are_append_only_and_replays_allocate_contiguously(repository: LabRepository) -> None:
     repository.reset_checkpoint("D4")
     repository.inject_checkpoint("D4")
     _, _, context = inputs("D4")
@@ -319,7 +319,7 @@ def test_checkpoint_b_migrations_repeat_and_upgrade_from_partial_003_004_fixture
                 "(%s, 'INC-D7', 'conflict', 'conflict-correlation', 'operator-2', 'observability:read', 'D7', 2, 'collection_timeout', 'observability_tool_timeout', %s, %s)",
                 (uuid4(), started, started, uuid4(), started, started),
             )
-        repo = D1Repository(isolated_dsn)
+        repo = LabRepository(isolated_dsn)
         with pytest.raises(psycopg.errors.RaiseException, match="conflicting or incomplete historical run owner"):
             repo.migrate()
         with psycopg.connect(isolated_dsn) as connection, connection.cursor() as cursor:
@@ -357,7 +357,7 @@ def test_007_008_009_migrations_are_schema_scoped_and_fail_closed_on_d6_binding(
     root = Path(__file__).parents[2]
     started = datetime(2026, 1, 1, tzinfo=UTC)
     try:
-        clean = D1Repository(isolated_dsn)
+        clean = LabRepository(isolated_dsn)
         clean.migrate()
         clean.migrate()
         with clean._connect() as connection, connection.cursor() as cursor:
@@ -397,13 +397,13 @@ def test_007_008_009_migrations_are_schema_scoped_and_fail_closed_on_d6_binding(
                 (started, started + timedelta(seconds=180), started, started + timedelta(seconds=180)),
             )
         with pytest.raises(psycopg.errors.UniqueViolation):
-            D1Repository(isolated_dsn).migrate()
+            LabRepository(isolated_dsn).migrate()
         with psycopg.connect(isolated_dsn) as connection, connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM d6_collection_runs "
                 "WHERE incident_id='INC-D6' AND thread_id='bound-thread' AND correlation_id='corr-b'"
             )
-        upgraded = D1Repository(isolated_dsn)
+        upgraded = LabRepository(isolated_dsn)
         upgraded.migrate()
         upgraded.migrate()
         substituted = ToolCallContext(
@@ -444,7 +444,7 @@ def test_010_d5_d8_upgrade_is_schema_local_retains_rows_and_is_repeat_safe() -> 
             for name in ("001_d1.sql", "002_checkpoint_a.sql", "003_checkpoint_b_collection.sql", "004_checkpoint_b_upgrade.sql", "005_checkpoint_b_collection_runs.sql", "006_checkpoint_b_backfill_collection_runs.sql", "007_checkpoint_b_no_action.sql", "008_checkpoint_b_d6_runs.sql", "009_checkpoint_b_d6_run_binding.sql"):
                 cursor.execute((root / "db" / name).read_text(encoding="utf-8"))
             cursor.execute("INSERT INTO immutable_evidence_source (source_id, incident_id, kind, payload) VALUES (%s, 'INC-D6', 'health_timestamp', '{}')", (uuid4(),))
-        upgraded = D1Repository(isolated_dsn)
+        upgraded = LabRepository(isolated_dsn)
         upgraded.migrate(); upgraded.migrate()
         with upgraded._connect() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT count(*) AS count FROM immutable_evidence_source WHERE kind='health_timestamp'")
@@ -463,7 +463,7 @@ def test_010_d5_d8_upgrade_is_schema_local_retains_rows_and_is_repeat_safe() -> 
             cursor.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
-def test_b2_live_postgres_no_action_results_never_write_authority_or_s1_raw_data(repository: D1Repository) -> None:
+def test_b2_live_postgres_no_action_results_never_write_authority_or_s1_raw_data(repository: LabRepository) -> None:
     """Exercise the durable store, rather than treating an adapter response as proof."""
     statuses = {}
     contexts = {}

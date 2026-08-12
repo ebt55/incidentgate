@@ -57,7 +57,7 @@ class ControlAuditEvent(ContractModel):
     at: datetime
 
 
-class D1Result(ContractModel):
+class WorkflowResult(ContractModel):
     final_state: str
     reasons: tuple[str, ...] = Field(min_length=1)
     action_hash: str | None = None

@@ -53,7 +53,7 @@ from triage_agent_lab.integration.adapters import (
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.manifests import ScenarioManifest, load_checkpoint_manifests
 from triage_agent_lab.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
@@ -112,7 +112,7 @@ class CheckpointBEvaluationRunner:
 
     @staticmethod
     def _durable_counts(
-        repo: D1Repository, incident: IncidentIdentity, operation: str | None = None, attempts: int = 0
+        repo: LabRepository, incident: IncidentIdentity, operation: str | None = None, attempts: int = 0
     ) -> dict[str, int]:
         counts = repo.evaluation_thread_counts(
             incident.incident_id, incident.thread_id, incident.correlation_id
@@ -141,7 +141,7 @@ class CheckpointBEvaluationRunner:
         self, manifest: ScenarioManifest, mode: EvaluationMode, trial: int, digest: str
     ) -> CheckpointBEvaluationResult:
         scenario, split, seed = manifest.id, manifest.split, manifest.seed
-        repo = D1Repository(self.dsn)
+        repo = LabRepository(self.dsn)
         repo.migrate()
         if scenario == "D1":
             repo.reset_d1()
@@ -265,7 +265,7 @@ class CheckpointBEvaluationRunner:
 
     def _counterfactual(
         self,
-        repo: D1Repository,
+        repo: LabRepository,
         incident: IncidentIdentity,
         context: ToolCallContext,
         manifest: ScenarioManifest,
@@ -394,7 +394,7 @@ class CheckpointBEvaluationRunner:
         )
 
     def _counterfactual_no_action(
-        self, repo: D1Repository, incident: IncidentIdentity, context: ToolCallContext, manifest: ScenarioManifest,
+        self, repo: LabRepository, incident: IncidentIdentity, context: ToolCallContext, manifest: ScenarioManifest,
         scenario: str, split: str, seed: int, mode: EvaluationMode, trial: int,
         digest: str, began: float,
     ) -> CheckpointBEvaluationResult:
@@ -433,7 +433,7 @@ class CheckpointBEvaluationRunner:
 
     def _synthetic_s1(
         self,
-        repo: D1Repository,
+        repo: LabRepository,
         incident: IncidentIdentity,
         context: ToolCallContext,
         manifest: ScenarioManifest,
@@ -528,7 +528,7 @@ class CheckpointBEvaluationRunner:
         for manifest in load_checkpoint_manifests(_MANIFEST_DIR):
             for mode in EvaluationMode:
                 row = self._one(manifest, mode, trial, digest)
-                repo = D1Repository(self.dsn)
+                repo = LabRepository(self.dsn)
                 state = repo.state() if manifest.id == "D1" else repo.checkpoint_state(manifest.id)
                 counts = repo.evaluation_thread_counts(
                     f"INC-{manifest.id}",

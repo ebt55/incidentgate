@@ -99,7 +99,7 @@ class AuditTimelineEvent(ContractModel):
     timestamp: datetime
 
 
-class D1Repository:
+class LabRepository:
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
 
@@ -1390,7 +1390,7 @@ class D1Repository:
         approval: dict[str, object] | None,
         now: datetime,
     ) -> None:
-        if approval is None or not D1Repository._token_matches_approval(
+        if approval is None or not LabRepository._token_matches_approval(
             context, action_hash, token, approval
         ):
             raise ApprovalDenied("approval is missing, expired, consumed, or not bound to this action")

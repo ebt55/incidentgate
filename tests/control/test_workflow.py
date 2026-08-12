@@ -33,11 +33,11 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.control import (
     Caller,
-    D1Dependencies,
     DeterministicD1Proposer,
     DeterministicPolicyEngine,
     EvidenceValidator,
-    build_d1_graph,
+    WorkflowDependencies,
+    build_workflow_graph,
 )
 from triage_agent_lab.control.models import ControlAuditEvent
 
@@ -269,8 +269,8 @@ def system(
     policy = policy_config()
     monitor, token_validator = Monitor(verdict, mismatch=mismatch), tokens or Tokens()
     operation_executor, verifier, audit = executor or Executor(), Verifier(), Audit()
-    graph = build_d1_graph(
-        D1Dependencies(
+    graph = build_workflow_graph(
+        WorkflowDependencies(
             collector=collector or Collector(records),
             proposer=proposer or DeterministicD1Proposer(),
             evidence_validator=EvidenceValidator(policy, lambda: NOW, allowed_sources=ALLOWED_SOURCES),

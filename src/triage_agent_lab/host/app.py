@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from triage_agent_lab.contracts import IncidentIdentity, IncidentState, MonitorVerdict
 from triage_agent_lab.control import AnthropicAdvisoryMonitor, FixtureMonitor, is_known_model
 from triage_agent_lab.integration import IncidentRuntime
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.scenario_registry import RUNNABLE_SCENARIOS
 from triage_agent_lab.telemetry import TelemetryConfig
 from triage_agent_lab.ui import create_ui_app
@@ -117,10 +117,10 @@ def telemetry_config(settings: HostSettings) -> TelemetryConfig:
     )
 
 
-class D1ScenarioController:
+class LabScenarioController:
     """Explicit destructive lab preparation boundary, guarded by the UI."""
 
-    def __init__(self, repository: D1Repository) -> None:
+    def __init__(self, repository: LabRepository) -> None:
         self._repository = repository
 
     def prepare_d1(self) -> None:
@@ -173,13 +173,13 @@ def create_host_app(
     settings: HostSettings | None = None,
     *,
     env: Mapping[str, str] | None = None,
-    repository_factory: Callable[[str], D1Repository] = D1Repository,
+    repository_factory: Callable[[str], LabRepository] = LabRepository,
     runtime_builder: RuntimeBuilder = build_runtime_factory,
 ) -> FastAPI:
     """Build the local UI and initialize only non-destructive checkpoint baseline state."""
     configured = settings or settings_from_env(env)
     repository = repository_factory(configured.database_url)
-    app = create_ui_app(runtime_builder(configured, telemetry_config(configured)), D1ScenarioController(repository))
+    app = create_ui_app(runtime_builder(configured, telemetry_config(configured)), LabScenarioController(repository))
 
     @app.on_event("startup")
     def initialize_host() -> None:

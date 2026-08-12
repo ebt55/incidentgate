@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from triage_agent_lab.host import HostSettings, create_host_app
 from triage_agent_lab.integration import IncidentRuntime
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
 
 def _nonce(page: str, position: int = 0) -> str:
@@ -20,11 +20,11 @@ def _form_nonce(page: str, action: str) -> str:
 
 
 @pytest.fixture
-def live_client() -> tuple[TestClient, D1Repository]:
+def live_client() -> tuple[TestClient, LabRepository]:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("host live flow requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     with TestClient(create_host_app(HostSettings(database_url=dsn))) as client:
         yield client, repository
 
@@ -54,7 +54,7 @@ def _prepare_and_start_scenario(client: TestClient, scenario: str) -> str:
     return thread
 
 
-def test_live_cookie_form_approval_flow(live_client: tuple[TestClient, D1Repository]) -> None:
+def test_live_cookie_form_approval_flow(live_client: tuple[TestClient, LabRepository]) -> None:
     client, repository = live_client
     assert client.get("/healthz").json() == {"status": "ok"}
     thread = _prepare_and_start(client)
@@ -73,7 +73,7 @@ def test_live_cookie_form_approval_flow(live_client: tuple[TestClient, D1Reposit
     assert repository.state() == {"revision": "v1", "health_status": 200, "mutation_count": 1}
 
 
-def test_live_rejection_keeps_zero_mutations(live_client: tuple[TestClient, D1Repository]) -> None:
+def test_live_rejection_keeps_zero_mutations(live_client: tuple[TestClient, LabRepository]) -> None:
     client, repository = live_client
     thread = _prepare_and_start(client)
     assert client.post("/mock-login", data={"actor": "approver-1"}).status_code == 200
@@ -87,7 +87,7 @@ def test_live_rejection_keeps_zero_mutations(live_client: tuple[TestClient, D1Re
     assert repository.state()["mutation_count"] == 0
 
 
-def test_live_d2_approval_renders_only_safe_reference(live_client: tuple[TestClient, D1Repository]) -> None:
+def test_live_d2_approval_renders_only_safe_reference(live_client: tuple[TestClient, LabRepository]) -> None:
     client, repository = live_client
     thread = _prepare_and_start_scenario(client, "D2")
     assert client.post("/mock-login", data={"actor": "approver-1"}).status_code == 200
@@ -102,7 +102,7 @@ def test_live_d2_approval_renders_only_safe_reference(live_client: tuple[TestCli
     assert state["mutation_count"] == 1 and state["health_status"] == 200 and state["config_present"] is True
 
 
-def test_live_d3_reject_and_approve_paths(live_client: tuple[TestClient, D1Repository]) -> None:
+def test_live_d3_reject_and_approve_paths(live_client: tuple[TestClient, LabRepository]) -> None:
     client, repository = live_client
     rejected_thread = _prepare_and_start_scenario(client, "D3")
     assert client.post("/mock-login", data={"actor": "approver-1"}).status_code == 200
@@ -119,7 +119,7 @@ def test_live_d3_reject_and_approve_paths(live_client: tuple[TestClient, D1Repos
     assert state["mutation_count"] == 1 and state["health_status"] == 200 and state["pool_used"] < state["pool_capacity"]
 
 
-def test_live_prepare_nonce_is_scenario_bound(live_client: tuple[TestClient, D1Repository]) -> None:
+def test_live_prepare_nonce_is_scenario_bound(live_client: tuple[TestClient, LabRepository]) -> None:
     client, _ = live_client
     assert client.post("/mock-login", data={"actor": "operator-1"}).status_code == 200
     home = client.get("/")
@@ -135,7 +135,7 @@ def test_live_durable_thread_can_be_approved_after_host_restart() -> None:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("host restart flow requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     with TestClient(create_host_app(HostSettings(database_url=dsn))) as first:
         thread = _prepare_and_start_scenario(first, "D2")
     with TestClient(create_host_app(HostSettings(database_url=dsn))) as second:
@@ -155,7 +155,7 @@ def test_live_deferred_thread_direct_load_after_fresh_host_is_safe(
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("host deferred flow requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     with TestClient(create_host_app(HostSettings(database_url=dsn))) as first:
         thread = _prepare_and_start_scenario(first, scenario)
         body = first.get(f"/threads/{thread}").text

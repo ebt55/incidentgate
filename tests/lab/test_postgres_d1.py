@@ -16,7 +16,7 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ApprovalDenied, LabError, ResponseLost
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService, TicketsService
 
 Change = Callable[
@@ -27,11 +27,11 @@ TokenChange = Callable[[ApprovalToken], ApprovalToken]
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Postgres D1 integration requires DATABASE_URL; Docker is not required for unit tests")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     repo.migrate()
     repo.reset_d1()
@@ -39,7 +39,7 @@ def repository() -> D1Repository:
     return repo
 
 
-def operation(repository: D1Repository) -> tuple[ToolCallContext, Principal, CanonicalAction, ApprovalToken]:
+def operation(repository: LabRepository) -> tuple[ToolCallContext, Principal, CanonicalAction, ApprovalToken]:
     context = ToolCallContext(
         incident_id="INC-D1",
         thread_id="thread-d1",
@@ -76,11 +76,11 @@ def operation(repository: D1Repository) -> tuple[ToolCallContext, Principal, Can
     return context, Principal("operator-1", Role.OPERATOR), action, token
 
 
-def assert_unchanged(repository: D1Repository) -> None:
+def assert_unchanged(repository: LabRepository) -> None:
     assert repository.state()["mutation_count"] == 0
 
 
-def test_d1_evidence_and_permission(repository: D1Repository) -> None:
+def test_d1_evidence_and_permission(repository: LabRepository) -> None:
     service = ObservabilityService(repository)
     context = ToolCallContext(
         incident_id="INC-D1",
@@ -100,7 +100,7 @@ def test_d1_evidence_and_permission(repository: D1Repository) -> None:
         TicketsService(repository).append_disabled(context, principal, "not authorized")
 
 
-def test_initialize_is_idempotent_and_preserves_injected_state(repository: D1Repository) -> None:
+def test_initialize_is_idempotent_and_preserves_injected_state(repository: LabRepository) -> None:
     repository.reset_d1()
     repository.initialize_d1_if_absent()
     repository.initialize_d1_if_absent()
@@ -110,7 +110,7 @@ def test_initialize_is_idempotent_and_preserves_injected_state(repository: D1Rep
     assert repository.state()["revision"] == "v2"
 
 
-def test_rollback_is_bound_atomic_and_idempotent(repository: D1Repository) -> None:
+def test_rollback_is_bound_atomic_and_idempotent(repository: LabRepository) -> None:
     context, principal, action, token = operation(repository)
     service = OperationsService(repository)
     with pytest.raises(ApprovalDenied):
@@ -134,7 +134,7 @@ def test_rollback_is_bound_atomic_and_idempotent(repository: D1Repository) -> No
     assert repository.state()["mutation_count"] == 1
 
 
-def test_valid_approval_against_non_injected_target_is_not_consumed(repository: D1Repository) -> None:
+def test_valid_approval_against_non_injected_target_is_not_consumed(repository: LabRepository) -> None:
     repository.reset_d1()
     context, principal, action, token = operation(repository)
     repository.record_approval(token, "INC-D1")
@@ -176,7 +176,7 @@ def test_valid_approval_against_non_injected_target_is_not_consumed(repository: 
     ],
 )
 def test_context_or_action_mismatch_never_mutates(
-    repository: D1Repository, change: Change
+    repository: LabRepository, change: Change
 ) -> None:
     context, principal, action, token = operation(repository)
     repository.record_approval(token, "INC-D1")
@@ -196,7 +196,7 @@ def test_context_or_action_mismatch_never_mutates(
         lambda t: t.model_copy(update={"expires_at": t.expires_at + timedelta(minutes=1)}),
     ],
 )
-def test_token_mismatch_never_mutates(repository: D1Repository, change: TokenChange) -> None:
+def test_token_mismatch_never_mutates(repository: LabRepository, change: TokenChange) -> None:
     context, principal, action, token = operation(repository)
     repository.record_approval(token, "INC-D1")
     with pytest.raises(ApprovalDenied):
@@ -204,7 +204,7 @@ def test_token_mismatch_never_mutates(repository: D1Repository, change: TokenCha
     assert_unchanged(repository)
 
 
-def test_replay_rejects_substituted_context_or_token(repository: D1Repository) -> None:
+def test_replay_rejects_substituted_context_or_token(repository: LabRepository) -> None:
     context, principal, action, token = operation(repository)
     repository.record_approval(token, "INC-D1")
     service = OperationsService(repository)
@@ -218,7 +218,7 @@ def test_replay_rejects_substituted_context_or_token(repository: D1Repository) -
     assert repository.state()["mutation_count"] == 1
 
 
-def test_unknown_or_disallowed_evidence_never_mutates(repository: D1Repository) -> None:
+def test_unknown_or_disallowed_evidence_never_mutates(repository: LabRepository) -> None:
     context, principal, action, token = operation(repository)
     unknown_action = action.model_copy(update={"evidence_ids": ("unknown-evidence",)})
     unknown_token = token.model_copy(
@@ -242,7 +242,7 @@ def test_unknown_or_disallowed_evidence_never_mutates(repository: D1Repository) 
     assert_unchanged(repository)
 
 
-def test_immutable_evidence_metadata_and_staleness_block_mutation(repository: D1Repository) -> None:
+def test_immutable_evidence_metadata_and_staleness_block_mutation(repository: LabRepository) -> None:
     context, principal, action, token = operation(repository)
     evidence_id = action.evidence_ids[0]
     with repository._connect() as connection, connection.cursor() as cursor:
@@ -278,7 +278,7 @@ def test_immutable_evidence_metadata_and_staleness_block_mutation(repository: D1
     assert_unchanged(repository)
 
 
-def test_expired_locked_approval_never_mutates(repository: D1Repository) -> None:
+def test_expired_locked_approval_never_mutates(repository: LabRepository) -> None:
     context, principal, action, token = operation(repository)
     now = datetime.now(UTC)
     expired = token.model_copy(

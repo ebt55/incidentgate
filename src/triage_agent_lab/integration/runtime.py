@@ -36,7 +36,6 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.control import (
     AdvisoryMonitor,
-    D1Dependencies,
     DeterministicD1Proposer,
     DeterministicD2Proposer,
     DeterministicD3Proposer,
@@ -45,15 +44,16 @@ from triage_agent_lab.control import (
     DeterministicPolicyEngine,
     EvidenceValidator,
     FixtureMonitor,
-    build_d1_graph,
+    WorkflowDependencies,
     build_deferred_graph,
+    build_workflow_graph,
 )
 from triage_agent_lab.control.models import (
     Caller,
-    D1Result,
     EvidenceState,
     EvidenceValidation,
     HumanDecision,
+    WorkflowResult,
 )
 from triage_agent_lab.control.ports import ProposalGenerator
 from triage_agent_lab.control.proposal import (
@@ -69,7 +69,7 @@ from triage_agent_lab.control.proposal import (
 )
 from triage_agent_lab.lab.approval import ApprovalService
 from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.repository import AuditTimelineEvent, D1Repository
+from triage_agent_lab.lab.repository import AuditTimelineEvent, LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.scenario_registry import NO_ACTION_SCENARIOS, RUNNABLE_SCENARIOS
 from triage_agent_lab.telemetry import (
@@ -121,7 +121,7 @@ class RuntimeStatus:
     thread_id: str
     incident_id: str
     pending: PendingApproval | None
-    result: D1Result | None
+    result: WorkflowResult | None
     trace_id: str | None = None
     trace_url: str | None = None
     collection_attempts: tuple[int, ...] = ()
@@ -152,7 +152,7 @@ class IncidentRuntime:
             create_tracer_runtime(telemetry_config) if telemetry_config else None
         )
         self._owns_telemetry = telemetry is None and self._telemetry is not None
-        self._repository = D1Repository(dsn)
+        self._repository = LabRepository(dsn)
         # The explicit local-contract allowlist keeps checkpoint revival strict.
         self._connection = psycopg.connect(
             dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row
@@ -175,7 +175,7 @@ class IncidentRuntime:
                 ToolCallContext,
                 VerificationResult,
                 Caller,
-                D1Result,
+                WorkflowResult,
                 EvidenceState,
                 EvidenceValidation,
                 HumanDecision,
@@ -256,7 +256,7 @@ class IncidentRuntime:
         elif scenario_id == "R12": proposer = DeterministicR12Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
-        dependencies = D1Dependencies(
+        dependencies = WorkflowDependencies(
             collector=LabEvidenceCollector(observability, caller, context, scenario_id=scenario_id),
             proposer=proposer,
             evidence_validator=EvidenceValidator(
@@ -280,7 +280,7 @@ class IncidentRuntime:
             telemetry=self._telemetry,
         )
         self._response_loss_once = False
-        return build_d1_graph(dependencies, checkpointer=self._checkpointer)
+        return build_workflow_graph(dependencies, checkpointer=self._checkpointer)
 
     @staticmethod
     def _config(thread_id: str) -> Any:
@@ -312,12 +312,12 @@ class IncidentRuntime:
         return self.status(thread_id)
 
     @staticmethod
-    def _result(values: dict[str, Any]) -> D1Result | None:
+    def _result(values: dict[str, Any]) -> WorkflowResult | None:
         result = values.get("result")
         return (
             result
-            if isinstance(result, D1Result)
-            else (D1Result.model_validate(result) if result else None)
+            if isinstance(result, WorkflowResult)
+            else (WorkflowResult.model_validate(result) if result else None)
         )
 
     def _trace(self, values: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -546,5 +546,8 @@ class IncidentRuntime:
         return self._repository.timeline(incident_id, limit=limit)
 
 
-class D1Runtime(IncidentRuntime):
-    """Backward-compatible name for the durable incident runtime."""
+class CheckpointRuntime(IncidentRuntime):
+    """Alias for the durable incident runtime, used by the checkpoint test suites.
+
+    Adds no behavior. IncidentRuntime is the name production code uses.
+    """

@@ -18,7 +18,7 @@ from triage_agent_lab.contracts import (
 )
 from triage_agent_lab.lab.auth import Principal
 from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 from triage_agent_lab.lab.service import ObservabilityService, OperationsService
 from triage_agent_lab.mcp_servers.entrypoints import observability_server, operations_server
 from triage_agent_lab.mcp_servers.observability import ObservabilityAdapter
@@ -29,7 +29,7 @@ def adapter() -> ObservabilityAdapter:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Checkpoint B MCP checks require DATABASE_URL")
-    repo = D1Repository(dsn)
+    repo = LabRepository(dsn)
     repo.migrate()
     repo.reset_checkpoint("D4")
     repo.reset_checkpoint("D7")
@@ -65,7 +65,7 @@ async def test_fastmcp_public_tool_call_enforces_d4_d7_context_and_safe_envelope
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("Checkpoint B FastMCP checks require DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     repository.reset_checkpoint("D4")
     repository.reset_checkpoint("D7")
@@ -106,7 +106,7 @@ async def test_fastmcp_public_b2_no_action_tools_are_safe_and_scenario_bound() -
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("B2 FastMCP checks require DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     for scenario in ("D6", "S1", "S2"):
         repository.reset_checkpoint(scenario)
@@ -145,7 +145,7 @@ async def test_fastmcp_public_d5_tools_and_cleanup_are_bounded_and_role_bound() 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("D5 FastMCP checks require DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     repository.reset_checkpoint("D5")
     repository.inject_checkpoint("D5")

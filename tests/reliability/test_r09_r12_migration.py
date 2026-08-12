@@ -11,17 +11,17 @@ import pytest
 from psycopg import sql
 
 from triage_agent_lab.contracts import ToolCallContext
-from triage_agent_lab.lab.repository import D1Repository
+from triage_agent_lab.lab.repository import LabRepository
 
 ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture
-def repository() -> D1Repository:
+def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("R09-R12 integration requires DATABASE_URL")
-    repository = D1Repository(dsn)
+    repository = LabRepository(dsn)
     repository.migrate()
     return repository
 
@@ -55,7 +55,7 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
                 "INSERT INTO tickets (ticket_id, incident_id, title) "
                 "VALUES ('r013-retained', 'INC-D1', 'retained')"
             )
-        repository = D1Repository(scoped_dsn)
+        repository = LabRepository(scoped_dsn)
         repository.migrate()
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
@@ -89,7 +89,7 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
 
 
 def test_r09_baseline_is_the_contract_rate_and_the_limit_is_not_representable(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """R09's contract baseline is 90 under a 100 limit, so 100 must not be storable."""
     repository.reset_checkpoint("R09")
@@ -109,7 +109,7 @@ def test_r09_baseline_is_the_contract_rate_and_the_limit_is_not_representable(
 
 
 def test_r11_pin_state_is_observed_so_a_violated_pin_is_expressible(
-    repository: D1Repository,
+    repository: LabRepository,
 ) -> None:
     """pin_state_unchanged must be read from durable state, never asserted."""
     repository.reset_checkpoint("R11")
@@ -162,7 +162,7 @@ def test_a_violated_pin_fails_the_no_action_evidence_gate() -> None:
 
 @pytest.mark.parametrize("scenario", ("R10", "R11"))
 def test_r10_r11_collection_rows_do_not_survive_a_checkpoint_reset(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """reset_checkpoint must clear the durable collection tables, not leak them."""
     repository.reset_checkpoint(scenario)
@@ -194,7 +194,7 @@ def test_r10_r11_collection_rows_do_not_survive_a_checkpoint_reset(
 
 @pytest.mark.parametrize("scenario", ("R10", "R11"))
 def test_r10_r11_collection_is_ordered_owner_bound_and_bounded(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """Two reads only, in contract order, advanced by the owning context alone."""
     repository.reset_checkpoint(scenario)
@@ -227,7 +227,7 @@ def test_r10_r11_collection_is_ordered_owner_bound_and_bounded(
 
 @pytest.mark.parametrize("scenario", ("R10", "R11"))
 def test_r10_r11_resume_returns_committed_reads_without_reobserving(
-    repository: D1Repository, scenario: str
+    repository: LabRepository, scenario: str
 ) -> None:
     """A process loss after read one must resume, not re-probe the partner."""
     repository.reset_checkpoint(scenario)

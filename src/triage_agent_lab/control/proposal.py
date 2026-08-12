@@ -30,7 +30,7 @@ class ProposalError(Exception):
     """A stable, non-authorizing terminal reason from D1 proposal generation.
 
     ``reason`` is a wire value, not a free-form message. The D1 workflow copies it verbatim into
-    ``D1Result.reasons``, the audit timeline persists it, the evaluation artifacts publish it, and
+    ``WorkflowResult.reasons``, the audit timeline persists it, the evaluation artifacts publish it, and
     the chaos end-state differ compares ``terminal_reasons`` for exact equality - its comparison
     spec even documents the field as "fixed vocabulary values; no normalization needed". Nothing
     in code enforces that vocabulary today, so adding a reason silently widens what all of those

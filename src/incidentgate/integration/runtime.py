@@ -95,6 +95,21 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _durable_field(source: Any, name: str) -> Any:
+    """Read one field from a durable checkpoint value.
+
+    A revived checkpoint hands back either the contract model or the plain dict
+    it serialized to, depending on what the serializer could reconstruct, so
+    both shapes have to be read the same way.
+    """
+    if source is None:
+        return None
+    value = getattr(source, name, None)
+    if value is None and isinstance(source, dict):
+        value = source.get(name)
+    return value
+
+
 @dataclass(frozen=True)
 class PendingApproval:
     """Bounded interrupt view; capabilities and evidence payloads never leave this boundary."""
@@ -103,6 +118,16 @@ class PendingApproval:
     incident_id: str
     action_hash: str
     monitor_verdict: str | None
+    # The approver is deciding whether a mutation happens, so everything the gate
+    # already knows that bears on that decision is carried here rather than
+    # dropped.  These are required, without defaults, precisely so that a second
+    # construction site cannot quietly omit them and reintroduce a page that
+    # renders confident-looking placeholders.  ``None`` and ``()`` mean genuinely
+    # absent and are rendered as an explicit marker, never as a plausible value.
+    monitor_rationale: str | None
+    monitor_suspicion: float | None
+    policy_decision: str | None
+    policy_reasons: tuple[str, ...]
     requires_reason: bool
     evidence_ids: tuple[str, ...]
     tool_name: str
@@ -383,11 +408,19 @@ class IncidentRuntime:
             raise TypeError("durable checkpoint does not contain a valid policy action hash")
         arguments = action.arguments
         trace_id, trace_url = self._trace(values)
+        rationale = _durable_field(monitor, "rationale")
+        suspicion = _durable_field(monitor, "suspicion_score")
+        decision = _durable_field(policy, "decision")
+        reasons = _durable_field(policy, "reasons") or ()
         return PendingApproval(
             thread_id=thread_id,
             incident_id=action.incident_id,
             action_hash=policy_hash,
             monitor_verdict=verdict_text,
+            monitor_rationale=None if rationale is None else str(rationale),
+            monitor_suspicion=None if suspicion is None else float(suspicion),
+            policy_decision=None if decision is None else str(decision),
+            policy_reasons=tuple(str(reason) for reason in reasons),
             requires_reason=verdict == MonitorVerdict.DEFER,
             evidence_ids=tuple(action.evidence_ids),
             tool_name=action.tool_name,

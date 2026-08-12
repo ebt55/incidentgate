@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 
 from fastapi.testclient import TestClient
 
-from incidentgate.contracts import IncidentIdentity
+from incidentgate.contracts import IncidentIdentity, IncidentState
+from incidentgate.integration import PendingApproval
 from incidentgate.ui import create_ui_app
 
 
@@ -13,24 +15,51 @@ class FakeController:
     def __init__(self) -> None:
         self.prepared = 0
 
-    def prepare_d1(self) -> None:
+    def prepare(self, scenario_id: str, thread_id: str, correlation_id: str) -> IncidentIdentity:
         self.prepared += 1
+        return IncidentIdentity(
+            incident_id=f"INC-{scenario_id}",
+            scenario_id=scenario_id,
+            thread_id=thread_id,
+            correlation_id=correlation_id,
+            state=IncidentState.OPEN,
+        )
+
+
+def pending_approval(**overrides: object) -> PendingApproval:
+    """A real PendingApproval, not a look-alike.
+
+    The previous fake was a SimpleNamespace that differed from the production
+    contract in both directions: it carried monitor_rationale, which the real
+    dataclass did not have, and omitted policy_decision, policy_reasons and
+    monitor_suspicion, which the page read. That is why a page rendering four
+    placeholders to every approver passed its tests. Using the real type means
+    the dataclass rejects any future drift instead of absorbing it.
+    """
+    fields: dict[str, Any] = {
+        "thread_id": "",
+        "incident_id": "INC-D1",
+        "action_hash": "a" * 64,
+        "monitor_verdict": "defer",
+        "monitor_rationale": "<monitor>",
+        "monitor_suspicion": 0.42,
+        "policy_decision": "require_approval",
+        "policy_reasons": ("policy_valid", "<reason>"),
+        "requires_reason": True,
+        "evidence_ids": ("ev-safe",),
+        "tool_name": "operations.rollback",
+        "component": "api",
+        "target_revision": "v1",
+        "trace_id": "trace-safe",
+        "trace_url": "javascript:alert(1)",
+    }
+    fields.update(overrides)
+    return PendingApproval(**fields)  # type: ignore[arg-type]
 
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.pending = SimpleNamespace(
-            thread_id="",
-            incident_id="INC-D1",
-            component="api",
-            target_revision="v1",
-            evidence_ids=("ev-safe",),
-            monitor_verdict="defer",
-            requires_reason=True,
-            monitor_rationale="<monitor>",
-            trace_id="trace-safe",
-            trace_url="javascript:alert(1)",
-        )
+        self.pending = pending_approval()
         self.pending_threads: set[str] = set()
         self.started = self.approved = self.rejected = 0
         self.closes = 0
@@ -150,6 +179,75 @@ def test_role_boundaries_unknown_identity_and_no_preapproval_execution() -> None
         == 403
     )
     assert runtime.closes >= 1
+
+
+def approver_view(test_client: TestClient) -> str:
+    thread = prepared_thread(test_client)
+    start_thread(test_client, thread)
+    login(test_client, "approver-1")
+    return test_client.get(f"/threads/{thread}").text
+
+
+def test_pending_page_shows_the_real_policy_and_monitor_values() -> None:
+    """The acceptance core: the approver sees what the gate actually decided.
+
+    Every one of these assertions failed before the contract carried the data:
+    the page rendered "Policy: requires human approval; reasons: -" and
+    "rationale: unavailable; suspicion: unavailable" to every approver, on every
+    pending incident, no matter what policy and the monitor had actually said.
+    """
+    page = approver_view(client()[0])
+
+    assert "require_approval" in page, "the real policy decision must be shown"
+    assert "policy_valid" in page, "the real policy reasons must be shown"
+    assert "&lt;reason&gt;" in page, "every real reason is shown, and escaped"
+    assert "&lt;monitor&gt;" in page, "the real monitor rationale must be shown"
+    assert "0.42" in page, "the real monitor suspicion score must be shown"
+
+    # Nothing about this pending approval is absent, so nothing may be marked
+    # absent. This is the assertion that would have caught the original defect.
+    assert "unavailable" not in page
+    assert "requires human approval" not in page, "the fabricated default is gone"
+
+
+def test_pending_page_marks_absent_monitor_values_instead_of_inventing_them() -> None:
+    """No plausible defaults: absence is reported as absence, distinctly."""
+    test_client, runtime, _ = client()
+    runtime.pending = pending_approval(
+        monitor_verdict=None,
+        monitor_rationale=None,
+        monitor_suspicion=None,
+        requires_reason=False,
+    )
+    page = approver_view(test_client)
+
+    assert page.count("unavailable") == 3, "verdict, rationale and suspicion are each absent"
+    # Policy is still known, so it must not be swept into the same marker.
+    assert "require_approval" in page and "policy_valid" in page
+
+
+def test_a_zero_suspicion_score_is_shown_and_not_mistaken_for_absent() -> None:
+    """0.0 is a real score from a real monitor, and the lowest-suspicion one.
+
+    A truthiness check would render it as "unavailable" and tell the approver the
+    monitor had said nothing, when in fact it had said the action looks clean.
+    """
+    test_client, runtime, _ = client()
+    runtime.pending = pending_approval(monitor_suspicion=0.0)
+    page = approver_view(test_client)
+
+    assert "suspicion: 0.0" in page
+    assert "unavailable" not in page
+
+
+def test_pending_page_reports_absent_policy_reasons_without_fabricating_one() -> None:
+    """PolicyOutcome.reasons has min_length=1, so empty unambiguously means absent."""
+    test_client, runtime, _ = client()
+    runtime.pending = pending_approval(policy_decision=None, policy_reasons=())
+    page = approver_view(test_client)
+
+    assert "reasons: -" in page, "an absent reason list is marked, not invented"
+    assert "requires human approval" not in page
 
 
 def test_defer_reason_nonce_and_completed_timeline_are_safe() -> None:

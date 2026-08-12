@@ -199,12 +199,23 @@ def create_ui_app(
             # tell "the api component" from "this action has no component".
             component = _value(pending, "component") or "n/a"
             revision = _value(pending, "target_revision") or "n/a"
-            monitor = _value(pending, "monitor_verdict", "unavailable")
+            # getattr-with-default only fires when the attribute is missing, so a
+            # field that exists and is None renders as the literal "None". That is
+            # a Python repr leaking onto a human decision surface, not a marker.
+            verdict_value = _value(pending, "monitor_verdict")
+            monitor = "unavailable" if verdict_value is None else verdict_value
             reason_required = bool(_value(pending, "requires_reason", False))
-            policy = _value(pending, "policy_decision", "requires human approval")
+            # Absence is reported as absence. These are compared against None
+            # rather than tested for truthiness on purpose: a real suspicion
+            # score of 0.0 is falsy, and rendering "unavailable" over it would
+            # be the same lie this page used to tell about all four values.
+            decision_value = _value(pending, "policy_decision")
+            policy = "unavailable" if decision_value is None else decision_value
             policy_reasons = _list(_value(pending, "policy_reasons", ()))
-            monitor_rationale = _value(pending, "monitor_rationale", "unavailable")
-            suspicion = _value(pending, "monitor_suspicion", "unavailable")
+            rationale_value = _value(pending, "monitor_rationale")
+            monitor_rationale = "unavailable" if rationale_value is None else rationale_value
+            suspicion_value = _value(pending, "monitor_suspicion")
+            suspicion = "unavailable" if suspicion_value is None else suspicion_value
             controls = ""
             if role is Role.APPROVER:
                 nonce = issue(str(thread_id), str(scenario_id), actor_id, "approve")

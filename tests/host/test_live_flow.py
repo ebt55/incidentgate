@@ -79,6 +79,34 @@ def test_live_cookie_form_approval_flow(live_client: tuple[TestClient, LabReposi
     assert repository.state() == {"revision": "v1", "health_status": 200, "mutation_count": 1}
 
 
+def test_live_pending_page_shows_real_policy_and_monitor_values(
+    live_client: tuple[TestClient, LabRepository],
+) -> None:
+    """The gate is honest end to end, not just against a hand-built PendingApproval.
+
+    These values come from the real policy engine and the configured monitor,
+    survive a real durable checkpoint, and are read back through the runtime.
+    The neighbouring flow test asserted only that the labels "Policy:" and
+    "Monitor:" appeared, which stayed true for the whole time the page was
+    rendering four placeholders.
+
+    The fixture monitor scores an allowed action 0.0, so the real default
+    configuration is exactly the falsy-but-present case: a truthiness check here
+    would tell the approver the monitor said nothing, when it said "clean".
+    """
+    client, _ = live_client
+    thread = _prepare_and_start(client)
+    assert client.post("/mock-login", data={"actor": "approver-1"}).status_code == 200
+    pending = client.get(f"/threads/{thread}").text
+
+    assert "Policy: require_approval" in pending
+    assert "reasons: policy_valid" in pending
+    assert "Monitor: allow" in pending
+    assert "rationale: fixture_allow" in pending
+    assert "suspicion: 0.0" in pending
+    assert "unavailable" not in pending, "nothing here is absent, so nothing may be marked absent"
+
+
 def test_live_rejection_keeps_zero_mutations(live_client: tuple[TestClient, LabRepository]) -> None:
     client, repository = live_client
     thread = _prepare_and_start(client)

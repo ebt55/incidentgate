@@ -427,7 +427,17 @@ class EvaluationResult(ContractModel):
 class ModelInvocationRecord(ContractModel):
     provider: str | None = None
     model: str | None = None
-    invocation_kind: Literal["fixture_no_call", "provider_call", "disabled"]
+    # Four mutually exclusive answers to one question: was a model output involved,
+    # and how was it obtained?
+    #   fixture_no_call - no model output at all; a deterministic fixture decided
+    #   provider_call   - model output, obtained live from the provider
+    #   cache_replay    - model output, replayed from a committed capture
+    #   disabled        - the component was switched off
+    # cache_replay exists because the first and third were previously the same
+    # value, which made "a real model's output shaped this decision" indis-
+    # tinguishable from "no model was ever consulted" -- the exact claim this
+    # project has to be able to make honestly.
+    invocation_kind: Literal["fixture_no_call", "provider_call", "cache_replay", "disabled"]
     usage_source: str | None = None
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -445,6 +455,11 @@ class ModelInvocationRecord(ContractModel):
         the named snapshot does not price. Dropping the record instead would erase measured
         spend, which for a project that publishes cost-per-incident is a worse lie than an
         explicit unknown. A cost without a currency, or either without a snapshot, stays invalid.
+
+        A ``cache_replay`` contacted no provider, so it carries no usage or cost for the same
+        reason a fixture does not. It must, however, name the provider and model whose output it
+        replays: an anonymous replay would be indistinguishable from a fixture, which is the
+        confusion this member was added to remove.
         """
         if self.invocation_kind != "provider_call":
             if any(
@@ -457,7 +472,11 @@ class ModelInvocationRecord(ContractModel):
                     self.usage_source,
                 )
             ):
-                raise ValueError("fixture/disabled invocations must not fabricate usage or cost")
+                raise ValueError(
+                    "invocations without a provider call must not fabricate usage or cost"
+                )
+            if self.invocation_kind == "cache_replay" and not (self.provider and self.model):
+                raise ValueError("a cache replay must name the provider and model it replays")
         elif (
             not self.provider
             or not self.model

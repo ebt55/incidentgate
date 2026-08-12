@@ -170,6 +170,18 @@ def test_v2_schema_falsifies_action_count_and_provenance_contracts() -> None:
         ("action_side_effect_count", 1),
         ("tool_calls_total", 1),
         ("counterfactual_strategy_version", None),
+        # The R tier is deterministic by design and says so in its own error
+        # message. A model-backed row -- even an honestly named cache replay --
+        # must fail closed here rather than quietly widen that claim. Admitting
+        # one is a deliberate schema evolution, not a side effect of the seam.
+        (
+            "model_invocation",
+            {
+                "invocation_kind": "cache_replay",
+                "provider": "anthropic",
+                "model": "claude-opus-5",
+            },
+        ),
     ):
         broken = dict(row)
         broken[key] = value

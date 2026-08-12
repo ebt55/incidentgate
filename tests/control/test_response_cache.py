@@ -181,13 +181,29 @@ def test_cache_miss_is_explicit(tmp_path: Path) -> None:
     assert raised.value.prompt_sha256 == HASH_A
 
 
-def test_cache_hit_returns_fixture_no_call(tmp_path: Path) -> None:
+def test_cache_hit_is_recorded_as_a_named_replay_not_a_fixture(tmp_path: Path) -> None:
+    """A replay is a real model's output; it must not look like a deterministic fixture."""
     cache = ResponseCache(tmp_path)
     cache.store(HAIKU, HASH_A, model_output())
     result = CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A))
     assert result.raw_json == model_output()
-    assert result.invocation.invocation_kind == "fixture_no_call"
+    assert result.invocation.invocation_kind == "cache_replay"
+    assert result.invocation.provider == "anthropic"
+    assert result.invocation.model == HAIKU
+    # No provider was contacted, so no usage or cost exists to record.
     assert result.invocation.cost is None
+    assert result.invocation.input_tokens is None
+    assert result.invocation.usage_source is None
+
+
+def test_a_replay_names_the_provider_the_caller_declared(tmp_path: Path) -> None:
+    """Captures from another provider must not be replayed under Anthropic's name."""
+    cache = ResponseCache(tmp_path)
+    cache.store(HAIKU, HASH_A, model_output())
+    client = CacheBackedCompletionClient(cache, provider="some-other-provider")
+    assert client.complete(_request(HAIKU, HASH_A)).invocation.provider == "some-other-provider"
+    with pytest.raises(ValueError, match="must name the provider"):
+        CacheBackedCompletionClient(cache, provider="")
 
 
 def test_record_mode_populates_then_replays(tmp_path: Path) -> None:
@@ -205,7 +221,8 @@ def test_record_mode_populates_then_replays(tmp_path: Path) -> None:
     replay = CacheBackedCompletionClient(cache)
     second = replay.complete(request)
     assert second.raw_json == model_output()
-    assert second.invocation.invocation_kind == "fixture_no_call"
+    assert second.invocation.invocation_kind == "cache_replay"
+    assert second.invocation.model == HAIKU
     assert upstream.calls == 1
 
 
@@ -260,7 +277,8 @@ def test_strong_model_replays_committed_fixture_deterministically() -> None:
     assert action.permission == "operations:write"
     assert hypothesis.hypothesis_id == "d1-bad-deploy"
     assert proposer.last_invocation is not None
-    assert proposer.last_invocation.invocation_kind == "fixture_no_call"
+    assert proposer.last_invocation.invocation_kind == "cache_replay"
+    assert proposer.last_invocation.model == OPUS
 
     # Replaying the same committed output must produce a bit-identical action semantic hash.
     again_hypothesis, again_action = proposer.propose(incident(), caller(), context(), records())

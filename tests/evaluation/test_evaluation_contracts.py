@@ -87,6 +87,34 @@ def test_simulation_and_model_usage_are_strict() -> None:
     assert datetime.now(UTC).tzinfo is not None
 
 
+def test_a_cache_replay_must_name_whose_output_it_replays() -> None:
+    """An anonymous replay is indistinguishable from a fixture, which defeats the member."""
+    for incomplete in ({}, {"provider": "anthropic"}, {"model": "claude-opus-5"}):
+        with pytest.raises(ValidationError):
+            ModelInvocationRecord(invocation_kind="cache_replay", **incomplete)
+    named = ModelInvocationRecord(
+        invocation_kind="cache_replay", provider="anthropic", model="claude-opus-5"
+    )
+    assert named.provider == "anthropic" and named.model == "claude-opus-5"
+
+
+def test_a_cache_replay_may_not_claim_usage_or_cost() -> None:
+    """No provider was contacted, so there is no billing or usage fact to record."""
+    for fabricated in (
+        {"input_tokens": 1},
+        {"output_tokens": 1},
+        {"cost": 0.5, "currency": "USD"},
+        {"usage_source": "anthropic_messages_usage"},
+    ):
+        with pytest.raises(ValidationError):
+            ModelInvocationRecord(
+                invocation_kind="cache_replay",
+                provider="anthropic",
+                model="claude-opus-5",
+                **fabricated,
+            )
+
+
 @pytest.mark.parametrize("eligible,value", [(True, None), (False, True)])
 @pytest.mark.parametrize("field", ["policy_caught", "monitor_caught", "monitor_false_positive"])
 def test_catch_eligibility_requires_exact_value(

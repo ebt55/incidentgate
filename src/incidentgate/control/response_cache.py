@@ -3,9 +3,10 @@
 Current flagship models reject temperature/top_p (see the per-model capability table in
 ``model_proposal``), so bit-level determinism cannot come from sampling params - it comes from
 replaying a committed output for an identical prompt. This
-module is that store. In CI a cache hit returns a ``fixture_no_call`` invocation (no provider was
-contacted, so no usage or cost may be claimed). ``record_mode`` is the only path that contacts a
-real client, and it is off by default so the default and CI paths never touch the network.
+module is that store. In CI a cache hit returns a ``cache_replay`` invocation naming the provider
+and model whose output is being replayed; no provider was contacted, so no usage or cost may be
+claimed. ``record_mode`` is the only path that contacts a real client, and it is off by default so
+the default and CI paths never touch the network.
 """
 
 from __future__ import annotations
@@ -80,12 +81,20 @@ class CacheBackedCompletionClient:
         *,
         record_client: CompletionClient | None = None,
         record_mode: bool = False,
+        provider: str = "anthropic",
     ) -> None:
         if record_mode and record_client is None:
             raise ValueError("record mode requires a record client")
+        if not provider:
+            raise ValueError("a replay must name the provider whose output it replays")
         self._cache = cache
         self._record_client = record_client
         self._record_mode = record_mode
+        # The cache entry stores the model and the prompt hash but not the provider, so the
+        # caller states it. The default matches the only client implementation in the tree;
+        # captures from a different provider must say so rather than be replayed under a
+        # name that is not theirs.
+        self._provider = provider
 
     def __repr__(self) -> str:
         return f"CacheBackedCompletionClient(record_mode={self._record_mode!r})"
@@ -99,7 +108,14 @@ class CacheBackedCompletionClient:
             result = self._record_client.complete(request)
             self._cache.store(request.model, request.prompt_sha256, result.raw_json)
             return result
-        # A replay contacted no provider, so it must not claim any usage or cost.
+        # A replay contacted no provider, so it claims no usage or cost -- but it is a real
+        # model's output, and recording it as fixture_no_call made it indistinguishable from a
+        # deterministic fixture that never consulted a model at all.
         return CompletionResult(
-            raw_json=raw_json, invocation=ModelInvocationRecord(invocation_kind="fixture_no_call")
+            raw_json=raw_json,
+            invocation=ModelInvocationRecord(
+                invocation_kind="cache_replay",
+                provider=self._provider,
+                model=request.model,
+            ),
         )

@@ -25,6 +25,28 @@ from incidentgate.contracts import (
     PolicyDecision,
     ToolCallContext,
 )
+from incidentgate.reasons import (
+    APPROVAL_TOKEN_REQUIRED,
+    AUDIT_APPROVED,
+    AUDIT_EXECUTED,
+    AUDIT_FAILED,
+    AUDIT_PASSED,
+    AUDIT_REJECTED,
+    AUDIT_TOKEN_REQUIRED,
+    CALLER_ACTOR_MISMATCH,
+    COLLECTION_CONTEXT_MISMATCH,
+    DEFER_REASON_REQUIRED,
+    HUMAN_REJECTED,
+    INCIDENT_CONTEXT_MISMATCH,
+    MONITOR_ACTION_HASH_MISMATCH,
+    MONITOR_BLOCK,
+    NO_ACTION_EVIDENCE_VALIDATION_FAILED,
+    POLICY_VALID,
+    RECOVERY_FAILED,
+    RECOVERY_VERIFIED,
+    THREAD_CONTEXT_MISMATCH,
+    TIME_BUDGET_EXHAUSTED,
+)
 from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
 from incidentgate.telemetry import TelemetryRuntime
 
@@ -113,7 +135,7 @@ def build_deferred_graph(
         ):
             return {
                 "result": WorkflowResult(
-                    final_state="blocked", reasons=("collection_context_mismatch",)
+                    final_state="blocked", reasons=(COLLECTION_CONTEXT_MISMATCH,)
                 )
             }
         span = f"{incident.scenario_id.lower()}.collection"
@@ -134,10 +156,10 @@ def build_deferred_graph(
             records = collector.collect(incident)
         if not validate_no_action_evidence(incident.scenario_id, records):
             reason = str(
-                getattr(collector, "deferred_reason", "no_action_evidence_validation_failed")
+                getattr(collector, "deferred_reason", NO_ACTION_EVIDENCE_VALIDATION_FAILED)
             )
             final_state = str(getattr(collector, "final_state", "blocked"))
-            if final_state != "blocked" and reason == "time_budget_exhausted":
+            if final_state != "blocked" and reason == TIME_BUDGET_EXHAUSTED:
                 terminal = IncidentState(final_state)
                 audit.emit(
                     audit_event(
@@ -167,7 +189,7 @@ def build_deferred_graph(
                 "records": records,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=("no_action_evidence_validation_failed",),
+                    reasons=(NO_ACTION_EVIDENCE_VALIDATION_FAILED,),
                     evidence_ids=tuple(record.evidence_id for record in records),
                 ),
             }
@@ -292,19 +314,17 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         incident, context, caller = state["incident"], state["context"], state["caller"]
         if incident.thread_id != context.thread_id:
             return {
-                "result": WorkflowResult(
-                    final_state="blocked", reasons=("thread_context_mismatch",)
-                )
+                "result": WorkflowResult(final_state="blocked", reasons=(THREAD_CONTEXT_MISMATCH,))
             }
         if incident.incident_id != context.incident_id:
             return {
                 "result": WorkflowResult(
-                    final_state="blocked", reasons=("incident_context_mismatch",)
+                    final_state="blocked", reasons=(INCIDENT_CONTEXT_MISMATCH,)
                 )
             }
         if caller.actor != context.actor:
             return {
-                "result": WorkflowResult(final_state="blocked", reasons=("caller_actor_mismatch",))
+                "result": WorkflowResult(final_state="blocked", reasons=(CALLER_ACTOR_MISMATCH,))
             }
         return {}
 
@@ -401,12 +421,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
 
     def blocked(state: WorkflowState) -> WorkflowState:
         monitor_result, policy = state["monitor"], state["policy"]
-        _audit(state, "policy", "policy_valid")
-        _audit(state, "monitor", "monitor_block")
+        _audit(state, "policy", POLICY_VALID)
+        _audit(state, "monitor", MONITOR_BLOCK)
         return {
             "result": WorkflowResult(
                 final_state="blocked",
-                reasons=("monitor_block",),
+                reasons=(MONITOR_BLOCK,),
                 action_hash=policy.action_hash,
                 evidence_ids=state["action"].evidence_ids,
                 policy=policy,
@@ -419,12 +439,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
 
     def monitor_mismatch(state: WorkflowState) -> WorkflowState:
         policy = state["policy"]
-        _audit(state, "policy", "policy_valid")
+        _audit(state, "policy", POLICY_VALID)
         _audit(state, "monitor", "action_hash_mismatch")
         return {
             "result": WorkflowResult(
                 final_state="blocked",
-                reasons=("monitor_action_hash_mismatch",),
+                reasons=(MONITOR_ACTION_HASH_MISMATCH,),
                 action_hash=policy.action_hash,
                 evidence_ids=state["action"].evidence_ids,
                 policy=policy,
@@ -443,7 +463,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         these append attempts stable identities, so a crash after an append but
         before LangGraph checkpoints this node is safe to replay.
         """
-        _audit(state, "policy", "policy_valid")
+        _audit(state, "policy", POLICY_VALID)
         monitor_result = state.get("monitor")
         if monitor_result:
             _audit(state, "monitor", str(monitor_result.verdict))
@@ -463,12 +483,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         human = HumanDecision.model_validate(payload)
         policy, monitor_result = state["policy"], state.get("monitor")
         if human.decision == "reject":
-            _audit(state, "approval", "rejected")
+            _audit(state, "approval", AUDIT_REJECTED)
             return {
                 "human": human,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=("human_rejected",),
+                    reasons=(HUMAN_REJECTED,),
                     action_hash=policy.action_hash,
                     evidence_ids=state["action"].evidence_ids,
                     policy=policy,
@@ -484,12 +504,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             and monitor_result.verdict is MonitorVerdict.DEFER
             and not (human.reason or "").strip()
         ):
-            _audit(state, "approval", "defer_reason_required")
+            _audit(state, "approval", DEFER_REASON_REQUIRED)
             return {
                 "human": human,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=("defer_reason_required",),
+                    reasons=(DEFER_REASON_REQUIRED,),
                     action_hash=policy.action_hash,
                     evidence_ids=state["action"].evidence_ids,
                     policy=policy,
@@ -501,12 +521,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                 ),
             }
         if human.token is None:
-            _audit(state, "approval", "token_required")
+            _audit(state, "approval", AUDIT_TOKEN_REQUIRED)
             return {
                 "human": human,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=("approval_token_required",),
+                    reasons=(APPROVAL_TOKEN_REQUIRED,),
                     action_hash=policy.action_hash,
                     evidence_ids=state["action"].evidence_ids,
                     policy=policy,
@@ -557,7 +577,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                     report=_report(state, IncidentState.BLOCKED),
                 ),
             }
-        _audit(state, "approval", "approved")
+        _audit(state, "approval", AUDIT_APPROVED)
         return {"human": human}
 
     def after_approval(state: WorkflowState) -> str:
@@ -583,7 +603,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                 thread_id=action.thread_id,
                 action_hash=policy.action_hash,
                 now=dependencies.clock(),
-                reason="executed",
+                reason=AUDIT_EXECUTED,
             )
         )
         return {"operation": operation}
@@ -599,7 +619,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                 thread_id=action.thread_id,
                 action_hash=policy.action_hash,
                 now=dependencies.clock(),
-                reason="passed" if verification.passed else "failed",
+                reason=AUDIT_PASSED if verification.passed else AUDIT_FAILED,
             )
         )
         final_state = "resolved" if verification.passed else "blocked"
@@ -608,7 +628,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             "verification": verification,
             "result": WorkflowResult(
                 final_state=final_state,
-                reasons=("recovery_verified" if verification.passed else "recovery_failed",),
+                reasons=(RECOVERY_VERIFIED if verification.passed else RECOVERY_FAILED,),
                 action_hash=policy.action_hash,
                 evidence_ids=action.evidence_ids,
                 policy=policy,

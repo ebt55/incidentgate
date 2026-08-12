@@ -12,6 +12,13 @@ from incidentgate.contracts import (
     Role,
     canonical_action_hash,
 )
+from incidentgate.reasons import (
+    CALLER_PERMISSION_DENIED,
+    CALLER_ROLE_DENIED,
+    POLICY_VALID,
+    UNKNOWN_TOOL,
+    argument_constraint,
+)
 
 from .models import EvidenceState, EvidenceValidation
 
@@ -27,25 +34,25 @@ class DeterministicPolicyEngine:
         rule = self.configuration.tools.get(action.tool_name)
         reasons: list[str] = []
         if rule is None:
-            reasons.append("unknown_tool")
+            reasons.append(UNKNOWN_TOOL)
         else:
             if caller not in rule.roles:
-                reasons.append("caller_role_denied")
+                reasons.append(CALLER_ROLE_DENIED)
             if action.permission != rule.permission:
-                reasons.append("caller_permission_denied")
+                reasons.append(CALLER_PERMISSION_DENIED)
             arguments = action.arguments.model_dump(mode="python")
             for name, constraint in rule.arguments.items():
                 # ``bool`` is a subclass of ``int`` in Python.  Policy literals
                 # are capability bindings, so their types must match as well.
                 if name in arguments and type(arguments[name]) is not type(constraint):
-                    reasons.append(f"argument_constraint:{name}")
+                    reasons.append(argument_constraint(name))
                     continue
                 if name.endswith("_pattern"):
                     key = name.removesuffix("_pattern")
                     if not re.fullmatch(str(constraint), str(arguments.get(key, ""))):
-                        reasons.append(f"argument_constraint:{key}")
+                        reasons.append(argument_constraint(key))
                 elif name == "max_bytes" and int(arguments.get(name, -1)) != int(constraint):
-                    reasons.append("argument_constraint:max_bytes")
+                    reasons.append(argument_constraint("max_bytes"))
                 elif (
                     name
                     in {
@@ -67,14 +74,14 @@ class DeterministicPolicyEngine:
                     }
                     and arguments.get(name) != constraint
                 ):
-                    reasons.append(f"argument_constraint:{name}")
+                    reasons.append(argument_constraint(name))
                 elif name.endswith("_prefix"):
                     key = name.removesuffix("_prefix")
                     # The frozen policy uses the capability-neutral name while the
                     # typed contract calls the field ``approved_value_ref``.
                     argument_key = "approved_value_ref" if key == "value_reference" else key
                     if not str(arguments.get(argument_key, "")).startswith(str(constraint)):
-                        reasons.append(f"argument_constraint:{argument_key}")
+                        reasons.append(argument_constraint(argument_key))
             if evidence.state is not EvidenceState.VALID:
                 reasons.extend(evidence.reasons)
         if reasons:
@@ -92,6 +99,6 @@ class DeterministicPolicyEngine:
         return PolicyOutcome(
             decision=decision,
             policy_version=self.configuration.policy_version,
-            reasons=("policy_valid",),
+            reasons=(POLICY_VALID,),
             action_hash=action_hash,
         )

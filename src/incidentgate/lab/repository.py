@@ -38,6 +38,23 @@ from incidentgate.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
+from incidentgate.reasons import (
+    OBSERVABILITY_TOOL_TIMEOUT,
+    RETRY_BUDGET_EXHAUSTED,
+    TIME_BUDGET_EXHAUSTED,
+    TOKEN_ACTION_HASH_MISMATCH,
+    TOKEN_ACTOR_MISMATCH,
+    TOKEN_APPROVED_AT_MISMATCH,
+    TOKEN_APPROVER_MISMATCH,
+    TOKEN_CONSUMED,
+    TOKEN_EXPIRED,
+    TOKEN_EXPIRES_AT_MISMATCH,
+    TOKEN_MISSING,
+    TOKEN_ONE_TIME_USE_ID_MISMATCH,
+    TOKEN_REQUESTED_AT_MISMATCH,
+    TOKEN_VALID,
+    UPSTREAM_TIMEOUT,
+)
 
 from .errors import ApprovalConflict, ApprovalDenied, ResponseLost
 
@@ -1219,7 +1236,7 @@ class LabRepository:
             if len(records) != cast(int, run["next_read"]):
                 raise ValueError("D6 collection cursor does not match committed evidence")
             if now >= cast(datetime, run["deadline_at"]):
-                return records, "time_budget_exhausted"
+                return records, TIME_BUDGET_EXHAUSTED
             return records, None
 
     def record_approval(self, token: ApprovalToken, incident_id: str) -> None:
@@ -1253,26 +1270,26 @@ class LabRepository:
             cursor.execute("SELECT * FROM approvals WHERE token_id = %s", (token.token_id,))
             approval = cursor.fetchone()
         if approval is None:
-            return False, "missing"
+            return False, TOKEN_MISSING
         if approval["action_hash"] != action_hash or token.action_hash != action_hash:
-            return False, "action_hash_mismatch"
+            return False, TOKEN_ACTION_HASH_MISMATCH
         if approval["actor"] != actor or token.actor != actor:
-            return False, "actor_mismatch"
+            return False, TOKEN_ACTOR_MISMATCH
         if approval["approver"] != token.approver:
-            return False, "approver_mismatch"
+            return False, TOKEN_APPROVER_MISMATCH
         if approval["one_time_use_id"] != token.one_time_use_id:
-            return False, "one_time_use_id_mismatch"
+            return False, TOKEN_ONE_TIME_USE_ID_MISMATCH
         if approval["requested_at"] != token.requested_at:
-            return False, "requested_at_mismatch"
+            return False, TOKEN_REQUESTED_AT_MISMATCH
         if approval["approved_at"] != token.approved_at:
-            return False, "approved_at_mismatch"
+            return False, TOKEN_APPROVED_AT_MISMATCH
         if approval["expires_at"] != token.expires_at:
-            return False, "expires_at_mismatch"
+            return False, TOKEN_EXPIRES_AT_MISMATCH
         if approval["consumed_at"] is not None:
-            return False, "consumed"
+            return False, TOKEN_CONSUMED
         if cast(datetime, approval["expires_at"]) <= now:
-            return False, "expired"
-        return True, "valid"
+            return False, TOKEN_EXPIRED
+        return True, TOKEN_VALID
 
     def append_audit_event(
         self,
@@ -2653,7 +2670,7 @@ class LabRepository:
                 raise ValueError("collection run belongs to a different bound context")
             started = cast(datetime, run["started_at"])
             if now >= started + timedelta(seconds=cast(int, state["time_budget_seconds"])):
-                return None, "time_budget_exhausted"
+                return None, TIME_BUDGET_EXHAUSTED
             cursor.execute(
                 "SELECT COALESCE(MAX(attempt_number), 0) AS number FROM collection_attempts "
                 "WHERE incident_id=%s AND thread_id=%s AND correlation_id=%s AND actor=%s AND "
@@ -2669,8 +2686,8 @@ class LabRepository:
             row = cast(dict[str, object], cursor.fetchone())
             attempt_number = int(cast(int, row["number"])) + 1
             if attempt_number > cast(int, state["retry_budget"]) + 1:
-                return None, "retry_budget_exhausted"
-            reason = "upstream_timeout" if scenario == "D4" else "observability_tool_timeout"
+                return None, RETRY_BUDGET_EXHAUSTED
+            reason = UPSTREAM_TIMEOUT if scenario == "D4" else OBSERVABILITY_TOOL_TIMEOUT
             cursor.execute(
                 "INSERT INTO collection_attempts (attempt_id, incident_id, thread_id, "
                 "correlation_id, actor, permission, scenario_id, attempt_number, transition, "

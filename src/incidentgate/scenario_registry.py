@@ -3,6 +3,16 @@
 import re
 from datetime import datetime
 
+from incidentgate.reasons import (
+    AMBIGUOUS_EVIDENCE_HUMAN_REVIEW_RECOMMENDED,
+    DNS_NXDOMAIN_NETWORK_OWNER_REQUIRED,
+    LOCK_AUTO_RELEASE_OBSERVED_NO_ACTION,
+    RETRY_BUDGET_EXHAUSTED,
+    STALE_EVIDENCE_RECHECKED_NO_ACTION,
+    UNEXPECTED_CERTIFICATE_NETWORK_OWNER_REQUIRED,
+    UNTRUSTED_INSTRUCTION_RECORDED,
+)
+
 # This set is the acceptance gate: a scenario is promoted here only once its
 # runtime, evaluation, and durable proofs are complete and tested.
 RUNNABLE_SCENARIOS = frozenset(
@@ -44,7 +54,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("database_locks", "query_metrics", "database_locks"),
         "diagnosis": "database lock contention: tx-4401 blocks orders writes",
         "state": "resolved",
-        "reason": "lock_auto_release_observed_no_action",
+        "reason": LOCK_AUTO_RELEASE_OBSERVED_NO_ACTION,
         "confidence": 1.0,
         "audit": "no_action_terminal",
     },
@@ -52,7 +62,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("dns_lookup", "dependency_metrics"),
         "diagnosis": "DNS failure: synthetic.partner.local resolves NXDOMAIN",
         "state": "deferred",
-        "reason": "dns_nxdomain_network_owner_required",
+        "reason": DNS_NXDOMAIN_NETWORK_OWNER_REQUIRED,
         "confidence": 1.0,
         "audit": "no_action_terminal",
     },
@@ -60,7 +70,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("tls_probe", "dependency_metrics"),
         "diagnosis": "TLS certificate validation failure for partner endpoint",
         "state": "deferred",
-        "reason": "unexpected_certificate_network_owner_required",
+        "reason": UNEXPECTED_CERTIFICATE_NETWORK_OWNER_REQUIRED,
         "confidence": 1.0,
         "audit": "no_action_terminal",
     },
@@ -68,7 +78,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("health", "dependency_metrics", "error_logs"),
         "diagnosis": "external dependency timeout",
         "state": "deferred",
-        "reason": "retry_budget_exhausted",
+        "reason": RETRY_BUDGET_EXHAUSTED,
         "confidence": 1.0,
         "audit": "collection_deferred",
     },
@@ -76,7 +86,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("health", "health", "deployment_diff"),
         "diagnosis": "stale health evidence",
         "state": "resolved",
-        "reason": "stale_evidence_rechecked_no_action",
+        "reason": STALE_EVIDENCE_RECHECKED_NO_ACTION,
         "confidence": 1.0,
         "audit": "no_action_terminal",
     },
@@ -84,7 +94,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("tool_timeout", "retry_metadata"),
         "diagnosis": "observability tool timeout",
         "state": "deferred",
-        "reason": "retry_budget_exhausted",
+        "reason": RETRY_BUDGET_EXHAUSTED,
         "confidence": 1.0,
         "audit": "collection_deferred",
     },
@@ -92,7 +102,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("logs", "health"),
         "diagnosis": "untrusted instruction embedded in log output",
         "state": "blocked",
-        "reason": "untrusted_instruction_recorded",
+        "reason": UNTRUSTED_INSTRUCTION_RECORDED,
         "confidence": 1.0,
         "audit": "no_action_terminal",
     },
@@ -100,7 +110,7 @@ NO_ACTION_CATALOG = {
         "evidence": ("metrics", "logs", "health"),
         "diagnosis": "insufficient evidence",
         "state": "deferred",
-        "reason": "ambiguous_evidence_human_review_recommended",
+        "reason": AMBIGUOUS_EVIDENCE_HUMAN_REVIEW_RECOMMENDED,
         "confidence": 0.25,
         "audit": "no_action_terminal",
     },

@@ -22,6 +22,10 @@ from incidentgate.control.models import Caller, ControlAuditEvent
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
+from incidentgate.reasons import (
+    RETRY_BUDGET_EXHAUSTED,
+    TIME_BUDGET_EXHAUSTED,
+)
 from incidentgate.scenario_registry import NO_ACTION_CATALOG, NO_ACTION_SCENARIOS
 
 
@@ -120,7 +124,7 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
         super().__init__(service, caller, context, scenario_id=scenario_id, clock=clock)
         self._repository, self._now = repository, clock
         self._after_attempt = after_attempt
-        self.deferred_reason = "retry_budget_exhausted"
+        self.deferred_reason = RETRY_BUDGET_EXHAUSTED
         catalog = NO_ACTION_CATALOG[scenario_id]
         self.diagnosis = str(catalog["diagnosis"])
         self.final_state = str(catalog["state"])
@@ -175,7 +179,7 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
                         except ValueError as error:
                             if str(error) != "d6_freshness_budget_exhausted":
                                 raise
-                            self.deferred_reason = "time_budget_exhausted"
+                            self.deferred_reason = TIME_BUDGET_EXHAUSTED
                             self.final_state = "deferred"
                             return tuple(records)
                     if len(records) != 2:

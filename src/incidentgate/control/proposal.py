@@ -22,6 +22,17 @@ from incidentgate.contracts import (
     RouteCustomerReadsPrimaryArgs,
     ToolCallContext,
 )
+from incidentgate.reasons import (
+    PROPOSAL_AMBIGUOUS_EVIDENCE,
+    PROPOSAL_BELOW_THRESHOLD,
+    PROPOSAL_CONTEXT_MISMATCH,
+    PROPOSAL_MISSING_REQUIRED_EVIDENCE,
+    PROPOSAL_NO_D1_FAULT,
+    PROPOSAL_WRONG_CONFIG,
+    PROPOSAL_WRONG_RELIABILITY_FIXTURE,
+    PROPOSAL_WRONG_REVISION_DIFF,
+    PROPOSAL_WRONG_STATE,
+)
 
 from .models import Caller
 
@@ -66,7 +77,7 @@ class DeterministicD1Proposer:
         records: tuple[EvidenceRecord, ...],
     ) -> tuple[Hypothesis, CanonicalAction]:
         if context.incident_id != incident.incident_id or context.thread_id != incident.thread_id:
-            raise ProposalError("proposal_context_mismatch")
+            raise ProposalError(PROPOSAL_CONTEXT_MISMATCH)
         matching = {
             tool_name: [
                 record
@@ -79,9 +90,9 @@ class DeterministicD1Proposer:
             for tool_name in self._required_tools
         }
         if any(not records_for_tool for records_for_tool in matching.values()):
-            raise ProposalError("proposal_missing_required_evidence")
+            raise ProposalError(PROPOSAL_MISSING_REQUIRED_EVIDENCE)
         if any(len(records_for_tool) != 1 for records_for_tool in matching.values()):
-            raise ProposalError("proposal_ambiguous_evidence")
+            raise ProposalError(PROPOSAL_AMBIGUOUS_EVIDENCE)
 
         health, diff, logs = (matching[tool_name][0] for tool_name in self._required_tools)
         health_payload, diff_payload = health.payload, diff.payload
@@ -90,13 +101,13 @@ class DeterministicD1Proposer:
             or health_payload.get("revision") != "v2"
             or health_payload.get("status") != 500
         ):
-            raise ProposalError("proposal_no_d1_fault")
+            raise ProposalError(PROPOSAL_NO_D1_FAULT)
         if (
             diff_payload.get("component") != "api"
             or diff_payload.get("from_revision") != "v1"
             or diff_payload.get("to_revision") != "v2"
         ):
-            raise ProposalError("proposal_wrong_revision_diff")
+            raise ProposalError(PROPOSAL_WRONG_REVISION_DIFF)
         # The log is a required citation, but its free text is untrusted data and is
         # never used to select authority, identity, tool, or action arguments.
         del logs
@@ -133,7 +144,7 @@ class _CheckpointProposer:
         records: tuple[EvidenceRecord, ...],
     ) -> tuple[EvidenceRecord, ...]:
         if context.incident_id != incident.incident_id or context.thread_id != incident.thread_id:
-            raise ProposalError("proposal_context_mismatch")
+            raise ProposalError(PROPOSAL_CONTEXT_MISMATCH)
         matching = {
             name: [
                 record
@@ -146,9 +157,9 @@ class _CheckpointProposer:
             for name in self._required_tools
         }
         if any(not matches for matches in matching.values()):
-            raise ProposalError("proposal_missing_required_evidence")
+            raise ProposalError(PROPOSAL_MISSING_REQUIRED_EVIDENCE)
         if any(len(matches) != 1 for matches in matching.values()):
-            raise ProposalError("proposal_ambiguous_evidence")
+            raise ProposalError(PROPOSAL_AMBIGUOUS_EVIDENCE)
         return tuple(matching[name][0] for name in self._required_tools)
 
 
@@ -164,14 +175,14 @@ class DeterministicD2Proposer(_CheckpointProposer):
     ) -> tuple[Hypothesis, CanonicalAction]:
         health, config, logs = self._records(incident, context, records)
         if health.payload.get("component") != "api" or health.payload.get("status") != 500:
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         if (
             config.payload.get("component") != "api"
             or config.payload.get("variable_name") != "REQUIRED_API_URL"
             or config.payload.get("present") is not False
             or config.payload.get("approved_value_ref") != "config://approved/REQUIRED_API_URL"
         ):
-            raise ProposalError("proposal_wrong_config")
+            raise ProposalError(PROPOSAL_WRONG_CONFIG)
         evidence_ids = tuple(record.evidence_id for record in (health, config, logs))
         return Hypothesis(
             hypothesis_id="d2-missing-required-api-url",
@@ -210,18 +221,18 @@ class DeterministicD3Proposer(_CheckpointProposer):
     ) -> tuple[Hypothesis, CanonicalAction]:
         health, metrics, logs = self._records(incident, context, records)
         if health.payload.get("component") != "api" or health.payload.get("status") != 503:
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         used, capacity = metrics.payload.get("used"), metrics.payload.get("capacity")
         if (
             metrics.payload.get("component") != "api"
             or not isinstance(used, int)
             or not isinstance(capacity, int)
         ):
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         if capacity <= 0 or used < capacity:
-            raise ProposalError("proposal_below_threshold")
+            raise ProposalError(PROPOSAL_BELOW_THRESHOLD)
         if used != capacity:
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         evidence_ids = tuple(record.evidence_id for record in (health, metrics, logs))
         return Hypothesis(
             hypothesis_id="d3-db-pool-exhausted",
@@ -260,7 +271,7 @@ class DeterministicD5Proposer(_CheckpointProposer):
             or logs.payload.get("bytes") != 96 * 1024 * 1024
             or health.payload.get("status") != 503
         ):
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         ids = tuple(record.evidence_id for record in (disk, logs, health))
         return Hypothesis(
             hypothesis_id="d5-log-growth",
@@ -295,7 +306,7 @@ class DeterministicD8Proposer(_CheckpointProposer):
     ) -> tuple[Hypothesis, CanonicalAction]:
         (health,) = self._records(incident, context, records)
         if health.payload.get("component") != "api" or health.payload.get("status") != 503:
-            raise ProposalError("proposal_wrong_state")
+            raise ProposalError(PROPOSAL_WRONG_STATE)
         ids = (health.evidence_id,)
         return Hypothesis(
             hypothesis_id="d8-duplicate-delivery",
@@ -340,7 +351,7 @@ class _ReliabilityProposer(_CheckpointProposer):
             item.actor != caller.actor or item.permission != "observability:read"
             for item in matched
         ) or not self._valid(matched):
-            raise ProposalError("proposal_wrong_reliability_fixture")
+            raise ProposalError(PROPOSAL_WRONG_RELIABILITY_FIXTURE)
         ids = tuple(item.evidence_id for item in matched)
         return Hypothesis(
             hypothesis_id=self.hypothesis_id,

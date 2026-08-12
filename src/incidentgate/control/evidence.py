@@ -13,6 +13,18 @@ from incidentgate.contracts import (
     PolicyConfiguration,
     ToolCallContext,
 )
+from incidentgate.reasons import (
+    CITATIONS_REQUIRED,
+    EVIDENCE_VALID,
+    UNKNOWN_TOOL,
+    correlation_context_mismatch,
+    cross_context_evidence,
+    embedded_instruction_data,
+    expired_evidence,
+    stale_evidence,
+    unallowed_evidence_source,
+    unknown_evidence,
+)
 
 from .models import EvidenceState, EvidenceValidation
 
@@ -53,27 +65,27 @@ class EvidenceValidator:
     ) -> EvidenceValidation:
         rule = self._policy.tools.get(action.tool_name)
         if rule is None:
-            return EvidenceValidation(state=EvidenceState.INVALID, reasons=("unknown_tool",))
+            return EvidenceValidation(state=EvidenceState.INVALID, reasons=(UNKNOWN_TOOL,))
         now, by_id = self._clock(), {record.evidence_id: record for record in records}
         reasons: list[str] = []
         digest: list[dict[str, str]] = []
         for evidence_id in action.evidence_ids:
             record = by_id.get(evidence_id)
             if record is None:
-                reasons.append(f"unknown_evidence:{evidence_id}")
+                reasons.append(unknown_evidence(evidence_id))
                 continue
             if record.incident_id != action.incident_id or record.thread_id != action.thread_id:
-                reasons.append(f"cross_context_evidence:{evidence_id}")
+                reasons.append(cross_context_evidence(evidence_id))
             if context is not None and record.correlation_id != context.correlation_id:
-                reasons.append(f"correlation_context_mismatch:{evidence_id}")
+                reasons.append(correlation_context_mismatch(evidence_id))
             if record.expires_at <= now:
-                reasons.append(f"expired_evidence:{evidence_id}")
+                reasons.append(expired_evidence(evidence_id))
             elif (now - record.observed_at).total_seconds() > rule.evidence.max_age_seconds:
-                reasons.append(f"stale_evidence:{evidence_id}")
+                reasons.append(stale_evidence(evidence_id))
             if record.tool_name not in self._allowed_sources:
-                reasons.append(f"unallowed_evidence_source:{evidence_id}")
+                reasons.append(unallowed_evidence_source(evidence_id))
             if self._contains_embedded_instruction(record.payload):
-                reasons.append(f"embedded_instruction_data:{evidence_id}")
+                reasons.append(embedded_instruction_data(evidence_id))
             # Never expose payload to a monitor; payload content cannot become authority.
             digest.append(
                 {
@@ -83,10 +95,10 @@ class EvidenceValidator:
                 }
             )
         if rule.evidence.citation_required and not action.evidence_ids:
-            reasons.append("citations_required")
+            reasons.append(CITATIONS_REQUIRED)
         return EvidenceValidation(
             state=EvidenceState.INVALID if reasons else EvidenceState.VALID,
-            reasons=tuple(reasons or ["evidence_valid"]),
+            reasons=tuple(reasons or [EVIDENCE_VALID]),
             evidence_ids=action.evidence_ids,
             digest=tuple(digest),
         )

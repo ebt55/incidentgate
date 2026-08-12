@@ -39,6 +39,16 @@ from incidentgate.contracts import (
     RollbackArgs,
     ToolCallContext,
 )
+from incidentgate.reasons import (
+    PROPOSAL_CONTEXT_MISMATCH,
+    PROPOSAL_EVIDENCE_UNRENDERABLE,
+    PROPOSAL_MISSING_REQUIRED_EVIDENCE,
+    PROPOSAL_MODEL_OUTPUT_INVALID,
+    PROPOSAL_MODEL_OUTPUT_TRUNCATED,
+    PROPOSAL_MODEL_UNAVAILABLE,
+    PROPOSAL_REQUEST_TOO_LARGE,
+    PROPOSAL_UNCITED_EVIDENCE,
+)
 
 from .model_capabilities import (
     model_accepts_sampling,
@@ -227,7 +237,7 @@ class AnthropicCompletionClient:
             # max_tokens bounds thinking and response text together, so a truncated body is a
             # budget bug, not a transport or parser failure. Name it distinctly instead of
             # hiding it behind the generic reasons; the string is fixed, so nothing leaks.
-            raise ProposalError("proposal_model_output_truncated")
+            raise ProposalError(PROPOSAL_MODEL_OUTPUT_TRUNCATED)
         if stop_reason != "end_turn":
             raise ValueError("incomplete response")
         content = getattr(response, "content", None)
@@ -327,7 +337,7 @@ class ModelAgentProposer:
         except ProposalError:
             raise
         except Exception:  # noqa: BLE001 - fail closed; no provider/parser detail may escape.
-            raise ProposalError("proposal_model_unavailable") from None
+            raise ProposalError(PROPOSAL_MODEL_UNAVAILABLE) from None
 
     def _propose(
         self,
@@ -337,7 +347,7 @@ class ModelAgentProposer:
         records: tuple[EvidenceRecord, ...],
     ) -> tuple[Hypothesis, CanonicalAction]:
         if context.incident_id != incident.incident_id or context.thread_id != incident.thread_id:
-            raise ProposalError("proposal_context_mismatch")
+            raise ProposalError(PROPOSAL_CONTEXT_MISMATCH)
         citable = tuple(
             record
             for record in records
@@ -352,13 +362,13 @@ class ModelAgentProposer:
         except ProposalError:
             raise
         except Exception:  # noqa: BLE001 - transport failure is a fail-closed no-action.
-            raise ProposalError("proposal_model_unavailable") from None
+            raise ProposalError(PROPOSAL_MODEL_UNAVAILABLE) from None
         # Record usage before validating output so a rejected-but-billed call still reports cost.
         self.last_invocation = result.invocation
         parsed = self._parse(result.raw_json)
         # THE safety gate: a steering prompt cannot make the model cite evidence we do not hold.
         if any(evidence_id not in citable_ids for evidence_id in parsed.evidence_ids):
-            raise ProposalError("proposal_uncited_evidence")
+            raise ProposalError(PROPOSAL_UNCITED_EVIDENCE)
         action = self._build_action(incident, caller, context, parsed)
         hypothesis = Hypothesis(
             hypothesis_id=parsed.hypothesis_id,
@@ -370,13 +380,13 @@ class ModelAgentProposer:
 
     def _build_request(self, citable: tuple[EvidenceRecord, ...]) -> CompletionRequest:
         if not citable or len(citable) > self._MAX_EVIDENCE_RECORDS:
-            raise ProposalError("proposal_missing_required_evidence")
+            raise ProposalError(PROPOSAL_MISSING_REQUIRED_EVIDENCE)
         digest: list[dict[str, Any]] = []
         for record in sorted(citable, key=lambda item: item.evidence_id):
             if not self._EVIDENCE_ID.fullmatch(record.evidence_id) or not self._TOOL_NAME.fullmatch(
                 record.tool_name
             ):
-                raise ProposalError("proposal_evidence_unrenderable")
+                raise ProposalError(PROPOSAL_EVIDENCE_UNRENDERABLE)
             digest.append(
                 {
                     "evidence_id": record.evidence_id,
@@ -389,7 +399,7 @@ class ModelAgentProposer:
             {"evidence_digest": digest}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         )
         if len(user_content.encode("utf-8")) > self._MAX_REQUEST_BYTES:
-            raise ProposalError("proposal_request_too_large")
+            raise ProposalError(PROPOSAL_REQUEST_TOO_LARGE)
         system = self._system_prompt()
         canonical = json.dumps(
             {
@@ -451,11 +461,11 @@ class ModelAgentProposer:
 
     def _parse(self, raw_json: object) -> _ProposerOutput:
         if not isinstance(raw_json, str) or len(raw_json) > self._MAX_RESPONSE_BYTES:
-            raise ProposalError("proposal_model_output_invalid")
+            raise ProposalError(PROPOSAL_MODEL_OUTPUT_INVALID)
         try:
             return _ProposerOutput.model_validate_json(raw_json)
         except ValidationError:
-            raise ProposalError("proposal_model_output_invalid") from None
+            raise ProposalError(PROPOSAL_MODEL_OUTPUT_INVALID) from None
 
     def _build_action(
         self,
@@ -475,4 +485,4 @@ class ModelAgentProposer:
                 arguments=parsed.arguments,
             )
         except ValidationError:
-            raise ProposalError("proposal_model_output_invalid") from None
+            raise ProposalError(PROPOSAL_MODEL_OUTPUT_INVALID) from None

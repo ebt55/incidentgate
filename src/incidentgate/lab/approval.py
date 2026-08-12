@@ -11,6 +11,12 @@ from datetime import datetime
 from typing import Protocol
 
 from incidentgate.contracts import ApprovalRequest, ApprovalToken, Role
+from incidentgate.reasons import (
+    AUDIT_APPROVED,
+    AUDIT_APPROVER_ROLE_REQUIRED,
+    AUDIT_REQUEST_EXPIRED,
+    AUDIT_REQUEST_NOT_ACTIVE,
+)
 
 from .auth import Principal
 from .errors import ApprovalDenied
@@ -50,14 +56,14 @@ class ApprovalService:
 
     def approve(self, request: ApprovalRequest, principal: Principal) -> ApprovalToken:
         if principal.role is not Role.APPROVER:
-            self._audit_denial(request, principal, "approver_role_required")
+            self._audit_denial(request, principal, AUDIT_APPROVER_ROLE_REQUIRED)
             raise ApprovalDenied("approver role is required to issue approval tokens")
         now = self.clock()
         if now < request.requested_at:
-            self._audit_denial(request, principal, "request_not_active")
+            self._audit_denial(request, principal, AUDIT_REQUEST_NOT_ACTIVE)
             raise ApprovalDenied("approval request is not active")
         if now >= request.expires_at:
-            self._audit_denial(request, principal, "request_expired")
+            self._audit_denial(request, principal, AUDIT_REQUEST_EXPIRED)
             raise ApprovalDenied("approval request is expired")
         token = ApprovalToken(
             approval_id=request.approval_id,
@@ -76,7 +82,7 @@ class ApprovalService:
             actor=principal.actor,
             transition="approval_issued",
             action_hash=request.action_hash,
-            reason="approved",
+            reason=AUDIT_APPROVED,
             timestamp=now,
         )
         return token

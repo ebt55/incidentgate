@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -43,6 +43,7 @@ from incidentgate.contracts import (
     RouteCustomerReadsPrimaryArgs,
     SafeguardsRecord,
     StageDisposition,
+    TerminalOutcome,
     ToolCallContext,
     VerificationResult,
     canonical_action_hash,
@@ -72,6 +73,7 @@ from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
 from incidentgate.manifests import ReliabilityManifest
 from incidentgate.planned_checkers import PLANNED_CHECKER_SPECS, evaluate
+from incidentgate.reasons import unknown_reasons
 from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
 
 _ROOT = Path(__file__).parents[3]
@@ -91,8 +93,9 @@ _PROPOSERS: dict[str, type[Any]] = {
 _NO_ACTION_RELIABILITY = ("R05", "R10", "R11")
 
 
-TerminalOutcome = Literal["resolved", "deferred", "blocked", "failed"]
-_TERMINAL_OUTCOMES: tuple[str, ...] = ("resolved", "deferred", "blocked", "failed")
+# The tuple form of the same axis, derived from the alias rather than written
+# out again, so the runtime check and the static type cannot disagree.
+_TERMINAL_OUTCOMES: tuple[str, ...] = get_args(TerminalOutcome)
 
 
 @dataclass(frozen=True)
@@ -119,12 +122,23 @@ def _counterfactual_final_state(
 def _observed_terminal_outcome(
     result: WorkflowResult | _CounterfactualResult, recovery_verified: bool
 ) -> TerminalOutcome:
-    """Report the terminal state that actually happened on this run."""
+    """Report the terminal state that actually happened on this run.
+
+    This is the single funnel through which an observed runtime outcome enters
+    the evaluation, so it is where both axes are checked against their frozen
+    vocabularies: the terminal state, which was already validated here, and the
+    reasons, which were not. An unregistered reason used to be compared for
+    equality against a frozen contract value and simply reported as a mismatch,
+    which reads as a scenario failure rather than as a vocabulary defect.
+    """
     observed = str(result.final_state)
     if observed not in _TERMINAL_OUTCOMES:
         raise ValueError(f"unsupported observed terminal outcome: {observed}")
     if observed == "resolved" and not recovery_verified:
         raise ValueError("a resolved terminal outcome requires verified recovery")
+    strangers = unknown_reasons(getattr(result, "reasons", ()))
+    if strangers:
+        raise ValueError(f"observed reasons outside the frozen vocabulary: {', '.join(strangers)}")
     return cast(TerminalOutcome, observed)
 
 
@@ -309,7 +323,7 @@ class ReliabilityEvaluationResultV2(BaseModel):
             "Both terms are read back from Postgres after the run; neither is assumed."
         ),
     )
-    terminal_outcome: Literal["resolved", "deferred", "blocked", "failed"] = Field(
+    terminal_outcome: TerminalOutcome = Field(
         description=(
             "The terminal state observed on this run, taken from the durable graph result "
             "or the counterfactual execution receipt. Never presumed successful."
@@ -1058,9 +1072,7 @@ class ReliabilityEvaluationRunnerV2:
             ):
                 raise ValueError("R05 runtime outcome does not bind to frozen no-action contract")
             diagnosis = report.diagnosis
-            terminal_outcome = cast(
-                Literal["resolved", "deferred", "blocked", "failed"], status.result.final_state
-            )
+            terminal_outcome = cast(TerminalOutcome, status.result.final_state)
             stages = SafeguardsRecord(
                 evidence_gate=StageDisposition.EXECUTED,
                 policy=StageDisposition.SKIPPED_NO_ACTION,
@@ -1079,10 +1091,7 @@ class ReliabilityEvaluationRunnerV2:
             ):
                 raise ValueError("R05 policy-only evidence gate rejected the collection")
             diagnosis = m.acceptable_diagnoses[0]
-            terminal_outcome = cast(
-                Literal["resolved", "deferred", "blocked", "failed"],
-                NO_ACTION_CATALOG["R05"]["state"],
-            )
+            terminal_outcome = cast(TerminalOutcome, NO_ACTION_CATALOG["R05"]["state"])
             stages = (
                 SafeguardsRecord(
                     evidence_gate=StageDisposition.EXECUTED,

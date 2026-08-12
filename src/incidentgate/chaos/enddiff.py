@@ -20,6 +20,8 @@ from uuid import UUID
 import psycopg
 from psycopg.rows import dict_row
 
+from incidentgate.reasons import unknown_reasons
+
 DUPLICATE_MUTATION = "duplicate-mutation"
 LOST_INCIDENT = "lost-incident"
 STATE_DIVERGENCE = "state-divergence"
@@ -218,6 +220,18 @@ def capture(
 ) -> dict[str, Any]:
     """Read the whole normalized durable end state for one scenario incident."""
     incident = f"INC-{scenario}"
+    # The terminal_reasons field spec claims "fixed vocabulary values; no
+    # normalization needed". Nothing used to check that, so an unregistered
+    # reason compared clean against an identical unregistered reason and the
+    # differ reported a match between two strings nobody had ever declared.
+    # Fail here instead: a cell that emits a reason outside the frozen
+    # vocabulary is a harness error, not a passing comparison.
+    strangers = unknown_reasons(reasons)
+    if strangers:
+        raise ValueError(
+            f"{scenario} terminated with reasons outside the frozen vocabulary: "
+            f"{', '.join(strangers)}"
+        )
     state: dict[str, Any] = {
         "terminal_final_state": final_state,
         "terminal_reasons": list(reasons),

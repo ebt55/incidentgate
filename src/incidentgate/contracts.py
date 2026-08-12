@@ -31,6 +31,17 @@ class IncidentState(StrEnum):
     BLOCKED = "blocked"
 
 
+# The terminal outcome axis, declared once. It was written out six times across
+# contracts and the reliability evaluation, which is five chances to disagree.
+#
+# It is deliberately NOT the same set as IncidentState. "failed" is a member here
+# and not a member there, and nothing in the system currently produces it -- see
+# the note at the IncidentState(final_state) callsites in control/workflow.py.
+# Widening IncidentState to close the gap would change a persisted enum, so the
+# gap is recorded and pinned by a test rather than closed here.
+TerminalOutcome = Literal["resolved", "deferred", "blocked", "failed"]
+
+
 class IncidentIdentity(ContractModel):
     incident_id: str = Field(pattern=r"^INC-[A-Za-z0-9_-]+$")
     scenario_id: str = Field(pattern=r"^(D[1-8]|S[1-2]|R[0-9]{2}|T[1-8])$")
@@ -399,7 +410,7 @@ class EvaluationResult(ContractModel):
     model_cost_micros: int = Field(ge=0)
     completed_at: datetime
     trace_id: str | None = Field(default=None, min_length=1, max_length=256)
-    terminal_outcome: Literal["resolved", "deferred", "blocked", "failed"]
+    terminal_outcome: TerminalOutcome
     incident_report: IncidentReport
 
     @model_validator(mode="after")
@@ -529,7 +540,7 @@ class CheckpointBEvaluationResult(ContractModel):
     recovery_verified: bool | None = None
     deferred_eligible: bool
     deferred_correctly: bool
-    terminal_outcome: Literal["resolved", "deferred", "blocked", "failed"]
+    terminal_outcome: TerminalOutcome
     policy_decision: PolicyDecision | None = None
     policy_caught_eligible: bool = False
     policy_caught: bool | None = None

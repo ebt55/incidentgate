@@ -163,6 +163,14 @@ def build_deferred_graph(
             )
             final_state = str(getattr(collector, "final_state", "blocked"))
             if final_state != "blocked" and reason == TIME_BUDGET_EXHAUSTED:
+                # IncidentState has no "failed" member, so this conversion would
+                # raise on one of the four TerminalOutcome values.  It cannot
+                # reach here: final_state comes only from the no-action
+                # collector, which assigns "deferred" or NO_ACTION_CATALOG's
+                # state, and every catalog state is resolved/deferred/blocked.
+                # "failed" is produced only by the evaluation's counterfactual
+                # path, which never drives this graph.  Pinned by
+                # test_terminal_outcomes_reaching_the_enum_are_all_members.
                 terminal = IncidentState(final_state)
                 audit.emit(
                     audit_event(
@@ -200,6 +208,8 @@ def build_deferred_graph(
         diagnosis = str(getattr(collector, "diagnosis", metadata["diagnosis"]))
         reason = str(getattr(collector, "deferred_reason", metadata["reason"]))
         final_state = str(getattr(collector, "final_state", metadata["state"]))
+        # Same reasoning as the conversion above: this domain is the no-action
+        # catalog's state values, none of which is "failed".
         terminal = IncidentState(final_state)
         audit.emit(
             audit_event(

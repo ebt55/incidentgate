@@ -14,7 +14,15 @@ same commit that changes the emission site.
 
 from __future__ import annotations
 
+from typing import get_args
+
+import psycopg
+import pytest
+
 from incidentgate import reasons
+from incidentgate.chaos import enddiff
+from incidentgate.contracts import IncidentState, TerminalOutcome
+from incidentgate.evaluation.reliability_v2 import _TERMINAL_OUTCOMES
 from incidentgate.scenario_registry import NO_ACTION_CATALOG
 
 FROZEN_STATIC_REASONS = frozenset(
@@ -163,3 +171,58 @@ def test_no_action_catalog_reasons_are_all_in_the_frozen_vocabulary() -> None:
     for scenario, entry in NO_ACTION_CATALOG.items():
         reason = str(entry["reason"])
         assert reasons.is_known_reason(reason), f"{scenario} emits unregistered reason {reason}"
+
+
+def test_terminal_outcome_axis_is_declared_once() -> None:
+    """The Literal and the runtime tuple are the same axis; they were written apart."""
+    assert set(get_args(TerminalOutcome)) == set(_TERMINAL_OUTCOMES)
+    assert set(_TERMINAL_OUTCOMES) == {"resolved", "deferred", "blocked", "failed"}
+
+
+def test_terminal_outcomes_reaching_the_enum_are_all_members() -> None:
+    """Pins the "failed" gap that control/workflow.py's IncidentState() calls rely on.
+
+    IncidentState has no "failed" member, so IncidentState(final_state) raises on
+    one of the four TerminalOutcome values. Today that is unreachable: those two
+    callsites live in the no-action collection graph, whose final_state comes
+    only from the collector's "deferred" or NO_ACTION_CATALOG's state values.
+    "failed" is produced solely by the evaluation's counterfactual path, which
+    never drives that graph.
+
+    If someone adds a catalog state or a collector final_state of "failed", this
+    fails here rather than as a ValueError inside a durable workflow run.
+    """
+    reachable = {str(entry["state"]) for entry in NO_ACTION_CATALOG.values()}
+    reachable.add("deferred")  # DeferredEvidenceCollector's own assignment
+    reachable.add("blocked")  # the getattr default
+    members = {state.value for state in IncidentState}
+    assert reachable <= members, (
+        f"unconvertible terminal state reaches the enum: {reachable - members}"
+    )
+    # And the gap itself is real, not imagined: this is why the callsites need a note.
+    assert "failed" in _TERMINAL_OUTCOMES
+    assert "failed" not in members
+
+
+def test_capture_rejects_reasons_outside_the_vocabulary() -> None:
+    """The chaos boundary fails loudly instead of comparing two undeclared strings."""
+    with pytest.raises(ValueError, match="outside the frozen vocabulary"):
+        enddiff.capture(
+            "postgresql://unused", "D1", final_state="blocked", reasons=("not_a_real_reason",)
+        )
+
+
+def test_capture_checks_the_vocabulary_before_it_touches_the_database() -> None:
+    """Ordering matters: an unregistered reason must not need a live database to be caught.
+
+    The unreachable DSN is the control. With a registered reason the call gets
+    as far as connecting and fails with a psycopg error; with an unregistered
+    one it never gets there and fails with ValueError.
+    """
+    unreachable = "postgresql://nobody@127.0.0.1:1/nowhere?connect_timeout=1"
+    with pytest.raises(psycopg.Error):
+        enddiff.capture(
+            unreachable, "D1", final_state="resolved", reasons=(reasons.RECOVERY_VERIFIED,)
+        )
+    with pytest.raises(ValueError, match="outside the frozen vocabulary"):
+        enddiff.capture(unreachable, "D1", final_state="resolved", reasons=("invented_reason",))

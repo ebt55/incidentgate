@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     IncidentIdentity,
@@ -24,13 +24,13 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.integration import CheckpointRuntime, PendingApproval, RuntimeStatus
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied, ResponseLost
-from triage_agent_lab.lab.repository import LabRepository
-from triage_agent_lab.lab.service import ObservabilityService, OperationsService
-from triage_agent_lab.mcp_servers.shared import context_from_payload
+from incidentgate.control.models import Caller
+from incidentgate.integration import CheckpointRuntime, PendingApproval, RuntimeStatus
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ApprovalDenied, PermissionDenied, ResponseLost
+from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.service import ObservabilityService, OperationsService
+from incidentgate.mcp_servers.shared import context_from_payload
 
 
 def fresh_repository() -> LabRepository:

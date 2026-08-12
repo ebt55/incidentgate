@@ -1,6 +1,6 @@
 """CI-sized slice of the chaos kill matrix plus unit cover for the differ.
 
-The full matrix stays a command (``python -m triage_agent_lab.chaos.matrix``).
+The full matrix stays a command (``python -m incidentgate.chaos.matrix``).
 The live tests here run a representative subset: D1 across the interesting
 windows, and one no-action scenario, all against real killed subprocesses.
 
@@ -28,9 +28,9 @@ from typing import Any
 import psycopg
 import pytest
 
-from triage_agent_lab.chaos import enddiff, matrix
-from triage_agent_lab.chaos.killpoints import BoundaryEvent, boundary_id
-from triage_agent_lab.lab.repository import LabRepository
+from incidentgate.chaos import enddiff, matrix
+from incidentgate.chaos.killpoints import BoundaryEvent, boundary_id
+from incidentgate.lab.repository import LabRepository
 
 SELECTED_BOUNDARIES = (
     "start/collect:entry",

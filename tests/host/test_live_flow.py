@@ -5,9 +5,9 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from triage_agent_lab.host import HostSettings, create_host_app
-from triage_agent_lab.integration import IncidentRuntime
-from triage_agent_lab.lab.repository import LabRepository
+from incidentgate.host import HostSettings, create_host_app
+from incidentgate.integration import IncidentRuntime
+from incidentgate.lab.repository import LabRepository
 
 
 def _nonce(page: str, position: int = 0) -> str:

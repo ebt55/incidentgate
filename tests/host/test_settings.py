@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Self
 
 import pytest
 from fastapi.testclient import TestClient
 
-from triage_agent_lab.host.app import (
+from incidentgate.host.app import (
     HostSettings,
     build_runtime_factory,
     settings_from_env,
@@ -112,7 +112,7 @@ def test_unknown_anthropic_model_is_rejected_at_settings_construction() -> None:
 
 
 def test_anthropic_runtime_factory_selects_provider_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    import triage_agent_lab.host.app as host_app
+    import incidentgate.host.app as host_app
 
     captured: list[object] = []
 
@@ -142,7 +142,7 @@ def test_anthropic_runtime_factory_selects_provider_without_network(monkeypatch:
 def test_host_startup_initializes_without_destructive_reset() -> None:
     from contextlib import nullcontext
 
-    from triage_agent_lab.host.app import create_host_app
+    from incidentgate.host.app import create_host_app
 
     repository = RecordingRepository()
     app = create_host_app(

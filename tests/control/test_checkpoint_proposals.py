@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     EvidenceRecord,
     IncidentIdentity,
     PolicyConfiguration,
     Role,
     ToolCallContext,
 )
-from triage_agent_lab.control import (
+from incidentgate.control import (
     Caller,
     DeterministicD2Proposer,
     DeterministicD3Proposer,
     DeterministicPolicyEngine,
     ProposalError,
 )
-from triage_agent_lab.control.models import EvidenceState, EvidenceValidation
+from incidentgate.control.models import EvidenceState, EvidenceValidation
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 

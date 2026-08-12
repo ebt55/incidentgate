@@ -2,9 +2,9 @@ from uuid import uuid4
 
 import pytest
 
-from triage_agent_lab.contracts import Role, ToolCallContext
-from triage_agent_lab.lab.auth import Principal, require_operation, require_read
-from triage_agent_lab.lab.errors import PermissionDenied
+from incidentgate.contracts import Role, ToolCallContext
+from incidentgate.lab.auth import Principal, require_operation, require_read
+from incidentgate.lab.errors import PermissionDenied
 
 
 def context(permission: str, include_key: bool = False) -> ToolCallContext:

@@ -8,8 +8,6 @@
 >
 > Concretely, as of this commit:
 >
-> - The Python package is still named `triage_agent_lab`. The rename to
->   `incidentgate` is the next queued change and will break every import path.
 > - **The agent does not yet speak MCP over a transport.** The three MCP servers
 >   are implemented and tested in-process, but nothing serves them over a wire
 >   protocol, and the workflow calls Python adapters directly. See
@@ -62,7 +60,7 @@ directly in Postgres to prove the differ actually goes red when it should.
 Measured 2026-08-11. Regenerate with:
 
 ```bash
-uv run python -m triage_agent_lab.chaos.matrix --out artifacts/chaos/
+uv run python -m incidentgate.chaos.matrix --out artifacts/chaos/
 ```
 
 Two honest findings from that run, neither of which is a durability failure:
@@ -189,14 +187,14 @@ These are the things a reviewer should know before believing anything above.
 
 ## Repository map
 
-- `src/triage_agent_lab/control/` — workflow graph, policy engine, advisory
+- `src/incidentgate/control/` — workflow graph, policy engine, advisory
   monitor, deterministic and model proposers, response cache
-- `src/triage_agent_lab/chaos/` — kill-point injection, worker, end-state differ,
+- `src/incidentgate/chaos/` — kill-point injection, worker, end-state differ,
   matrix runner
-- `src/triage_agent_lab/lab/` — durable Postgres state, approval service,
+- `src/incidentgate/lab/` — durable Postgres state, approval service,
   operation ledger, audit timeline
-- `src/triage_agent_lab/mcp_servers/` — the three FastMCP server definitions
-- `src/triage_agent_lab/evaluation/` — checkers, three-condition runners, replay
+- `src/incidentgate/mcp_servers/` — the three FastMCP server definitions
+- `src/incidentgate/evaluation/` — checkers, three-condition runners, replay
 - `scenarios/` — frozen contracts (checkpoints, reliability, sabotage)
 - `db/` — journaled Postgres migrations
 - `docs/` — [threat model](docs/threat-model.md),

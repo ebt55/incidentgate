@@ -10,14 +10,14 @@ from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from triage_agent_lab.contracts import IncidentIdentity, Role, ToolCallContext
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.host.app import HostSettings, create_host_app
-from triage_agent_lab.integration import IncidentRuntime, PendingApproval
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import LabRepository
-from triage_agent_lab.telemetry import create_tracer_runtime
+from incidentgate.contracts import IncidentIdentity, Role, ToolCallContext
+from incidentgate.control.models import Caller
+from incidentgate.host.app import HostSettings, create_host_app
+from incidentgate.integration import IncidentRuntime, PendingApproval
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ResponseLost
+from incidentgate.lab.repository import LabRepository
+from incidentgate.telemetry import create_tracer_runtime
 
 
 @pytest.fixture

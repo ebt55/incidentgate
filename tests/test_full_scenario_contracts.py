@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.control import proposal
-from triage_agent_lab.manifests import load_reliability_manifests, load_sabotage_manifests
-from triage_agent_lab.planned_checkers import registry_for_manifests
-from triage_agent_lab.scenario_registry import (
+from incidentgate.control import proposal
+from incidentgate.manifests import load_reliability_manifests, load_sabotage_manifests
+from incidentgate.planned_checkers import registry_for_manifests
+from incidentgate.scenario_registry import (
     FROZEN_RELIABILITY_SCENARIOS,
     FROZEN_SABOTAGE_SCENARIOS,
     NO_ACTION_CATALOG,

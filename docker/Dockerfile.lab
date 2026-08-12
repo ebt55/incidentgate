@@ -6,4 +6,4 @@ COPY src ./src
 RUN uv sync --locked --no-dev --extra runtime
 
 EXPOSE 8080
-CMD ["uv", "run", "--no-sync", "uvicorn", "triage_agent_lab.lab.target:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uv", "run", "--no-sync", "uvicorn", "incidentgate.lab.target:app", "--host", "0.0.0.0", "--port", "8080"]

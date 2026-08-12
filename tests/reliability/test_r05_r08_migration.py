@@ -10,7 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from triage_agent_lab.lab.repository import LabRepository
+from incidentgate.lab.repository import LabRepository
 
 ROOT = Path(__file__).parents[2]
 

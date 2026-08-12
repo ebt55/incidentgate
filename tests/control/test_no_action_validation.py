@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
-from triage_agent_lab.contracts import EvidenceRecord
-from triage_agent_lab.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
+from incidentgate.contracts import EvidenceRecord
+from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
 
 
 def record(payload: dict[str, object], tool_name: str, *, scenario: str = "D6") -> EvidenceRecord:

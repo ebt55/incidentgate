@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from triage_agent_lab.contracts import EvaluationMode, IncidentIdentity, VerificationResult
-from triage_agent_lab.evaluation.reliability_v2 import ReliabilityEvaluationRunnerV2
-from triage_agent_lab.integration.adapters import LabRecoveryVerifier
-from triage_agent_lab.manifests import ReliabilityManifest
+from incidentgate.contracts import EvaluationMode, IncidentIdentity, VerificationResult
+from incidentgate.evaluation.reliability_v2 import ReliabilityEvaluationRunnerV2
+from incidentgate.integration.adapters import LabRecoveryVerifier
+from incidentgate.manifests import ReliabilityManifest
 
 # R09/R12 mint an action; R10/R11 are context-bound zero-authority observations.
 ACTION_SCENARIOS = ("R09", "R12")

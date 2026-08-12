@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from triage_agent_lab.contracts import EvaluationMode, StageDisposition
-from triage_agent_lab.evaluation.runner import CheckpointBEvaluationRunner
+from incidentgate.contracts import EvaluationMode, StageDisposition
+from incidentgate.evaluation.runner import CheckpointBEvaluationRunner
 
 
 @pytest.mark.integration
@@ -13,7 +13,7 @@ def test_checkpoint_b_runs_all_live_fixture_rows(monkeypatch: pytest.MonkeyPatch
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("local Postgres is required")
-    monkeypatch.setattr("triage_agent_lab.evaluation.runner._revision", lambda value: value or "a" * 40)
+    monkeypatch.setattr("incidentgate.evaluation.runner._revision", lambda value: value or "a" * 40)
     raw = CheckpointBEvaluationRunner(dsn, mock_evaluation=True, git_revision="a" * 40).run()
     assert len(raw.results) == 30
     assert all(row.final_checker_passed or (row.scenario_id == "S1" and row.requested_mode is EvaluationMode.UNGATED) for row in raw.results)

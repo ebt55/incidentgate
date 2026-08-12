@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     CleanupArgs,
@@ -16,12 +16,12 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied
-from triage_agent_lab.lab.repository import LabRepository
-from triage_agent_lab.lab.service import ObservabilityService, OperationsService
-from triage_agent_lab.mcp_servers.entrypoints import observability_server, operations_server
-from triage_agent_lab.mcp_servers.observability import ObservabilityAdapter
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ApprovalDenied, PermissionDenied
+from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.service import ObservabilityService, OperationsService
+from incidentgate.mcp_servers.entrypoints import observability_server, operations_server
+from incidentgate.mcp_servers.observability import ObservabilityAdapter
 
 
 @pytest.fixture

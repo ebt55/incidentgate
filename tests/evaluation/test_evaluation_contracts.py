@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalSimulation,
     CheckpointBEvaluationResult,
     EvaluationMode,

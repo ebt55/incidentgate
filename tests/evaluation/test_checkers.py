@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from test_evaluation_contracts import _row
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     CheckpointBEvaluationResult,
     EvaluationMode,
     EvidenceRecord,
@@ -17,8 +17,8 @@ from triage_agent_lab.contracts import (
     StageDisposition,
     ToolCallContext,
 )
-from triage_agent_lab.evaluation.checkers import CHECKER_REGISTRY, CheckerSnapshot, run_checker
-from triage_agent_lab.manifests import load_checkpoint_manifests
+from incidentgate.evaluation.checkers import CHECKER_REGISTRY, CheckerSnapshot, run_checker
+from incidentgate.manifests import load_checkpoint_manifests
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 

@@ -15,7 +15,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     EvidenceRecord,
@@ -31,7 +31,7 @@ from triage_agent_lab.contracts import (
     VerificationResult,
     canonical_action_hash,
 )
-from triage_agent_lab.control import (
+from incidentgate.control import (
     Caller,
     DeterministicD1Proposer,
     DeterministicPolicyEngine,
@@ -39,7 +39,7 @@ from triage_agent_lab.control import (
     WorkflowDependencies,
     build_workflow_graph,
 )
-from triage_agent_lab.control.models import ControlAuditEvent
+from incidentgate.control.models import ControlAuditEvent
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 ALLOWED_SOURCES = frozenset(
@@ -144,7 +144,7 @@ class FixedProposer:
         self, identified_incident: IncidentIdentity, authenticated: Caller,
         call_context: ToolCallContext, _: tuple[EvidenceRecord, ...],
     ) -> tuple[object, CanonicalAction]:
-        from triage_agent_lab.contracts import Hypothesis
+        from incidentgate.contracts import Hypothesis
 
         return (
             Hypothesis(hypothesis_id="test", statement="test", confidence=1.0, evidence_ids=self.evidence_ids),
@@ -577,7 +577,7 @@ def test_execute_port_idempotency_contract_reuses_graph_derived_key() -> None:
     """Narrow port claim; this does not claim LangGraph/Postgres crash safety."""
     proposed, supplied_context, executor = action(), context(idempotency_key=uuid4()), Executor()
     action_hash = canonical_action_hash(proposed)
-    from triage_agent_lab.control.workflow import _idempotency_key
+    from incidentgate.control.workflow import _idempotency_key
 
     key = _idempotency_key(action_hash, proposed.thread_id)
     graph_context = supplied_context.model_copy(update={"idempotency_key": key})
@@ -593,7 +593,7 @@ def test_idempotency_key_derivation_is_a_frozen_wire_value() -> None:
     compared for exact equality by chaos/enddiff.py, so any drift in the seed literal
     (including its stale-looking "triage-agent-lab" and ":d1:" segments) silently turns
     exactly-once crash replay into duplicate mutation. This must fail loudly instead."""
-    from triage_agent_lab.control.workflow import _IDEMPOTENCY_KEY_PREFIX, _idempotency_key
+    from incidentgate.control.workflow import _IDEMPOTENCY_KEY_PREFIX, _idempotency_key
 
     assert _IDEMPOTENCY_KEY_PREFIX == "triage-agent-lab:d1:"
     assert str(_idempotency_key("hash-golden", "thread-golden")) == "6ec918c4-5943-52d3-9a13-c9661a6cf154"

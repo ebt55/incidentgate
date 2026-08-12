@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     EvidenceRecord,
@@ -12,17 +12,17 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied
-from triage_agent_lab.lab.service import ObservabilityService, OperationsService, TicketsService
-from triage_agent_lab.mcp_servers.entrypoints import (
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ApprovalDenied, PermissionDenied
+from incidentgate.lab.service import ObservabilityService, OperationsService, TicketsService
+from incidentgate.mcp_servers.entrypoints import (
     observability_server,
     operations_server,
     tickets_server,
 )
-from triage_agent_lab.mcp_servers.observability import ObservabilityAdapter
-from triage_agent_lab.mcp_servers.operations import OperationsAdapter
-from triage_agent_lab.mcp_servers.tickets import TicketsAdapter
+from incidentgate.mcp_servers.observability import ObservabilityAdapter
+from incidentgate.mcp_servers.operations import OperationsAdapter
+from incidentgate.mcp_servers.tickets import TicketsAdapter
 
 
 class FakeObservabilityRepository:

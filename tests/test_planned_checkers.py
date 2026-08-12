@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from triage_agent_lab.manifests import load_reliability_manifests, load_sabotage_manifests
-from triage_agent_lab.planned_checkers import (
+from incidentgate.manifests import load_reliability_manifests, load_sabotage_manifests
+from incidentgate.planned_checkers import (
     PLANNED_CHECKER_SPECS,
     Assertion,
     CheckerSpec,

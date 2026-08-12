@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -7,14 +7,14 @@ from uuid import UUID
 
 import pytest
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     CanonicalAction,
     MonitorVerdict,
     RestartArgs,
     canonical_action_hash,
 )
-from triage_agent_lab.control.model_capabilities import MODEL_CAPABILITIES, model_accepts_sampling
-from triage_agent_lab.control.monitor import AnthropicAdvisoryMonitor
+from incidentgate.control.model_capabilities import MODEL_CAPABILITIES, model_accepts_sampling
+from incidentgate.control.monitor import AnthropicAdvisoryMonitor
 
 # The model pinned by the dated 2026-08-10 monitor smoke receipt, so these tests describe the
 # wire shape that receipt actually recorded.

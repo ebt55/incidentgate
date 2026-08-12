@@ -10,8 +10,8 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from triage_agent_lab.contracts import ToolCallContext
-from triage_agent_lab.lab.repository import LabRepository
+from incidentgate.contracts import ToolCallContext
+from incidentgate.lab.repository import LabRepository
 
 ROOT = Path(__file__).parents[2]
 
@@ -134,7 +134,7 @@ def test_r11_pin_state_is_observed_so_a_violated_pin_is_expressible(
 
 def test_a_violated_pin_fails_the_no_action_evidence_gate() -> None:
     """A replaced pin must be rejected, not silently accepted as an unchanged pin."""
-    from triage_agent_lab.scenario_registry import validate_no_action_evidence
+    from incidentgate.scenario_registry import validate_no_action_evidence
 
     class _Record:
         def __init__(self, tool_name: str, payload: dict[str, object]) -> None:

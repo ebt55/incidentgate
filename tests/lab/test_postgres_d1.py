@@ -6,7 +6,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     Role,
@@ -14,10 +14,10 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ApprovalDenied, LabError, ResponseLost
-from triage_agent_lab.lab.repository import LabRepository
-from triage_agent_lab.lab.service import ObservabilityService, OperationsService, TicketsService
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ApprovalDenied, LabError, ResponseLost
+from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.service import ObservabilityService, OperationsService, TicketsService
 
 Change = Callable[
     [ToolCallContext, CanonicalAction, ApprovalToken],

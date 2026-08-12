@@ -9,7 +9,7 @@ import pytest
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     CanonicalAction,
     IncidentIdentity,
     MonitorResult,
@@ -18,12 +18,12 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.integration import IncidentRuntime, PendingApproval
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ResponseLost
-from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, LabRepository
-from triage_agent_lab.telemetry import create_tracer_runtime
+from incidentgate.control.models import Caller
+from incidentgate.integration import IncidentRuntime, PendingApproval
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ResponseLost
+from incidentgate.lab.repository import APPROVED_API_URL_REF, LabRepository
+from incidentgate.telemetry import create_tracer_runtime
 
 
 @pytest.fixture

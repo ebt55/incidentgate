@@ -1,4 +1,4 @@
-﻿"""Unit tests for the model-in-the-loop proposer. DB-free and network-free.
+"""Unit tests for the model-in-the-loop proposer. DB-free and network-free.
 
 Every provider call is an injected fake; the proposer's safety guarantees are enforced in
 code after the model returns, so a hostile steering prompt cannot make it fabricate evidence
@@ -16,27 +16,27 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     CanonicalAction,
     EvidenceRecord,
     ModelInvocationRecord,
     RollbackArgs,
     canonical_action_hash,
 )
-from triage_agent_lab.control.model_capabilities import (
+from incidentgate.control.model_capabilities import (
     MODEL_CAPABILITIES,
     THINKING_HEADROOM_TOKENS,
     model_accepts_sampling,
 )
-from triage_agent_lab.control.model_proposal import (
+from incidentgate.control.model_proposal import (
     AnthropicCompletionClient,
     CompletionRequest,
     CompletionResult,
     ModelAgentProposer,
     PricingSnapshot,
 )
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.control.proposal import ProposalError
+from incidentgate.control.models import Caller
+from incidentgate.control.proposal import ProposalError
 
 HAIKU = "claude-haiku-4-5-20251001"
 OPUS = "claude-opus-5"
@@ -53,7 +53,7 @@ EXPIRES = OBSERVED + timedelta(hours=1)
 
 
 def incident() -> Any:
-    from triage_agent_lab.contracts import IncidentIdentity
+    from incidentgate.contracts import IncidentIdentity
 
     return IncidentIdentity(
         incident_id="INC-d1", scenario_id="D1", thread_id="thread-1", correlation_id="corr-1"
@@ -61,13 +61,13 @@ def incident() -> Any:
 
 
 def caller() -> Caller:
-    from triage_agent_lab.contracts import Role
+    from incidentgate.contracts import Role
 
     return Caller(actor="agent-1", role=Role.OPERATOR)
 
 
 def context(**overrides: Any) -> Any:
-    from triage_agent_lab.contracts import ToolCallContext
+    from incidentgate.contracts import ToolCallContext
 
     values: dict[str, Any] = {
         "incident_id": "INC-d1",

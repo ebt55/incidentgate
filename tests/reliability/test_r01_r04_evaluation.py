@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from triage_agent_lab.contracts import EvaluationMode
-from triage_agent_lab.evaluation.artifacts import load_raw
-from triage_agent_lab.evaluation.reliability_v2 import (
+from incidentgate.contracts import EvaluationMode
+from incidentgate.evaluation.artifacts import load_raw
+from incidentgate.evaluation.reliability_v2 import (
     ReliabilityEvaluationResultV2,
     ReliabilityEvaluationRunnerV2,
     ReliabilityRawEnvelopeV2,
     compare_reliability_semantics,
 )
-from triage_agent_lab.manifests import ReliabilityManifest
+from incidentgate.manifests import ReliabilityManifest
 
 
 def _manifests() -> list[ReliabilityManifest]:

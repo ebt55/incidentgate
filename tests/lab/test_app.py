@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from triage_agent_lab.lab.app import ADMIN_HEADER, create_app
+from incidentgate.lab.app import ADMIN_HEADER, create_app
 
 
 class FakeTarget:

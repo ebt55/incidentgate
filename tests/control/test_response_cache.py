@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     EvidenceRecord,
     IncidentIdentity,
     ModelInvocationRecord,
@@ -26,14 +26,14 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.control.model_proposal import (
+from incidentgate.control.model_proposal import (
     CompletionRequest,
     CompletionResult,
     ModelAgentProposer,
 )
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.control.proposal import ProposalError
-from triage_agent_lab.control.response_cache import (
+from incidentgate.control.models import Caller
+from incidentgate.control.proposal import ProposalError
+from incidentgate.control.response_cache import (
     CacheBackedCompletionClient,
     ResponseCache,
     ResponseCacheMiss,

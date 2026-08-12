@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     ApprovalToken,
     CanonicalAction,
     IncidentIdentity,
@@ -17,12 +17,12 @@ from triage_agent_lab.contracts import (
     ToolCallContext,
     canonical_action_hash,
 )
-from triage_agent_lab.control.models import Caller
-from triage_agent_lab.integration import IncidentRuntime, PendingApproval
-from triage_agent_lab.lab.auth import Principal
-from triage_agent_lab.lab.errors import ApprovalDenied, PermissionDenied, ResponseLost
-from triage_agent_lab.lab.repository import APPROVED_API_URL_REF, LabRepository
-from triage_agent_lab.lab.service import ObservabilityService, OperationsService
+from incidentgate.control.models import Caller
+from incidentgate.integration import IncidentRuntime, PendingApproval
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ApprovalDenied, PermissionDenied, ResponseLost
+from incidentgate.lab.repository import APPROVED_API_URL_REF, LabRepository
+from incidentgate.lab.service import ObservabilityService, OperationsService
 
 MUTATING = ("D1", "D2", "D3", "D5", "D8")
 NO_ACTION = ("D4", "D6", "D7", "S1", "S2")

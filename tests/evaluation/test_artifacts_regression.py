@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from triage_agent_lab.evaluation.artifacts import load_raw, render_reports
-from triage_agent_lab.evaluation.regression import compare_semantics
-from triage_agent_lab.evaluation.runner import CheckpointBEvaluationRunner, run_checkpoint_b
+from incidentgate.evaluation.artifacts import load_raw, render_reports
+from incidentgate.evaluation.regression import compare_semantics
+from incidentgate.evaluation.runner import CheckpointBEvaluationRunner, run_checkpoint_b
 
 
 @pytest.mark.integration
@@ -21,7 +21,7 @@ def test_checkpoint_b_artifacts_are_raw_bound_and_replayable(monkeypatch: pytest
     if not dsn:
         pytest.skip("local Postgres is required")
     revision = "a" * 40
-    monkeypatch.setattr("triage_agent_lab.evaluation.runner._revision", lambda value: value or revision)
+    monkeypatch.setattr("incidentgate.evaluation.runner._revision", lambda value: value or revision)
     output = tmp_path / "checkpoint-b"
     raw_path = run_checkpoint_b(dsn, output=output, mock_evaluation=True, git_revision=revision)
     assert raw_path.name == "raw-results.json"
@@ -76,7 +76,7 @@ def test_raw_envelope_rejects_malformed_incomplete_duplicate_and_identity_mismat
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("local Postgres is required for frozen valid matrix fixture")
-    monkeypatch.setattr("triage_agent_lab.evaluation.runner._revision", lambda value: value or "a" * 40)
+    monkeypatch.setattr("incidentgate.evaluation.runner._revision", lambda value: value or "a" * 40)
     raw = CheckpointBEvaluationRunner(dsn, mock_evaluation=True, git_revision="a" * 40).run()
     body = raw.model_dump(mode="json")
     variants = [

@@ -35,7 +35,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.lab
-    command: ["uv", "run", "--no-sync", "uvicorn", "triage_agent_lab.host.server:app", "--host", "0.0.0.0", "--port", "8090"]
+    command: ["uv", "run", "--no-sync", "uvicorn", "incidentgate.host.server:app", "--host", "0.0.0.0", "--port", "8090"]
     environment:
       DATABASE_URL: postgresql://incidentgate:${INCIDENTGATE_POSTGRES_PASSWORD:-incidentgate_dev_only}@postgres:5432/incidentgate
       INCIDENTGATE_UI_BIND_HOST: 127.0.0.1

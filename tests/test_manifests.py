@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from triage_agent_lab.manifests import load_checkpoint_manifests
+from incidentgate.manifests import load_checkpoint_manifests
 
 ROOT = Path(__file__).parents[1]
 

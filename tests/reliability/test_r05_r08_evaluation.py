@@ -6,13 +6,13 @@ from typing import Any
 
 import pytest
 
-from triage_agent_lab.contracts import EvaluationMode, IncidentIdentity, VerificationResult
-from triage_agent_lab.evaluation.reliability_v2 import (
+from incidentgate.contracts import EvaluationMode, IncidentIdentity, VerificationResult
+from incidentgate.evaluation.reliability_v2 import (
     ReliabilityEvaluationRunnerV2,
     ReliabilityRawEnvelopeV2,
 )
-from triage_agent_lab.integration.adapters import LabRecoveryVerifier
-from triage_agent_lab.manifests import ReliabilityManifest
+from incidentgate.integration.adapters import LabRecoveryVerifier
+from incidentgate.manifests import ReliabilityManifest
 
 
 def _manifests() -> list[ReliabilityManifest]:

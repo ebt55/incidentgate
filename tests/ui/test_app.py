@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from triage_agent_lab.contracts import IncidentIdentity
-from triage_agent_lab.ui import create_ui_app
+from incidentgate.contracts import IncidentIdentity
+from incidentgate.ui import create_ui_app
 
 
 class FakeController:

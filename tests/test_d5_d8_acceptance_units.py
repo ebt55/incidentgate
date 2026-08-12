@@ -9,7 +9,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import ValidationError
 
-from triage_agent_lab.contracts import (
+from incidentgate.contracts import (
     CanonicalAction,
     CleanupArgs,
     EvidenceRecord,
@@ -18,14 +18,14 @@ from triage_agent_lab.contracts import (
     Role,
     ToolCallContext,
 )
-from triage_agent_lab.control.models import Caller, EvidenceState, EvidenceValidation
-from triage_agent_lab.control.policy import DeterministicPolicyEngine
-from triage_agent_lab.control.proposal import (
+from incidentgate.control.models import Caller, EvidenceState, EvidenceValidation
+from incidentgate.control.policy import DeterministicPolicyEngine
+from incidentgate.control.proposal import (
     DeterministicD5Proposer,
     DeterministicD8Proposer,
     ProposalError,
 )
-from triage_agent_lab.telemetry import create_tracer_runtime
+from incidentgate.telemetry import create_tracer_runtime
 
 
 def _record(tool: str, payload: dict[str, object], number: int) -> EvidenceRecord:

@@ -84,6 +84,17 @@ DEFER_REASON_REQUIRED: Final = "defer_reason_required"
 APPROVAL_TOKEN_REQUIRED: Final = "approval_token_required"
 
 # --------------------------------------------------------------------------
+# Executor position.
+#
+# Deliberately not an ``approval_invalid:`` cause.  This says nothing about the
+# token -- the token may bind perfectly -- it says the idempotency key presented
+# with it already names a committed operation with different semantics.  A
+# crash-replay of the *same* operation is not this: that path returns the
+# original ledger row as a duplicate, which is the whole point of the key.
+# --------------------------------------------------------------------------
+IDEMPOTENCY_KEY_REBOUND: Final = "idempotency_key_rebound"
+
+# --------------------------------------------------------------------------
 # Recovery verification.
 # --------------------------------------------------------------------------
 RECOVERY_VERIFIED: Final = "recovery_verified"
@@ -146,6 +157,12 @@ AMBIGUOUS_EVIDENCE_HUMAN_REVIEW_RECOMMENDED: Final = "ambiguous_evidence_human_r
 # --------------------------------------------------------------------------
 TOKEN_MISSING: Final = "missing"
 TOKEN_ACTION_HASH_MISMATCH: Final = "action_hash_mismatch"
+# The approval row names a different incident than the call envelope.  Only the
+# executor-side validator has ever checked this: ``LabRepository.validate`` --
+# the boundary the control plane's approval node calls -- is handed no incident
+# to compare against, so a cross-incident token is refused at the repository and
+# nowhere earlier.  Naming the cause is what lets that refusal be counted.
+TOKEN_INCIDENT_MISMATCH: Final = "incident_mismatch"
 TOKEN_ACTOR_MISMATCH: Final = "actor_mismatch"
 TOKEN_APPROVER_MISMATCH: Final = "approver_mismatch"
 TOKEN_ONE_TIME_USE_ID_MISMATCH: Final = "one_time_use_id_mismatch"
@@ -160,6 +177,7 @@ TOKEN_CAUSES: Final[frozenset[str]] = frozenset(
     {
         TOKEN_MISSING,
         TOKEN_ACTION_HASH_MISMATCH,
+        TOKEN_INCIDENT_MISMATCH,
         TOKEN_ACTOR_MISMATCH,
         TOKEN_APPROVER_MISMATCH,
         TOKEN_ONE_TIME_USE_ID_MISMATCH,
@@ -294,6 +312,7 @@ STATIC_REASONS: Final[frozenset[str]] = frozenset(
         HUMAN_REJECTED,
         DEFER_REASON_REQUIRED,
         APPROVAL_TOKEN_REQUIRED,
+        IDEMPOTENCY_KEY_REBOUND,
         RECOVERY_VERIFIED,
         RECOVERY_FAILED,
         PROPOSAL_CONTEXT_MISMATCH,

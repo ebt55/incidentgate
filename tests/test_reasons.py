@@ -52,6 +52,10 @@ FROZEN_STATIC_REASONS = frozenset(
         "approval_token_required",
         "defer_reason_required",
         "human_rejected",
+        # executor position. Added with the replay-observability work: an
+        # idempotency key already bound to different operation semantics. Not an
+        # approval_invalid cause, because it is not a fact about the token.
+        "idempotency_key_rebound",
         # recovery
         "recovery_failed",
         "recovery_verified",
@@ -116,6 +120,28 @@ FROZEN_FAMILY_PREFIXES = frozenset(
 )
 
 
+FROZEN_TOKEN_CAUSES = frozenset(
+    {
+        "action_hash_mismatch",
+        "actor_mismatch",
+        "approved_at_mismatch",
+        "approver_mismatch",
+        "consumed",
+        "expired",
+        "expires_at_mismatch",
+        # Added with the replay-observability work. The executor-side validator
+        # has always refused a token whose approval row names another incident;
+        # until it had a cause it refused anonymously. Note this one is invisible
+        # to LabRepository.validate, which is handed no incident to compare.
+        "incident_mismatch",
+        "missing",
+        "one_time_use_id_mismatch",
+        "requested_at_mismatch",
+        "valid",
+    }
+)
+
+
 def test_static_reason_vocabulary_is_frozen() -> None:
     added = reasons.STATIC_REASONS - FROZEN_STATIC_REASONS
     removed = FROZEN_STATIC_REASONS - reasons.STATIC_REASONS
@@ -125,6 +151,21 @@ def test_static_reason_vocabulary_is_frozen() -> None:
 
 def test_reason_family_prefixes_are_frozen() -> None:
     assert reasons.REASON_FAMILY_PREFIXES == FROZEN_FAMILY_PREFIXES
+
+
+def test_token_causes_are_frozen() -> None:
+    """The causes are wire values too, and were the one axis this freeze missed.
+
+    ``approval_invalid:consumed`` reaches ``audit_timeline.payload.reason`` and
+    ``WorkflowResult.reasons`` exactly like a static reason does, and the chaos
+    differ compares it just as strictly. But because the family prefix is what
+    ``is_known_reason`` checks, any suffix at all passed -- a respelled cause
+    would have sailed through every other test in this file.
+    """
+    added = reasons.TOKEN_CAUSES - FROZEN_TOKEN_CAUSES
+    removed = FROZEN_TOKEN_CAUSES - reasons.TOKEN_CAUSES
+    assert not added, f"new token causes must be acknowledged here: {sorted(added)}"
+    assert not removed, f"token causes were removed from the vocabulary: {sorted(removed)}"
 
 
 def test_every_family_prefix_ends_with_its_separator() -> None:

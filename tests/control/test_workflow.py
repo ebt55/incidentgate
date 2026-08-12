@@ -586,3 +586,14 @@ def test_execute_port_idempotency_contract_reuses_graph_derived_key() -> None:
     second = executor.execute(proposed, graph_context, token, action_hash=action_hash, idempotency_key=key)
     assert first == second and executor.calls == 1
     assert first.context.idempotency_key == key != supplied_context.idempotency_key
+
+
+def test_idempotency_key_derivation_is_a_frozen_wire_value() -> None:
+    """Golden value. The derived key is persisted in operation_ledger.idempotency_key and
+    compared for exact equality by chaos/enddiff.py, so any drift in the seed literal
+    (including its stale-looking "triage-agent-lab" and ":d1:" segments) silently turns
+    exactly-once crash replay into duplicate mutation. This must fail loudly instead."""
+    from triage_agent_lab.control.workflow import _IDEMPOTENCY_KEY_PREFIX, _idempotency_key
+
+    assert _IDEMPOTENCY_KEY_PREFIX == "triage-agent-lab:d1:"
+    assert str(_idempotency_key("hash-golden", "thread-golden")) == "6ec918c4-5943-52d3-9a13-c9661a6cf154"

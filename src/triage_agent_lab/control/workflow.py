@@ -130,8 +130,20 @@ def build_deferred_graph(
     return graph.compile(checkpointer=checkpointer)
 
 
+# FROZEN WIRE VALUE. This prefix is seeded into every idempotency key: the derived
+# uuid5 is persisted in operation_ledger.idempotency_key and compared for exact
+# equality by chaos/enddiff.py. It deliberately does NOT track the project or package
+# name (renamed to incidentgate) and deliberately does NOT track the scenario -- the
+# ":d1:" segment is baked in for D2/D3/D5/D8 and every R-tier scenario too. Uniqueness
+# comes from thread_id + action_hash, which follow it. Changing any byte here silently
+# converts invariant-2 exactly-once crash replay into duplicate mutation against any
+# existing durable state, because replayed keys would no longer match stored rows.
+# Wire values are forever; display names are not.
+_IDEMPOTENCY_KEY_PREFIX = "triage-agent-lab:d1:"
+
+
 def _idempotency_key(action_hash: str, thread_id: str) -> UUID:
-    return uuid5(NAMESPACE_URL, f"triage-agent-lab:d1:{thread_id}:{action_hash}")
+    return uuid5(NAMESPACE_URL, f"{_IDEMPOTENCY_KEY_PREFIX}{thread_id}:{action_hash}")
 
 
 def build_d1_graph(dependencies: D1Dependencies, *, checkpointer: Any = None) -> Any:

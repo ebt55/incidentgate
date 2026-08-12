@@ -67,7 +67,16 @@ def _insert_note(repository: LabRepository, thread: str, source_ref: str) -> Non
         connection.commit()
 
 
-def test_015_upgrades_001_through_014_once_and_retains_prior_durable_rows() -> None:
+def test_migrate_upgrades_a_014_era_schema_to_head_once_and_retains_prior_durable_rows() -> None:
+    """Renamed off the migration number it used to assert, deliberately.
+
+    The starting schema is still a 014-era one -- that is the fixed thing this
+    test is about -- but the destination is now ``migrate()``'s head rather than
+    015 specifically, and it will keep moving. Naming a test after a head that
+    moves means renaming it on every slice or, far more likely, leaving a name
+    that quietly stops describing what runs. The two pins below carry the head;
+    the name carries the invariant.
+    """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("migration proof requires DATABASE_URL")
@@ -94,9 +103,9 @@ def test_015_upgrades_001_through_014_once_and_retains_prior_durable_rows() -> N
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "015_sabotage_t1.sql"
+            assert [row[0] for row in cursor.fetchall()][-1] == "016_operation_ledger_sequence.sql"
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 15
+            assert cursor.fetchone()[0] == 16
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='t015-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

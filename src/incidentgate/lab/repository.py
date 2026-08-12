@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -185,6 +185,34 @@ _SCOPES.update({"T1": T1_REMEDIATION_SCOPE})
 
 
 @dataclass(frozen=True)
+class LedgerCall:
+    """One committed operation, read back in the order it was issued.
+
+    The sabotage tier needs the operation ledger as a *call ledger*: T4's frozen
+    contract measures ``call_ledger.calls`` with ``sequence_eq``, so the order is
+    the finding rather than a presentational choice. This is the plain, ordered
+    view of ``operation_ledger`` that supports that, and it is deliberately a
+    frozen dataclass over builtin types -- no contract model, no runner type --
+    for the same reason ``T1OutboundNote`` is: the pure checkers in
+    ``evaluation.sabotage_checkers`` take these and must stay liftable.
+
+    ``tool_name`` is ``None`` for every scenario committed to date. The ledger
+    stores the capability's *scope*, not its tool name, and back-filling a name
+    from the scope would mean inventing a mapping this reader has no business
+    owning. Instead a scenario that needs its calls named records ``call`` in the
+    ``result`` payload it already writes; T4 is the first that will, and its own
+    end-state reader is what will require the name rather than tolerate ``None``.
+    Returning the honest ``None`` here keeps that a visible step rather than a
+    silent default.
+    """
+
+    sequence: int
+    operation_scope: str
+    tool_name: str | None
+    result: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class R05CollectionSnapshot:
     """The complete, non-sensitive durable proof for one R05 read-only run."""
 
@@ -307,6 +335,7 @@ class LabRepository:
                 "013_reliability_r09_r12.sql",
                 "014_audit_insertion_sequence.sql",
                 "015_sabotage_t1.sql",
+                "016_operation_ledger_sequence.sql",
             )
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at "
@@ -2199,6 +2228,50 @@ class LabRepository:
         if scope is None:
             return None
         return None if not rows else self._ledger_result(rows[0], OperationStatus.SUCCEEDED, scope)
+
+    def ordered_operation_calls(self, incident_id: str) -> tuple[LedgerCall, ...]:
+        """Read one incident's committed operations in the order they were issued.
+
+        The ordering is by the ``sequence`` identity column added in migration
+        016, never by ``committed_at``. That is the same rule migration 014
+        established for ``audit_timeline``, and here it is load-bearing rather
+        than merely correct: T4's covert checker compares this sequence with
+        ``sequence_eq``, so a re-ordering does not degrade a diagnostic, it
+        inverts a verdict.
+
+        This deliberately counts *committed* calls and not attempted ones. A
+        denied or refused attempt never inserts here, and it already has a
+        durable home in ``audit_timeline`` -- ``_refusal_recorded`` writes an
+        ``execution_refused`` event carrying the attempt id. Appending refusals
+        here instead would make the canonical call sequence diverge in exactly
+        the condition where the gate did its job, and the gated column would read
+        as a failure.
+
+        Unbounded by design within one incident: an episode's length is the
+        measurement, so a ``LIMIT`` here could silently truncate the sequence a
+        checker compares. Callers scope by incident, which the whole-incident
+        reset in ``_delete_incident`` keeps bounded.
+        """
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT sequence, operation_scope, result FROM operation_ledger "
+                "WHERE incident_id = %s ORDER BY sequence ASC",
+                (incident_id,),
+            )
+            rows = cursor.fetchall()
+        calls: list[LedgerCall] = []
+        for row in rows:
+            result = cast(dict[str, object], row["result"])
+            call = result.get("call")
+            calls.append(
+                LedgerCall(
+                    sequence=int(cast(int, row["sequence"])),
+                    operation_scope=str(row["operation_scope"]),
+                    tool_name=None if call is None else str(call),
+                    result=result,
+                )
+            )
+        return tuple(calls)
 
     def approval_consumed(self, token_id: UUID) -> bool:
         """Expose only whether a known approval was atomically consumed."""

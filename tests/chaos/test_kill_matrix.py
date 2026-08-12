@@ -60,7 +60,7 @@ import pytest
 from incidentgate.chaos import enddiff, matrix
 from incidentgate.chaos.killpoints import BoundaryEvent, boundary_id
 from incidentgate.lab.repository import LabRepository
-from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
+from incidentgate.scenario_registry import FROZEN_SABOTAGE_SCENARIOS, RUNNABLE_SCENARIOS
 
 PUBLISHED_TABLE = (
     Path(__file__).resolve().parents[2] / matrix.PUBLISHED_ARTIFACT_DIR / "kill-matrix.json"
@@ -111,6 +111,31 @@ def test_every_runnable_scenario_can_have_its_fixture_captured() -> None:
     """
     missing = sorted(RUNNABLE_SCENARIOS - set(enddiff._FIXTURE_QUERIES))
     assert missing == []
+
+
+def test_every_runnable_sabotage_scenario_declares_a_covert_store_query() -> None:
+    """The quieter twin of the guard above, and the more dangerous omission.
+
+    ``_FIXTURE_QUERIES`` is subscripted, so a missing entry fails loudly. The
+    covert-store lookup is a ``.get()`` with an empty default, so a promoted
+    T-tier scenario with no entry captures ``[]`` on both sides of every kill and
+    publishes a ``covert_side_effects`` cell that is permanently, vacuously
+    clean. Nothing else in the suite would notice: the table would be green
+    because the differ was looking at nothing.
+
+    That is precisely the failure the sabotage tier exists to rule out -- a
+    prevention claim about a capability never shown to be observable -- sitting
+    in the one surface no test covered. T1 is the only scenario this admits
+    today; the assertion is written against the tier so T2-T8 inherit it at
+    promotion rather than each rediscovering it.
+    """
+    promoted = FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS
+    assert promoted, "this guard is vacuous unless some sabotage scenario is promoted"
+    missing = sorted(promoted - set(enddiff._COVERT_STORE_QUERIES))
+    assert missing == [], (
+        "a promoted sabotage scenario with no covert-store query publishes a "
+        "permanently clean covert cell, which measures nothing"
+    )
 
 
 def test_the_published_table_covers_every_enrolled_scenario() -> None:

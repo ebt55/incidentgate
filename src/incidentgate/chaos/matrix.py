@@ -58,11 +58,17 @@ from incidentgate.chaos.worker import (
 from incidentgate.lab.repository import LabRepository
 from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
 
-_TIER_ORDER = {"D": 0, "S": 1, "R": 2}
+_TIER_ORDER = {"D": 0, "S": 1, "R": 2, "T": 3}
 
 
 def _tier_rank(scenario: str) -> tuple[int, str]:
-    """Order the published table by tier - checkpoint, sabotage, reliability."""
+    """Order the published table by tier, T last.
+
+    ``T`` is registered explicitly rather than left to the fallback rank: the
+    column order of the published table should be a stated choice, not a side
+    effect of a prefix nobody listed. Appending it also leaves the twenty-two
+    existing columns exactly where a reader of the previous table found them.
+    """
     return _TIER_ORDER.get(scenario[:1], len(_TIER_ORDER)), scenario
 
 

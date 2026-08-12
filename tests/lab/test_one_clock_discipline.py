@@ -508,6 +508,12 @@ def test_only_informational_columns_take_their_timestamp_from_the_database_clock
     reliability = ("r01", "r02", "r03", "r04", "r05", "r06", "r07", "r08", "r09", "r10", "r11")
     for scenario in (*reliability, "r12"):
         allowed.add((f"{scenario}_fixture_state", "updated_at"))
+    # The same last-touched marker every other fixture state carries, never
+    # compared; production always supplies it (inject_checkpoint / _mutate_t1).
+    # T1's two other timestamp columns -- t1_immutable_record.created_at and
+    # t1_outbound_note_store.written_at -- deliberately carry no default at all,
+    # so they are absent from this list rather than allowlisted into it.
+    allowed.add(("t1_fixture_state", "updated_at"))
 
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(

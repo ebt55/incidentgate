@@ -19,6 +19,7 @@
     "operations.route_customer_reads_primary": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"routing":"primary"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
     "operations.rotate_credential_db_app_2026_09": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"active_id":"db-app-2026-09"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 1},
     "operations.enable_partner_backoff_60s": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"backoff_seconds":60}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
-    "operations.activate_local_response_adapter_3_8_3": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"response_adapter":"local-3.8.3"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
+    "operations.activate_local_response_adapter_3_8_3": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {"response_adapter":"local-3.8.3"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.record_checkout_remediation": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"checkout", "remediation_ref_prefix":"remediation://"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
   }
 }

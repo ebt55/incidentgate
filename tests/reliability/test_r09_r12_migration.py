@@ -62,10 +62,13 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
         repository.migrate()
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
+            # These two pins are deliberate and move with every new migration: the
+            # assertion is that migrate() catches a 012-era schema all the way up
+            # to head, so the head name and count are restated on each slice.
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "014_audit_insertion_sequence.sql"
+            assert [row[0] for row in cursor.fetchall()][-1] == "015_sabotage_t1.sql"
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 14
+            assert cursor.fetchone()[0] == 15
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='r013-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

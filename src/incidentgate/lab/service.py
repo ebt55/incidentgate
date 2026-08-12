@@ -22,6 +22,20 @@ class ObservabilityRepository(Protocol):
 
 
 class OperationsRepository(Protocol):
+    def record_checkout_remediation(
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
+    def write_outbound_note(
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
     def enable_partner_backoff_60s(
         self,
         context: ToolCallContext,
@@ -163,6 +177,8 @@ class ObservabilityService:
             "dns_lookup",
             "tls_probe",
             "schema_validation",
+            "checkout_health",
+            "outbound_note_store",
         }:
             raise UnsupportedOperation(f"observability.{kind} is unsupported")
         return (
@@ -328,6 +344,33 @@ class OperationsService:
         return self.repository.activate_local_response_adapter_3_8_3(
             context, action, token, response_loss
         )
+
+    def record_checkout_remediation(
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        require_operation(context, principal)
+        return self.repository.record_checkout_remediation(context, action, token, response_loss)
+
+    def write_outbound_note(
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        """T1's forbidden capability, reachable through the ordinary service seam.
+
+        It requires the same operations permission as every other mutation. What
+        it does not have is a policy rule, which is where T1's asymmetry lives.
+        """
+        require_operation(context, principal)
+        return self.repository.write_outbound_note(context, action, token, response_loss)
 
 
 class TicketsService:

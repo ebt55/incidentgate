@@ -17,7 +17,7 @@ import os
 import sys
 from typing import Any
 
-from incidentgate.chaos import killpoints
+from incidentgate.chaos import chaos_dsn, killpoints
 from incidentgate.chaos.killpoints import APPROVAL_NODE, INTERRUPT, RECORDER
 from incidentgate.contracts import IncidentIdentity, IncidentState, Role, ToolCallContext
 from incidentgate.control.models import Caller
@@ -96,6 +96,11 @@ def _advance(runtime: IncidentRuntime, phase: str, scenario: str, thread_id: str
 def run(dsn: str, scenario: str, thread_id: str) -> dict[str, Any]:
     """Advance one phase and report the durable outcome this process observed."""
     killpoints.install()
+    # Stamped here too, not only inherited from the matrix, so a worker launched
+    # by hand still opens backends the reaper is allowed to clean up after it is
+    # killed. This is the process that gets SIGKILLed, so its orphans are the
+    # ones the reaper exists for.
+    dsn = chaos_dsn(dsn)
     report: dict[str, Any] = {
         "scenario": scenario,
         "thread_id": thread_id,

@@ -27,7 +27,7 @@ from uuid import uuid4
 
 import psycopg
 
-from incidentgate.chaos import enddiff
+from incidentgate.chaos import CHAOS_APPLICATION_NAME, chaos_dsn, enddiff
 from incidentgate.chaos.killpoints import (
     KILL_AT_ENV,
     KILL_EXIT_CODE,
@@ -50,6 +50,7 @@ PSEUDO_NODES = frozenset(boundary.split(":", 1)[0] for boundary in PSEUDO_BOUNDA
 WORKER_TIMEOUT_SECONDS = 300
 MAX_DRIVE_STEPS = 8
 REAP_EVERY_CELLS = 12
+REAP_IDLE_SECONDS = 20.0
 
 STATUS_OK = "ok"
 STATUS_FAIL = "fail"
@@ -217,13 +218,22 @@ def purge_thread(dsn: str, thread_id: str) -> None:
                 connection.rollback()
 
 
-def reap_idle_backends(dsn: str) -> None:
-    """Reclaim backends left behind by hard-killed workers between cells."""
-    with psycopg.connect(dsn, autocommit=True) as connection:
+def reap_idle_backends(dsn: str, *, idle_seconds: float = REAP_IDLE_SECONDS) -> None:
+    """Reclaim backends left behind by hard-killed workers between cells.
+
+    Scoped to this harness by ``application_name``. Same database, never self,
+    ``idle`` only (never ``idle in transaction``, which would abort live work).
+    ``idle_seconds`` exists so tests can prove the scoping without waiting out
+    the real threshold; production callers use the default.
+    """
+    with psycopg.connect(chaos_dsn(dsn), autocommit=True) as connection:
         connection.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE datname = current_database() AND pid <> pg_backend_pid() "
-            "AND state = 'idle' AND state_change < now() - interval '20 seconds'"
+            "AND application_name = %s "
+            "AND state = 'idle' "
+            "AND state_change < now() - make_interval(secs => %s::double precision)",
+            (CHAOS_APPLICATION_NAME, idle_seconds),
         )
 
 
@@ -336,6 +346,10 @@ def run_matrix(
     boundaries: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Execute the whole matrix and return the raw report."""
+    # Stamp once here so every connection downstream inherits it: the repository,
+    # the enddiff captures, purge_thread, the reaper, and the worker subprocesses
+    # that receive this DSN through DATABASE_URL.
+    dsn = chaos_dsn(dsn)
     repository = LabRepository(dsn)
     repository.migrate()
     golden: dict[str, DriveResult] = {}
@@ -380,6 +394,10 @@ def run_matrix(
             executed += 1
             if executed % REAP_EVERY_CELLS == 0:
                 reap_idle_backends(dsn)
+    # Unconditional, so the reaper is exercised by every run rather than only by
+    # runs long enough to reach the cadence. The CI subset executes 7 cells and
+    # REAP_EVERY_CELLS is 12, so before this line the reaper had no test at all.
+    reap_idle_backends(dsn)
     return {
         "generated_by": "incidentgate.chaos.matrix",
         "scenarios": list(scenarios),

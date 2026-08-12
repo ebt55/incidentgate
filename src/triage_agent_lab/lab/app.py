@@ -4,7 +4,7 @@ from typing import Protocol, cast
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
 
-ADMIN_HEADER = "X-D1-Lab-Admin"
+ADMIN_HEADER = "X-Incidentgate-Lab-Admin"
 
 
 class TargetRepository(Protocol):
@@ -15,7 +15,7 @@ class TargetRepository(Protocol):
     def inject_d1(self) -> None: ...
 
 
-def create_app(repository: TargetRepository, admin_token: str = "d1-local-admin") -> FastAPI:
+def create_app(repository: TargetRepository, admin_token: str = "incidentgate-local-admin") -> FastAPI:
     """Create an in-process-only controller; callers must supply explicit mock admin auth."""
     app = FastAPI(title="D1 Lab Target", docs_url=None, redoc_url=None)
 
@@ -40,14 +40,14 @@ def create_app(repository: TargetRepository, admin_token: str = "d1-local-admin"
         return target_status()
 
     @app.post("/admin/reset")
-    def reset(x_d1_lab_admin: str | None = Header(default=None)) -> dict[str, object]:
-        require_admin(x_d1_lab_admin)
+    def reset(x_incidentgate_lab_admin: str | None = Header(default=None)) -> dict[str, object]:
+        require_admin(x_incidentgate_lab_admin)
         repository.reset_d1()
         return repository.state()
 
     @app.post("/admin/inject")
-    def inject(x_d1_lab_admin: str | None = Header(default=None)) -> dict[str, object]:
-        require_admin(x_d1_lab_admin)
+    def inject(x_incidentgate_lab_admin: str | None = Header(default=None)) -> dict[str, object]:
+        require_admin(x_incidentgate_lab_admin)
         repository.inject_d1()
         return repository.state()
 

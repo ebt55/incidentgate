@@ -64,11 +64,11 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
     if any(langfuse) and not all(langfuse):
         raise ValueError("Langfuse configuration must provide public key, secret key, and base URL together")
     try:
-        bind_port = int(values.get("D1_UI_PORT", "8090"))
+        bind_port = int(values.get("INCIDENTGATE_UI_PORT", "8090"))
     except ValueError as error:
-        raise ValueError("D1_UI_PORT must be an integer") from error
+        raise ValueError("INCIDENTGATE_UI_PORT must be an integer") from error
     if not 1 <= bind_port <= 65535:
-        raise ValueError("D1_UI_PORT must be between 1 and 65535")
+        raise ValueError("INCIDENTGATE_UI_PORT must be between 1 and 65535")
     provider = values.get("ADVISORY_MONITOR_PROVIDER", "fixture").lower()
     if provider not in {"fixture", "anthropic"}:
         raise ValueError("ADVISORY_MONITOR_PROVIDER must be fixture or anthropic")
@@ -90,7 +90,7 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
         langfuse_public_key=public_key,
         langfuse_secret_key=secret_key,
         langfuse_base_url=base_url,
-        bind_host=values.get("D1_UI_BIND_HOST", "127.0.0.1"),
+        bind_host=values.get("INCIDENTGATE_UI_BIND_HOST", "127.0.0.1"),
         bind_port=bind_port,
         monitor_provider=provider,
         anthropic_api_key=api_key,
@@ -109,7 +109,7 @@ def telemetry_config(settings: HostSettings) -> TelemetryConfig:
     if any(values) and not all(values):
         raise ValueError("Langfuse configuration must provide public key, secret key, and base URL together")
     return TelemetryConfig(
-        service_name="triage-agent-lab-ui",
+        service_name="incidentgate-ui",
         external=all(values),
         langfuse_public_key=settings.langfuse_public_key,
         langfuse_secret_key=settings.langfuse_secret_key,

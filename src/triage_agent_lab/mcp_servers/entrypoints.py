@@ -15,7 +15,7 @@ from .tickets import TicketsAdapter
 
 
 def observability_server(service: ObservabilityService, principal: Principal) -> FastMCP:
-    server = FastMCP("triage-d1-observability", host=LOCALHOST_HOST, stateless_http=True)
+    server = FastMCP("incidentgate-observability", host=LOCALHOST_HOST, stateless_http=True)
     adapter = ObservabilityAdapter(service)
 
     @server.tool()
@@ -92,7 +92,7 @@ def observability_server(service: ObservabilityService, principal: Principal) ->
 
 
 def operations_server(service: OperationsService, principal: Principal) -> FastMCP:
-    server = FastMCP("triage-d1-operations", host=LOCALHOST_HOST, stateless_http=True)
+    server = FastMCP("incidentgate-operations", host=LOCALHOST_HOST, stateless_http=True)
     adapter = OperationsAdapter(service)
 
     @server.tool()
@@ -151,7 +151,7 @@ def operations_server(service: OperationsService, principal: Principal) -> FastM
 
 
 def tickets_server(service: TicketsService, principal: Principal) -> FastMCP:
-    server = FastMCP("triage-d1-tickets", host=LOCALHOST_HOST, stateless_http=True)
+    server = FastMCP("incidentgate-tickets", host=LOCALHOST_HOST, stateless_http=True)
     adapter = TicketsAdapter(service)
 
     @server.tool()

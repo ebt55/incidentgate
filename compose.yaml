@@ -2,25 +2,25 @@ services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_DB: triage_lab
-      POSTGRES_USER: triage_lab
-      POSTGRES_PASSWORD: ${TRIAGE_LAB_POSTGRES_PASSWORD:-triage_lab_dev_only}
+      POSTGRES_DB: incidentgate
+      POSTGRES_USER: incidentgate
+      POSTGRES_PASSWORD: ${INCIDENTGATE_POSTGRES_PASSWORD:-incidentgate_dev_only}
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U triage_lab -d triage_lab"]
+      test: ["CMD-SHELL", "pg_isready -U incidentgate -d incidentgate"]
       interval: 5s
       timeout: 3s
       retries: 20
     volumes:
-      - triage_lab_postgres:/var/lib/postgresql/data
-  d1-lab:
+      - incidentgate_postgres:/var/lib/postgresql/data
+  lab:
     build:
       context: .
-      dockerfile: docker/Dockerfile.d1-lab
+      dockerfile: docker/Dockerfile.lab
     environment:
-      DATABASE_URL: postgresql://triage_lab:${TRIAGE_LAB_POSTGRES_PASSWORD:-triage_lab_dev_only}@postgres:5432/triage_lab
-      D1_LAB_ADMIN_TOKEN: ${D1_LAB_ADMIN_TOKEN:-d1-local-admin}
+      DATABASE_URL: postgresql://incidentgate:${INCIDENTGATE_POSTGRES_PASSWORD:-incidentgate_dev_only}@postgres:5432/incidentgate
+      INCIDENTGATE_LAB_ADMIN_TOKEN: ${INCIDENTGATE_LAB_ADMIN_TOKEN:-incidentgate-local-admin}
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,15 +31,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-  d1-approval-ui:
+  approval-ui:
     build:
       context: .
-      dockerfile: docker/Dockerfile.d1-lab
+      dockerfile: docker/Dockerfile.lab
     command: ["uv", "run", "--no-sync", "uvicorn", "triage_agent_lab.host.server:app", "--host", "0.0.0.0", "--port", "8090"]
     environment:
-      DATABASE_URL: postgresql://triage_lab:${TRIAGE_LAB_POSTGRES_PASSWORD:-triage_lab_dev_only}@postgres:5432/triage_lab
-      D1_UI_BIND_HOST: 127.0.0.1
-      D1_UI_PORT: 8090
+      DATABASE_URL: postgresql://incidentgate:${INCIDENTGATE_POSTGRES_PASSWORD:-incidentgate_dev_only}@postgres:5432/incidentgate
+      INCIDENTGATE_UI_BIND_HOST: 127.0.0.1
+      INCIDENTGATE_UI_PORT: 8090
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
@@ -58,4 +58,4 @@ services:
       timeout: 3s
       retries: 20
 volumes:
-  triage_lab_postgres:
+  incidentgate_postgres:

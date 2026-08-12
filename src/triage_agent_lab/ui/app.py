@@ -70,15 +70,15 @@ def create_ui_app(
     app.state.nonces = {}
     app.state.incidents = {}
 
-    def actor(request: Request, x_d1_actor: str | None = Header(default=None)) -> tuple[str, Role]:
-        actor_id = x_d1_actor or request.cookies.get("d1_actor")
+    def actor(request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> tuple[str, Role]:
+        actor_id = x_incidentgate_actor or request.cookies.get("incidentgate_actor")
         role = ACTORS.get(actor_id or "")
         if role is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="known mock identity required")
         return actor_id or "", role
 
-    def require(request: Request, allowed: Role, x_d1_actor: str | None = Header(default=None)) -> str:
-        actor_id, role = actor(request, x_d1_actor)
+    def require(request: Request, allowed: Role, x_incidentgate_actor: str | None = Header(default=None)) -> str:
+        actor_id, role = actor(request, x_incidentgate_actor)
         if role is not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="mock role is not permitted")
         return actor_id
@@ -277,12 +277,12 @@ def create_ui_app(
                     f"<p>Fresh recovery: {recovery}.{trace_link(result)}</p>{timeline(events)}")
 
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request, x_d1_actor: str | None = Header(default=None)) -> HTMLResponse:
-        supplied = x_d1_actor or request.cookies.get("d1_actor")
+    def home(request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> HTMLResponse:
+        supplied = x_incidentgate_actor or request.cookies.get("incidentgate_actor")
         if supplied not in ACTORS:
             options = "".join(f"<option value='{_text(name)}'>{_text(name)}</option>" for name in ACTORS)
             return page("Triage Agent Lab checkpoint", f"<form method='post' action='/mock-login'><label>Local mock identity<select name='actor'>{options}</select></label><button>Use identity</button></form>")
-        actor_id, role = actor(request, x_d1_actor)
+        actor_id, role = actor(request, x_incidentgate_actor)
         links = "".join(f"<li><a href='/threads/{_text(thread)}'>{_text(_value(incident, 'incident_id', incident))}</a></li>" for thread, incident in app.state.incidents.items()) or "<li>No prepared incidents.</li>"
         forms = ""
         if role is Role.OPERATOR:
@@ -297,13 +297,13 @@ def create_ui_app(
         if actor_id not in ACTORS:
             raise HTTPException(403, "known mock identity required")
         response = RedirectResponse("/", 303)
-        response.set_cookie("d1_actor", actor_id, httponly=True, samesite="strict")
+        response.set_cookie("incidentgate_actor", actor_id, httponly=True, samesite="strict")
         return response
 
-    async def _prepare(scenario_id: str, request: Request, x_d1_actor: str | None) -> RedirectResponse:
+    async def _prepare(scenario_id: str, request: Request, x_incidentgate_actor: str | None) -> RedirectResponse:
         if scenario_id not in RUNNABLE_SCENARIOS:
             raise HTTPException(404, "incident not found")
-        actor_id = require(request, Role.OPERATOR, x_d1_actor)
+        actor_id = require(request, Role.OPERATOR, x_incidentgate_actor)
         form = await request.form()
         consume("", scenario_id, actor_id, "prepare", str(form.get("nonce") or ""))
         thread = f"{scenario_id.lower()}-{uuid4().hex[:12]}"
@@ -322,16 +322,16 @@ def create_ui_app(
         return RedirectResponse(f"/incidents/{thread}/start", 303)
 
     @app.post("/incidents/d1/prepare")
-    async def prepare_d1(request: Request, x_d1_actor: str | None = Header(default=None)) -> RedirectResponse:
-        return await _prepare("D1", request, x_d1_actor)
+    async def prepare_d1(request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> RedirectResponse:
+        return await _prepare("D1", request, x_incidentgate_actor)
 
     @app.post("/incidents/{scenario_id}/prepare")
-    async def prepare(scenario_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> RedirectResponse:
-        return await _prepare(scenario_id.upper(), request, x_d1_actor)
+    async def prepare(scenario_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> RedirectResponse:
+        return await _prepare(scenario_id.upper(), request, x_incidentgate_actor)
 
     @app.post("/incidents/{thread_id}/start")
-    async def start(thread_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> RedirectResponse:
-        actor_id = require(request, Role.OPERATOR, x_d1_actor)
+    async def start(thread_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> RedirectResponse:
+        actor_id = require(request, Role.OPERATOR, x_incidentgate_actor)
         if thread_id not in app.state.incidents:
             raise HTTPException(404, "incident not found")
         form = await request.form()
@@ -346,18 +346,18 @@ def create_ui_app(
         return RedirectResponse(f"/threads/{thread_id}", 303)
 
     @app.get("/incidents/{thread_id}/start", response_class=HTMLResponse)
-    def start_prompt(thread_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> HTMLResponse:
-        require(request, Role.OPERATOR, x_d1_actor)
+    def start_prompt(thread_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> HTMLResponse:
+        require(request, Role.OPERATOR, x_incidentgate_actor)
         if thread_id not in app.state.incidents:
             raise HTTPException(404, "incident not found")
-        actor_id, _ = actor(request, x_d1_actor)
+        actor_id, _ = actor(request, x_incidentgate_actor)
         incident = app.state.incidents[thread_id]
         nonce = issue(thread_id, incident.scenario_id, actor_id, "start")
         return page(f"Start {incident.scenario_id} analysis", f"<p>Fault preparation is complete; this does not execute an operation.</p><form method='post' action='/incidents/{_text(thread_id)}/start'><input type='hidden' name='nonce' value='{_text(nonce)}'><button>Start analysis</button></form>")
 
     @app.get("/threads/{thread_id}", response_class=HTMLResponse)
-    def thread(thread_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> HTMLResponse:
-        actor_id, role = actor(request, x_d1_actor)
+    def thread(thread_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> HTMLResponse:
+        actor_id, role = actor(request, x_incidentgate_actor)
         current, events = open_status(thread_id)
         scenario_id = scenario_for(current)
         app.state.incidents.setdefault(
@@ -368,8 +368,8 @@ def create_ui_app(
         )
         return status_page(current, events, actor_id, role)
 
-    async def decide(thread_id: str, request: Request, decision: str, x_d1_actor: str | None) -> RedirectResponse:
-        actor_id = require(request, Role.APPROVER, x_d1_actor)
+    async def decide(thread_id: str, request: Request, decision: str, x_incidentgate_actor: str | None) -> RedirectResponse:
+        actor_id = require(request, Role.APPROVER, x_incidentgate_actor)
         form = await request.form()
         current, _ = open_status(thread_id)
         scenario_id = scenario_for(current)
@@ -393,11 +393,11 @@ def create_ui_app(
         return RedirectResponse(f"/threads/{thread_id}", 303)
 
     @app.post("/threads/{thread_id}/approve")
-    async def approve(thread_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> RedirectResponse:
-        return await decide(thread_id, request, "approve", x_d1_actor)
+    async def approve(thread_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> RedirectResponse:
+        return await decide(thread_id, request, "approve", x_incidentgate_actor)
 
     @app.post("/threads/{thread_id}/reject")
-    async def reject(thread_id: str, request: Request, x_d1_actor: str | None = Header(default=None)) -> RedirectResponse:
-        return await decide(thread_id, request, "reject", x_d1_actor)
+    async def reject(thread_id: str, request: Request, x_incidentgate_actor: str | None = Header(default=None)) -> RedirectResponse:
+        return await decide(thread_id, request, "reject", x_incidentgate_actor)
 
     return app

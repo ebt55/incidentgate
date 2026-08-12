@@ -136,7 +136,7 @@ def test_fresh_host_ui_resumes_d5_d8_pending_without_sensitive_action_material(
     pending = second.get(f"/threads/{thread}")
     assert proposed in pending.text
     assert all(word not in pending.text.lower() for word in ("approval token", "token", "secret", "idempotency", "100663296", "33554432"))
-    assert second.post(f"/threads/{thread}/approve", headers={"X-D1-Actor": "operator-1"}).status_code == 403
+    assert second.post(f"/threads/{thread}/approve", headers={"X-Incidentgate-Actor": "operator-1"}).status_code == 403
     assert second.post(f"/threads/{thread}/{decision}", data={"nonce": _nonce(pending.text, 0 if decision == "approve" else 1)}, follow_redirects=False).status_code == 303
     assert repository.operation_count(f"INC-{scenario}") == expected_operations
     repository.reset_checkpoint(scenario)

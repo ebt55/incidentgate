@@ -79,7 +79,7 @@ def client() -> tuple[TestClient, FakeRuntime, FakeController]:
 
 
 def headers(actor: str) -> dict[str, str]:
-    return {"X-D1-Actor": actor}
+    return {"X-Incidentgate-Actor": actor}
 
 
 def nonce(page: str, position: int = 0) -> str:

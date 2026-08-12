@@ -221,7 +221,7 @@ def test_reliability_host_fresh_load_preserves_cookie_role_and_safe_action_text(
         )
         assert (
             second.post(
-                f"/threads/{thread}/approve", headers={"X-D1-Actor": "operator-1"}
+                f"/threads/{thread}/approve", headers={"X-Incidentgate-Actor": "operator-1"}
             ).status_code
             == 403
         )

@@ -8,4 +8,4 @@ from .repository import LabRepository
 repository = LabRepository(os.environ["DATABASE_URL"])
 repository.migrate()
 repository.initialize_d1_if_absent()
-app = create_app(repository, os.environ["D1_LAB_ADMIN_TOKEN"])
+app = create_app(repository, os.environ["INCIDENTGATE_LAB_ADMIN_TOKEN"])

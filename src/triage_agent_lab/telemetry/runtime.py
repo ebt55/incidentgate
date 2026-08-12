@@ -89,7 +89,7 @@ def sanitize_attributes(attributes: Mapping[str, Any] | None) -> dict[str, str |
 class TelemetryConfig:
     """Configuration; external export requires all three Langfuse settings."""
 
-    service_name: str = "triage-agent-lab"
+    service_name: str = "incidentgate"
     external: bool = False
     langfuse_public_key: str | None = field(default=None, repr=False)
     langfuse_secret_key: str | None = field(default=None, repr=False)

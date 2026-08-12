@@ -144,9 +144,9 @@ def test_fastmcp_factories_are_localhost_only_and_stateless() -> None:
         tickets_server(TicketsService(TicketRepository()), observer),
     )
     assert [server.name for server in servers] == [
-        "triage-d1-observability",
-        "triage-d1-operations",
-        "triage-d1-tickets",
+        "incidentgate-observability",
+        "incidentgate-operations",
+        "incidentgate-tickets",
     ]
     for server in servers:
         assert server.settings.host == "127.0.0.1"

@@ -359,7 +359,7 @@ def test_r06_r08_fresh_host_pending_role_nonce_and_safe_text(
         assert action_text in pending.text
         lowered = pending.text.lower()
         assert all(word not in lowered for word in ("approval token", "idempotency", "secret", "password", "raw fixture"))
-        assert fresh.post(f"/threads/{thread}/{decision}", headers={"X-D1-Actor": "operator-1"}).status_code == 403
+        assert fresh.post(f"/threads/{thread}/{decision}", headers={"X-Incidentgate-Actor": "operator-1"}).status_code == 403
         form_nonce = pending.text.split("name='nonce' value='")[1 if decision == "approve" else 2].split("'")[0]
         assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}, follow_redirects=False).status_code == 303
         assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}).status_code == 403

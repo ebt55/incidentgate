@@ -14,18 +14,18 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_DB: triage_lab
-          POSTGRES_USER: triage_lab
-          POSTGRES_PASSWORD: triage_lab_ci_only
+          POSTGRES_DB: incidentgate
+          POSTGRES_USER: incidentgate
+          POSTGRES_PASSWORD: incidentgate_ci_only
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U triage_lab -d triage_lab"
+          --health-cmd "pg_isready -U incidentgate -d incidentgate"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      DATABASE_URL: postgresql://triage_lab:triage_lab_ci_only@127.0.0.1:5432/triage_lab
+      DATABASE_URL: postgresql://incidentgate:incidentgate_ci_only@127.0.0.1:5432/incidentgate
       # Do not set OTEL_SDK_DISABLED here. It makes TracerProvider.get_tracer() return a
       # NoOpTracer, so no span is recorded and no trace id exists; 27 tests then fail,
       # including the chaos end-state diff and the approval UI's trace reference. Letting

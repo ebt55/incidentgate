@@ -154,7 +154,7 @@ approver to approve or reject. Stop with `docker compose down`.
 
 The Compose stack binds Postgres, the lab target, and the approval UI to
 localhost. Its default database password is development-only; override it with
-`TRIAGE_LAB_POSTGRES_PASSWORD`. Never commit `.env`.
+`INCIDENTGATE_POSTGRES_PASSWORD`. Never commit `.env`.
 
 ## Honest gaps
 

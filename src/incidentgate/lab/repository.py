@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -57,6 +58,26 @@ from incidentgate.reasons import (
 )
 
 from .errors import ApprovalConflict, ApprovalDenied, ResponseLost
+
+
+def _utc_now() -> datetime:
+    """The default application clock.
+
+    Deliberately the only place in this module that reads a wall clock, so that
+    every other timestamp arrives through the injected ``clock`` seam.
+    """
+    return datetime.now(UTC)
+
+
+# How long a collected evidence record stays usable. This is a real wall-clock
+# budget on the production path: for D1/D2/D3 the anchor is the fixture's
+# observed_at, so the elapsed time from fixture injection to policy evaluation
+# must stay under it. Named here because tests assert against it directly.
+EVIDENCE_TTL_SECONDS = 120
+
+# D6's recheck window: the scenario must complete its stale-then-fresh health
+# recheck inside this budget or it defers.
+D6_FRESHNESS_BUDGET_SECONDS = 180
 
 D1_INCIDENT = "INC-D1"
 OPERATION_SCOPE = "d1-api"
@@ -168,8 +189,15 @@ class AuditTimelineEvent(ContractModel):
 
 
 class LabRepository:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, clock: Callable[[], datetime] = _utc_now) -> None:
         self.dsn = dsn
+        # One clock owns every durable timestamp this repository writes and every
+        # comparison it makes.  Calling datetime.now(UTC) inline here instead
+        # would put a second timebase behind the same decisions: the runtime
+        # validates a token against its injected clock, and the mutator would
+        # then re-validate the same token against a different one.  See
+        # docs/one-clock-discipline.md.
+        self._clock = clock
 
     def _connect(self) -> psycopg.Connection[dict[str, object]]:
         return psycopg.connect(self.dsn, row_factory=dict_row)
@@ -403,7 +431,7 @@ class LabRepository:
 
     def inject_checkpoint(self, scenario_id: str) -> None:
         scenario, incident = self._scenario(scenario_id)
-        now = datetime.now(UTC)
+        now = self._clock()
         sources: tuple[tuple[str, dict[str, Any]], ...]
         with self._connect() as connection, connection.cursor() as cursor:
             if scenario == "R01":
@@ -684,7 +712,7 @@ class LabRepository:
             )
 
     def inject_d1(self) -> None:
-        now = datetime.now(UTC)
+        now = self._clock()
         sources = (
             (
                 uuid4(),
@@ -721,7 +749,7 @@ class LabRepository:
     def evidence(
         self, context: ToolCallContext, kind: str, *, now: datetime | None = None
     ) -> EvidenceRecord:
-        now = now or datetime.now(UTC)
+        now = now or self._clock()
         scenario = _SCENARIOS.get(context.incident_id)
         allowed = {
             D1_INCIDENT: {"health", "deployment_diff", "logs"},
@@ -1015,7 +1043,7 @@ class LabRepository:
                         context.actor,
                         context.permission,
                         now,
-                        now + timedelta(seconds=180),
+                        now + timedelta(seconds=D6_FRESHNESS_BUDGET_SECONDS),
                     ),
                 )
                 cursor.execute(
@@ -1137,7 +1165,7 @@ class LabRepository:
                 actor=context.actor,
                 permission=context.permission,
                 observed_at=now,
-                expires_at=now + timedelta(seconds=120),
+                expires_at=now + timedelta(seconds=EVIDENCE_TTL_SECONDS),
                 payload=payload,
                 source_uri=HttpUrl(f"https://lab.local/evidence/{source_id}"),
             )
@@ -1915,7 +1943,7 @@ class LabRepository:
                 "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
             )
             approval = cursor.fetchone()
-            now = datetime.now(UTC)
+            now = self._clock()
             self._validate_approval(context, action_hash, token, approval, now)
             self._validate_evidence(cursor, context, action.evidence_ids, now)
             self._validate_target_precondition(cursor)
@@ -2179,7 +2207,7 @@ class LabRepository:
                 "SELECT * FROM approvals WHERE token_id=%s FOR UPDATE", (token.token_id,)
             )
             approval = cursor.fetchone()
-            now = datetime.now(UTC)
+            now = self._clock()
             self._validate_approval(context, action_hash, token, approval, now)
             self._validate_evidence(cursor, context, action.evidence_ids, now)
             table = f"{scenario.lower()}_fixture_state"
@@ -2351,7 +2379,7 @@ class LabRepository:
                 "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
             )
             approval = cursor.fetchone()
-            now = datetime.now(UTC)
+            now = self._clock()
             self._validate_approval(context, action_hash, token, approval, now)
             self._validate_evidence(cursor, context, action.evidence_ids, now)
             table = (

@@ -183,7 +183,11 @@ class IncidentRuntime:
             create_tracer_runtime(telemetry_config) if telemetry_config else None
         )
         self._owns_telemetry = telemetry is None and self._telemetry is not None
-        self._repository = LabRepository(dsn)
+        # The repository shares the runtime's clock. Letting it read its own wall
+        # clock instead is what put two timebases behind one decision: the graph
+        # validated an approval against this clock while the mutator re-validated
+        # the same approval against a different one.
+        self._repository = LabRepository(dsn, clock=clock)
         # The explicit local-contract allowlist keeps checkpoint revival strict.
         self._connection = psycopg.connect(
             dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row

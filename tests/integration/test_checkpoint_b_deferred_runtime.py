@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
+from itertools import chain, repeat
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -80,7 +81,12 @@ def test_d7_deadline_stops_attempts_and_restart_does_not_duplicate_numbers(
     repository.inject_checkpoint("D7")
     incident, caller, context = inputs("D7")
     base = datetime(2026, 1, 1, tzinfo=UTC)
-    ticks = iter((base, base + timedelta(seconds=181), base + timedelta(seconds=181)))
+    # The property under test is "the first attempt lands inside the budget and
+    # every later read is past the deadline", not "the runtime reads the clock
+    # exactly three times". A fixed-length iterator encoded the latter by
+    # accident and broke as soon as the repository started drawing from the same
+    # injected clock, which is the one-clock discipline working as intended.
+    ticks = chain((base,), repeat(base + timedelta(seconds=181)))
     with IncidentRuntime(repository.dsn, clock=lambda: next(ticks)) as runtime:
         status = runtime.start(incident, caller, context)
     assert status.result is not None and status.result.reasons == ("time_budget_exhausted",)

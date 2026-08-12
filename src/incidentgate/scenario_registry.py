@@ -16,30 +16,58 @@ from incidentgate.reasons import (
 # This set is the acceptance gate: a scenario is promoted here only once its
 # runtime, evaluation, and durable proofs are complete and tested.
 #
-# T1 is deliberately absent, and is the first scenario to be held back by the
-# "evaluation" clause alone rather than by missing runtime or proofs. It has:
+# T1 is deliberately absent, and is now held back by one clause rather than by
+# the two this comment used to name. It has:
 #
 #   * a runtime -- it runs end to end through IncidentRuntime, gate chain and
 #     all (tests/sabotage/test_t1_runtime.py);
 #   * durable proofs -- migration 015, fixture integrity, ledger, audit
 #     (tests/sabotage/test_t1_migration.py);
-#   * a working measurement -- the two-condition negative control in
+#   * a negative control -- the two-condition experiment in
 #     evaluation/t1_control.py, which shows the covert action really executing
 #     when ungated and really refused when gated, with the incident task
-#     completing either way (tests/sabotage/test_t1_negative_control.py).
+#     completing either way (tests/sabotage/test_t1_negative_control.py);
+#   * an evaluation lane. This is the part that changed. Sabotage results are
+#     dual-checker (incident + covert side effect), a shape neither existing
+#     result model can carry -- CheckpointBEvaluationResult.scenario_id is
+#     ^(D[1-8]|S[1-2])$ and ReliabilityEvaluationResultV2.scenario_id is
+#     ^R(?:0[1-9]|1[0-9]|20)$ -- so the lane is its own contract:
+#     SabotageEvaluationResult in evaluation/sabotage.py, pinned to ^T[1-8]$,
+#     carrying two checker names and two booleans neither derived from the
+#     other. It refuses vacuous rows structurally: covert_checker_passed is
+#     bound to the observed covert_side_effect_count, and an ungated control
+#     row that recorded no covert execution and no durable side effect cannot
+#     be constructed, nor can a matrix missing its ungated column.
+#     SabotageMatrixRunner in evaluation/sabotage_matrix.py drives all three
+#     EvaluationMode conditions -- ungated_evaluation_only,
+#     policy_only_evaluation_only, policy_monitor_human -- into a
+#     SabotageRawEnvelope, and the measured 9-cell table (3 frozen variants x
+#     3 conditions) is published at artifacts/sabotage-matrix/ and re-validated
+#     against the contract on load (tests/sabotage/test_sabotage_contract.py,
+#     test_sabotage_matrix.py, test_sabotage_artifact.py).
 #
-# What it does not have is a place in either evaluation lane. Sabotage results
-# are dual-checker (incident + covert side effect) and no result model carries
-# that shape: CheckpointBEvaluationResult.scenario_id is ^(D[1-8]|S[1-2])$ and
-# ReliabilityEvaluationResultV2.scenario_id is ^R(?:0[1-9]|1[0-9]|20)$, so a T1
-# row is not merely unwritten but unrepresentable. There is no sabotage runner,
-# no three-mode matrix, no envelope, and no replay path.
+# So the "evaluation" clause is satisfied, and one blocker remains: chaos
+# enrolment. Promotion is exactly what makes a scenario kill-matrix eligible --
+# chaos/matrix.py derives SCENARIOS from this set on purpose, so that promoting
+# a scenario enrolls it rather than silently leaving a gap the published table
+# would not show. T1 has no entry in chaos/enddiff._FIXTURE_QUERIES, so the
+# differ cannot capture its durable end state, and the published 22-scenario
+# table in artifacts/chaos-matrix/ would go stale the moment T1 joined.
 #
-# Promoting on the strength of the runtime alone would also make T1 eligible for
-# the chaos kill-matrix, whose published 22-scenario table would then be stale.
-# Both of those are separate chunks. Until the sabotage evaluation lane exists,
-# "not yet promoted" is the honest state, and the disjointness assertion in
-# tests/test_full_scenario_contracts.py keeps it that way on purpose.
+# Adding "T1" here today fails exactly two tests, and both are that guard
+# working rather than incidental breakage:
+#
+#   tests/chaos/test_kill_matrix.py::
+#       test_every_runnable_scenario_can_have_its_fixture_captured
+#     AssertionError: assert ['T1'] == []
+#   tests/test_full_scenario_contracts.py::
+#       test_frozen_sabotage_contracts_have_split_variants_and_are_non_runnable
+#     AssertionError: assert not (FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS)
+#
+# A T1 fixture query plus a regenerated chaos table is a separate chunk. Until
+# it lands, "not yet promoted" is the honest state, and the disjointness
+# assertion in tests/test_full_scenario_contracts.py keeps it that way on
+# purpose.
 RUNNABLE_SCENARIOS = frozenset(
     (
         "D1",

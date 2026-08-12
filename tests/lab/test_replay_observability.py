@@ -44,6 +44,7 @@ from incidentgate.reasons import (
     TOKEN_ACTION_HASH_MISMATCH,
     TOKEN_CONSUMED,
     TOKEN_INCIDENT_MISMATCH,
+    TOKEN_MISSING,
     TOKEN_VALID,
     approval_invalid,
 )
@@ -331,6 +332,70 @@ def test_a_refusal_that_names_no_approval_is_not_recorded_as_one(
 
     assert repository.state()["mutation_count"] == 0
     assert refusal_reasons(repository) == []
+
+
+def test_replay_under_the_original_idempotency_key_is_a_duplicate_not_a_refusal(
+    repository: LabRepository,
+) -> None:
+    """The limit of what this records, written as a test rather than left implicit.
+
+    Re-presenting a spent token under the *same* idempotency key is not refused
+    and leaves no refusal row. That is correct and deliberate: the key is the
+    at-most-once identity, so a second call carrying it is by definition the
+    same operation, and the ledger answers with the original result. It is
+    indistinguishable from a crash-replay because it is one.
+
+    The consequence matters for how a replay scenario has to be built. An attack
+    arm that reuses the original key measures nothing, because there is nothing
+    to refuse; a replay is only an attempt -- and only measurable -- when it
+    carries a fresh key, which is the arm
+    ``test_consumed_token_replay_is_refused_and_recorded`` covers.
+    """
+    context, principal, action, token = operation(repository)
+    repository.record_approval(token, D1)
+    service = OperationsService(repository)
+    first = service.rollback(context, principal, action, token)
+
+    duplicate = service.rollback(context, principal, action, token)
+
+    assert first.status.value == "succeeded"
+    assert duplicate.status.value == "duplicate"
+    assert duplicate.result == first.result
+    assert repository.state()["mutation_count"] == 1
+    assert ledger_rows(repository) == 1
+    assert refusal_reasons(repository) == []
+
+
+def test_a_recorded_refusal_does_not_misdescribe_a_later_success(
+    repository: LabRepository,
+) -> None:
+    """A refusal row is a claim about one attempt, never about the incident.
+
+    ``missing`` is the one cause that can stop being true: an approval recorded
+    after a refused attempt makes the next attempt legitimate. The row must
+    survive that -- it truthfully records an attempt made before any approval
+    existed -- without implying the later commit was refused. Both events stand,
+    in insertion order, under the same attempt id, and neither rewrites the
+    other.
+    """
+    context, principal, action, token = operation(repository)
+    service = OperationsService(repository)
+
+    with pytest.raises(ApprovalDenied):
+        service.rollback(context, principal, action, token)
+    assert refusal_reasons(repository) == [approval_invalid(TOKEN_MISSING)]
+    assert repository.state()["mutation_count"] == 0
+
+    repository.record_approval(token, D1)
+    committed = service.rollback(context, principal, action, token)
+
+    assert committed.status.value == "succeeded"
+    assert repository.state()["mutation_count"] == 1
+    assert refusal_reasons(repository) == [approval_invalid(TOKEN_MISSING)]
+    assert [str(row["payload"]["attempt_id"]) for row in audit_rows(repository)] == [
+        str(context.idempotency_key)
+    ]
+    assert len(audit_rows(repository, event_type="rollback_committed")) == 1
 
 
 # ---------------------------------------------------------------------------

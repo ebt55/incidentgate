@@ -1,6 +1,6 @@
 """The one non-zero number in the published kill matrix, pinned by experiment.
 
-The full 22-scenario table reports ``orphaned_approvals: 56`` against four
+The full 23-scenario table reports ``orphaned_approvals: 60`` against four
 zeros. Read cold that looks like a defect, and the tempting response is to make
 it disappear - by reusing the unconsumed token on recovery, or by dropping the
 observation from the artifact. Both would replace a measurement with a

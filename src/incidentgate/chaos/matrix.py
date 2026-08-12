@@ -352,7 +352,7 @@ def reap_idle_backends(dsn: str, *, idle_seconds: float = REAP_IDLE_SECONDS) -> 
     **This reaper is belt-and-suspenders, and that is a measurement rather than
     an assumption.** :func:`sample_chaos_backend_states` runs immediately after
     every ``os._exit(137)``, before any recovery process can open a connection.
-    Across the published 22-scenario run that is 324 samples taken after 324
+    Across the published 23-scenario run that is 346 samples taken after 346
     real kills, and every single one came back empty: no backend carrying this
     harness's ``application_name`` outlived the process that opened it. The
     operating system closes the dead process' sockets and Postgres tears the
@@ -824,7 +824,7 @@ def _render_orphaned_approval_footnote(
 ) -> list[str]:
     """Define the one non-zero number in the table, and why it is not a defect.
 
-    This footnote exists because ``orphaned_approvals: 56`` reads like a bug
+    This footnote exists because ``orphaned_approvals: 60`` reads like a bug
     report until someone says what an orphaned approval is. Curating it to zero
     would have been easy and dishonest; explaining it is the alternative.
     """

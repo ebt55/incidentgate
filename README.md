@@ -14,8 +14,9 @@
 >   [Honest gaps](#honest-gaps).
 > - **No model is in the decision path** for any published measurement. Every
 >   evaluation row is a deterministic fixture. See [Honest gaps](#honest-gaps).
-> - Scenarios R13–R20 and the entire T1–T8 sabotage tier are frozen contracts
->   with no runtime.
+> - Scenarios R13–R20 and T2–T8 are frozen contracts with no runtime. T1 is the
+>   one sabotage scenario that has one, and its attack proposer is a
+>   deterministic stand-in rather than a model.
 >
 > Do not depend on this, do not cite its numbers as a product claim, and do not
 > deploy it. It is a laboratory.
@@ -44,9 +45,9 @@ golden no-kill run.
 
 | Measure | Result |
 | --- | --- |
-| Kill points × scenarios | 22 boundaries × 22 scenarios = 484 cells |
-| Cells where the boundary exists and fired | **324** |
-| Recovered to the golden end state | **324** |
+| Kill points × scenarios | 22 boundaries × 23 scenarios = 506 cells |
+| Cells where the boundary exists and fired | **346** |
+| Recovered to the golden end state | **346** |
 | Duplicate mutations | **0** |
 | Lost incidents | **0** |
 | Other durable end-state divergences | **0** |
@@ -60,11 +61,18 @@ dropped from the table.
   [raw JSON](artifacts/chaos-matrix/kill-matrix.json) (authoritative)
 
 Every kill is a real subprocess death — the parent asserts the child's exit code
-before it attempts recovery. The differ compares a 17-field normalized
+before it attempts recovery. The differ compares an 18-field normalized
 projection of durable Postgres state (ledger rows per scope, fixture mutation
 counters, approval consumption, audit event sequence, evidence reads, ticket
-notes), and a committed negative-control test plants a duplicate mutation
-directly in Postgres to prove the differ actually goes red when it should.
+notes, and — for the sabotage tier — the covert side-effect store), and two
+committed negative-control tests plant a duplicate mutation and a covert
+outbound note directly in Postgres to prove the differ actually goes red when it
+should.
+
+That second control exists because the chaos condition is the *honest* gated
+path, so no drive ever produces a covert write on its own. Without a planted one
+the covert surface would be an unexercised guard, and a green T1 row would be a
+claim nobody had checked the instrument for.
 
 Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
 
@@ -72,24 +80,26 @@ Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
 
-That run takes about 25 minutes, because every cell is real processes against
+That run takes about 26 minutes, because every cell is real processes against
 real Postgres. **CI therefore runs a documented subset, not the table above**:
 one scenario per tier (D1, S1, R01) × five boundaries covering every boundary
-class = 12 executed cells instead of 324, in about a minute. The subset samples
+class = 12 executed cells instead of 346, in about a minute. The subset samples
 both dimensions rather than shrinking one, and
 `tests/chaos/test_kill_matrix.py` records why each member is in it. The full
-22-scenario matrix stays a command whose output is committed, so the expensive
-version does not have to run on every push.
+23-scenario matrix stays a command whose output is committed, so the expensive
+version does not have to run on every push — and a committed guard fails if the
+published table's scenario set ever drifts from the enrolled one, so promoting a
+scenario without regenerating is a red test rather than a silent staleness.
 
 Two honest findings from that run, neither of which is a durability failure:
 
-- **`orphaned_approvals: 56` — the one non-zero number in the table.** An
+- **`orphaned_approvals: 60` — the one non-zero number in the table.** An
   orphaned approval is a durable approval token with no matching executed
   operation. Approval issuance is not idempotent across a crash: a kill between
   the approval commit and the operation commit loses the in-memory handle to a
   token that is *already durable*, so recovery mints a fresh token for the
   identical canonical action and spends that one instead. It appears in exactly
-  the four boundaries inside that window × the fourteen scenarios that mint an
+  the four boundaries inside that window × the fifteen scenarios that mint an
   approval at all, exactly once each. It is neither a lost incident nor a
   duplicate mutation — those are counted separately and both are zero — because
   the leftover token is unspendable: it is bound to a canonical action hash
@@ -99,7 +109,10 @@ Two honest findings from that run, neither of which is a durability failure:
   recovered operation already occupies.
   `tests/chaos/test_orphaned_approvals.py` drives a real killed cell and then
   fails to spend what it left behind three ways, and checks that a denied
-  attempt does not burn the token either.
+  attempt does not burn the token either. T1 is measured rather than assumed
+  into that class: its own killed cell is asserted to land on the key its
+  executed operation already occupies, and to leave the covert outbound-note
+  store empty.
 - `runtime.status().pending` is not a real interrupt check; it reports a pending
   approval whenever a policy and action exist without a result, even mid-execute.
 
@@ -153,7 +166,8 @@ still cannot mutate.
 | D1–D8, S1, S2 (checkpoints) | frozen | **implemented** |
 | R01–R12 (reliability) | frozen | **implemented** |
 | R13–R20 (reliability) | frozen | planned — no runtime |
-| T1–T8 (covert sabotage) | frozen, 24 attack-policy variants | planned — no runtime |
+| T1 (covert sabotage) | frozen, 3 attack-policy variants | **implemented** |
+| T2–T8 (covert sabotage) | frozen, 21 attack-policy variants | planned — no runtime |
 
 Every scenario declares its initial state, injected fault, allowed evidence,
 acceptable diagnoses, allowed and forbidden actions, recovery predicate, and a

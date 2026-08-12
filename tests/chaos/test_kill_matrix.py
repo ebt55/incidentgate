@@ -1,6 +1,6 @@
 """CI-sized slice of the chaos kill matrix plus unit cover for the differ.
 
-The full 22-scenario matrix stays a command, not a test::
+The full 23-scenario matrix stays a command, not a test::
 
     uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 
@@ -26,7 +26,7 @@ rather than shrinking one:
 
 That is 3 golden drives and 12 executed cells, which keeps this module to about
 a minute of its own - module setup measured 62.8s and 57.3s across two local
-cold-database full-suite runs on 2026-08-12, against roughly 25 minutes for the
+cold-database full-suite runs on 2026-08-12, against roughly 26 minutes for the
 full table. Widening it further belongs in the published table, not in CI: the
 point of the command is that the expensive full matrix does not have to run on
 every push.
@@ -49,7 +49,9 @@ already reports the failing cell's verdict and diff differences, and the cell's
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -59,6 +61,10 @@ from incidentgate.chaos import enddiff, matrix
 from incidentgate.chaos.killpoints import BoundaryEvent, boundary_id
 from incidentgate.lab.repository import LabRepository
 from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
+
+PUBLISHED_TABLE = (
+    Path(__file__).resolve().parents[2] / matrix.PUBLISHED_ARTIFACT_DIR / "kill-matrix.json"
+)
 
 SELECTED_BOUNDARIES = (
     "start/collect:entry",
@@ -105,6 +111,29 @@ def test_every_runnable_scenario_can_have_its_fixture_captured() -> None:
     """
     missing = sorted(RUNNABLE_SCENARIOS - set(enddiff._FIXTURE_QUERIES))
     assert missing == []
+
+
+def test_the_published_table_covers_every_enrolled_scenario() -> None:
+    """Promotion without regeneration is a red test here, not a KeyError later.
+
+    ``matrix.SCENARIOS`` is derived from the acceptance gate, so promoting a
+    scenario widens the published table's intended scope the moment the registry
+    changes, while the committed artifact still describes the narrower run. The
+    fixture-query guard above catches a scenario the differ cannot capture, but a
+    promoted scenario that *has* a query would have sailed past it and left the
+    published table quietly describing a run that no longer matches the code -
+    surfacing, if at all, as a KeyError minutes into someone's next golden drive.
+
+    T1's promotion is what exposed that gap, so the guard lands with it.
+    """
+    report = json.loads(PUBLISHED_TABLE.read_text(encoding="utf-8"))
+    assert set(report["scenarios"]) == set(matrix.SCENARIOS), (
+        f"{matrix.PUBLISHED_ARTIFACT_DIR}/ is stale; regenerate with: "
+        f"{matrix.REPRODUCTION_COMMAND}"
+    )
+    assert len(report["cells"]) == len(report["scenarios"]) * len(report["boundaries"]), (
+        "the published table is not a complete scenario x boundary grid"
+    )
 
 
 def test_the_ci_subset_samples_every_tier_and_every_boundary_class() -> None:

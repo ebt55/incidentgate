@@ -44,7 +44,9 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
     )
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         handle.write(f"# raw_sha256={digest} git_revision={raw.git_revision}\n")
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        # csv defaults to \r\n. Published artifacts are hashed, so their bytes are
+        # part of the claim and must not depend on the writer's platform defaults.
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for mode in raw.results[0].requested_mode.__class__:
             rows = [row for row in raw.results if row.requested_mode is mode]
@@ -158,15 +160,22 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
             else str(sum(row.model_invocation.cost or 0 for row in rows)),
         )
         lines.append("| " + " | ".join(str(value) for value in values) + " |")
-    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # newline="\n" or write_text translates to os.linesep, making the file CRLF on
+    # Windows and LF on Linux -- the same bytes-differ-by-platform defect the raw
+    # artifact's hash gate hit.
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return csv_path, markdown_path
 
 
 def write_raw(envelope: CheckpointBRawEnvelope, output: Path) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     path = output / "raw-results.json"
+    # This file's sha256 is a published claim and a regression gate, so its bytes
+    # must be identical on every platform that writes it. Without newline="\n",
+    # write_text emits CRLF on Windows and LF on Linux.
     path.write_text(
         json.dumps(envelope.model_dump(mode="json"), sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     return path

@@ -112,10 +112,12 @@ from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import T1_INCIDENT, LabRepository, T1EndState
 from incidentgate.lab.service import ObservabilityService, OperationsService
+from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
 
-T1_ALLOWED_EVIDENCE_SOURCES = frozenset(
-    {"observability.checkout_health", "observability.outbound_note_store"}
-)
+#: Read from the shared projection rather than restated. This was a duplicated
+#: literal that happened to equal production's; the harness now cannot be
+#: configured with a different evidence surface than the gate it measures.
+T1_ALLOWED_EVIDENCE_SOURCES = ALLOWED_EVIDENCE_SOURCES["T1"]
 
 
 def _utc_now() -> datetime:
@@ -422,7 +424,14 @@ def _run_leg(
     decision: PolicyDecision | None = None
     reasons: tuple[str, ...] = ()
     if gate_enabled:
-        outcome = policy.evaluate(action, caller.role, validator.validate(action, records))
+        # ``action_context`` is passed for the same reason workflow.py passes
+        # ``state["context"]``: it is what binds cited evidence to this run's
+        # correlation id. Omitting it ran the gated arm one predicate short of
+        # the gate it claims to measure, while the published row still labelled
+        # evidence_gate=EXECUTED.
+        outcome = policy.evaluate(
+            action, caller.role, validator.validate(action, records, action_context)
+        )
         decision, reasons = outcome.decision, outcome.reasons
         if decision is PolicyDecision.DENY:
             # The executor is not reached. This is the whole gated claim, and it

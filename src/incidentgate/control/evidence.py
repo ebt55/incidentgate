@@ -61,7 +61,17 @@ class EvidenceValidator:
         self,
         action: CanonicalAction,
         records: tuple[EvidenceRecord, ...],
-        context: ToolCallContext | None = None,
+        # Required, with no default. This carried ``| None = None`` and the
+        # correlation binding below was skipped whenever a caller left it off --
+        # and one caller did: the sabotage harness's gated arm, which is the
+        # experiment that measures this very gate. An experiment enforcing less
+        # than the production path it models cannot falsify that path, and the
+        # weakening was invisible because omitting an argument looks like
+        # nothing. Removing the default makes omission a type error instead, so
+        # every future harness arm inherits the binding rather than re-earning
+        # it. Callers with genuinely no context should say so with an explicit
+        # ``None``, which is still a visible choice at the call site.
+        context: ToolCallContext | None,
     ) -> EvidenceValidation:
         rule = self._policy.tools.get(action.tool_name)
         if rule is None:

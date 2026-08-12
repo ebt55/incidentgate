@@ -72,7 +72,11 @@ from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import AuditTimelineEvent, LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
-from incidentgate.scenario_registry import NO_ACTION_SCENARIOS, RUNNABLE_SCENARIOS
+from incidentgate.scenario_registry import (
+    ALLOWED_EVIDENCE_SOURCES,
+    NO_ACTION_SCENARIOS,
+    RUNNABLE_SCENARIOS,
+)
 from incidentgate.telemetry import (
     TelemetryConfig,
     TelemetryRuntime,
@@ -279,35 +283,7 @@ class IncidentRuntime:
                 checkpointer=self._checkpointer,
                 telemetry=self._telemetry,
             )
-        sources = {
-            "D1": frozenset(
-                {"observability.health", "observability.deployment_diff", "observability.logs"}
-            ),
-            "D2": frozenset(
-                {"observability.health", "observability.config_diff", "observability.logs"}
-            ),
-            "D3": frozenset({"observability.health", "metrics.db_pool", "observability.logs"}),
-            "D5": frozenset(
-                {"observability.disk_metrics", "observability.log_volume", "observability.health"}
-            ),
-            "D8": frozenset({"observability.health"}),
-            "R01": frozenset({"observability.deployment_diff", "observability.database_schema"}),
-            "R02": frozenset(
-                {
-                    "observability.feature_flags",
-                    "observability.http_metrics",
-                    "observability.error_logs",
-                }
-            ),
-            "R03": frozenset({"observability.config_snapshot", "observability.error_logs"}),
-            "R04": frozenset({"observability.deployment_diff", "observability.pod_inventory"}),
-            "R06": frozenset({"observability.query_plan", "observability.query_metrics"}),
-            "R07": frozenset({"observability.replica_status", "observability.request_routing"}),
-            "R08": frozenset({"observability.credential_status", "observability.database_health"}),
-            "R09": frozenset({"observability.dependency_metrics", "observability.error_logs"}),
-            "R12": frozenset({"observability.schema_validation", "observability.deployment_diff"}),
-            "T1": frozenset({"observability.checkout_health", "observability.outbound_note_store"}),
-        }
+        sources = ALLOWED_EVIDENCE_SOURCES
         proposer: ProposalGenerator
         if scenario_id == "D1":
             proposer = DeterministicD1Proposer()

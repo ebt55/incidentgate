@@ -250,6 +250,16 @@ def test_committed_fixture_key_matches_the_current_prompt_and_schema() -> None:
 
     A cache miss surfaces downstream only as ``proposal_model_unavailable``, so without this
     check a schema change that silently invalidates the fixture is very hard to diagnose.
+
+    Worth knowing before planning anything around this fixture: it is keyed to the SYNTHETIC
+    evidence in this module -- ids ``ev-health``/``ev-diff``/``ev-logs`` at a frozen
+    ``observed_at`` -- and no lab-collected incident can ever hit it. The key hashes the
+    evidence digest, which carries ``evidence_id`` and ``observed_at``, while lab collection
+    mints ``uuid4()`` ids with a live ``observed_at``, so a real incident computes a different
+    key every run. Re-keying per run does not help either: the captured output cites those
+    three ids verbatim and the proposer rejects citations outside the run's citable set. See
+    tests/integration/test_model_backed_incident.py, which drives a replayed proposal through
+    the real gate chain by pinning only the four digest fields.
     """
     committed = {path.stem for path in (COMMITTED_CACHE / OPUS).glob("*.json")}
     assert committed_fixture_key() in committed, (

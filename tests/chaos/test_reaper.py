@@ -136,9 +136,11 @@ def test_run_matrix_always_reaps_even_when_no_cell_reaches_the_cadence(
 ) -> None:
     """The dormancy fix: reaping must not depend on executing REAP_EVERY_CELLS cells.
 
-    The CI subset executes 7 cells against a cadence of 12, so the reaper used to
-    run zero times in CI. An empty scenario set is the sharpest version of that
-    case: zero cells, and the reaper must still run exactly once.
+    The CI subset now executes 12 cells against a cadence of 12, so the cadence
+    fires exactly once and only on the very last cell - it reached zero times
+    before R01 joined the subset, and any narrower selection reaches it zero
+    times again. An empty scenario set is the sharpest version of that case:
+    zero cells, and the reaper must still run exactly once.
     """
     dsn = _dsn()
     calls: list[str] = []

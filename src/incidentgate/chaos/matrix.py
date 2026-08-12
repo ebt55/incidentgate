@@ -90,12 +90,28 @@ STATUS_ERROR = "harness-error"
 PUBLISHED_ARTIFACT_DIR = "artifacts/chaos-matrix"
 REPRODUCTION_COMMAND = f"uv run python -m incidentgate.chaos.matrix --out {PUBLISHED_ARTIFACT_DIR}/"
 
+#: The run writes its own output into ``PUBLISHED_ARTIFACT_DIR``, so an
+#: unscoped ``git status`` sees that output and stamps ``dirty: true`` on every
+#: table that has ever been published - including one generated from a pristine
+#: tree. Excluding exactly that directory makes the flag mean the only thing
+#: worth publishing: whether the *sources* differ from the recorded revision.
+#: ``:(top)`` anchors both patterns at the repository root, because ``_git``
+#: runs from this package's directory rather than from the root.
+DIRTY_PATHSPEC: tuple[str, ...] = (":(top)", f":(top,exclude){PUBLISHED_ARTIFACT_DIR}/")
+DIRTY_MEANING = (
+    "any tracked or untracked change outside "
+    f"{PUBLISHED_ARTIFACT_DIR}/, the directory this command writes into"
+)
+
 
 def git_revision() -> dict[str, Any]:
     """Record the exact tree the published table was measured from.
 
     A table generated from a dirty tree is not reproducible from its revision
     alone, so the dirty flag is published next to the sha rather than hidden.
+    ``dirty_means`` travels with it because the flag is deliberately scoped -
+    see :data:`DIRTY_PATHSPEC` - and a scoped flag that does not say what it
+    excluded is worth less than no flag at all.
     """
 
     def _git(*arguments: str) -> str | None:
@@ -113,10 +129,11 @@ def git_revision() -> dict[str, Any]:
         return completed.stdout.strip() if completed.returncode == 0 else None
 
     revision = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain")
+    status = _git("status", "--porcelain", "--", *DIRTY_PATHSPEC)
     return {
         "revision": revision,
         "dirty": None if status is None else bool(status),
+        "dirty_means": DIRTY_MEANING,
     }
 
 
@@ -325,6 +342,26 @@ def reap_idle_backends(dsn: str, *, idle_seconds: float = REAP_IDLE_SECONDS) -> 
     ``idle`` only (never ``idle in transaction``, which would abort live work).
     ``idle_seconds`` exists so tests can prove the scoping without waiting out
     the real threshold; production callers use the default.
+
+    **This reaper is belt-and-suspenders, and that is a measurement rather than
+    an assumption.** :func:`sample_chaos_backend_states` runs immediately after
+    every ``os._exit(137)``, before any recovery process can open a connection.
+    Across the published 22-scenario run that is 324 samples taken after 324
+    real kills, and every single one came back empty: no backend carrying this
+    harness's ``application_name`` outlived the process that opened it. The
+    operating system closes the dead process' sockets and Postgres tears the
+    backends down with them, fast enough that the sample never caught one.
+
+    Two consequences worth stating plainly. First, the ``state = 'idle'``
+    targeting has never been exercised by a real orphan - it is exercised only
+    by ``tests/chaos/test_reaper.py``, which manufactures idle backends on
+    purpose. Second, the interesting failure mode this was written to guard
+    against, an orphan stuck in ``idle in transaction`` holding locks, has not
+    been observed at all; that state is deliberately *not* targeted here, so if
+    it ever does appear the reaper will not paper over it. The empty result is
+    published in the artifact as ``orphan_backend_states`` alongside
+    ``orphan_backend_samples`` so an empty mapping cannot be misread as an
+    absence of measurement.
     """
     with psycopg.connect(chaos_dsn(dsn), autocommit=True) as connection:
         connection.execute(
@@ -397,6 +434,10 @@ def run_cell(
         "killed": result.killed_at_step is not None,
         "kill_exit_code": KILL_EXIT_CODE if result.killed_at_step is not None else None,
         "orphan_backend_states": merge_state_counts(result.orphan_samples),
+        # Published next to the mapping so an empty mapping is legible as a
+        # result. `{}` with a positive sample count means "looked, found none";
+        # `{}` with a zero sample count would mean "never looked".
+        "orphan_backend_samples": len(result.orphan_samples),
         "recovery_processes": max(len(exit_codes) - ((result.killed_at_step or 0) + 1), 0),
         "resume_outcome": {
             "terminal": result.terminal,
@@ -496,8 +537,9 @@ def run_matrix(
             if executed % REAP_EVERY_CELLS == 0:
                 reap_idle_backends(dsn)
     # Unconditional, so the reaper is exercised by every run rather than only by
-    # runs long enough to reach the cadence. The CI subset executes 7 cells and
-    # REAP_EVERY_CELLS is 12, so before this line the reaper had no test at all.
+    # runs long enough to reach the cadence. The CI subset executes 12 cells
+    # against REAP_EVERY_CELLS of 12, so the cadence fires exactly once and only
+    # on the very last cell; any narrower selection reaches it zero times.
     reap_idle_backends(dsn)
     return {
         "generated_by": "incidentgate.chaos.matrix",
@@ -508,6 +550,7 @@ def run_matrix(
         "orphan_backend_states": merge_state_counts(
             [cell["orphan_backend_states"] for cell in cells if "orphan_backend_states" in cell]
         ),
+        "orphan_backend_samples": sum(int(cell.get("orphan_backend_samples", 0)) for cell in cells),
         "comparison_spec": enddiff.spec_rows(),
         "at_least_rationale": enddiff.AT_LEAST_RATIONALE,
         "golden": golden_report,
@@ -634,24 +677,38 @@ def _render_provenance(report: dict[str, Any]) -> list[str]:
 def _render_orphans(report: dict[str, Any]) -> list[str]:
     """Publish what a hard-killed worker actually leaves behind in Postgres."""
     states = report.get("orphan_backend_states", {})
+    samples = int(report.get("orphan_backend_samples", 0))
     lines = ["## Orphaned backends after a hard kill", ""]
     if not states:
         lines.extend(
             [
                 (
-                    "Sampled immediately after every `os._exit(137)`, before any recovery "
-                    "process opened a connection: **no** backend carrying this harness's "
-                    "`application_name` survived the process that opened it. The operating "
-                    "system closes the sockets as the process dies and Postgres tears the "
-                    "backends down with them, so the reaper is belt-and-suspenders here."
+                    f"**{samples} samples, taken immediately after {samples} real "
+                    "`os._exit(137)` kills** and before any recovery process opened a "
+                    "connection: **no** backend carrying this harness's `application_name` "
+                    "survived the process that opened it. The operating system closes the "
+                    "sockets as the process dies and Postgres tears the backends down with "
+                    "them, faster than the sample could catch one."
+                ),
+                "",
+                (
+                    "So the empty result below is a measurement, not a missing one. Two things "
+                    "follow. The reaper's `state = 'idle'` targeting has never been exercised "
+                    "by a real orphan - only by `tests/chaos/test_reaper.py`, which "
+                    "manufactures idle backends deliberately - which makes the reaper "
+                    "belt-and-suspenders rather than load-bearing. And the failure mode it was "
+                    "written against, an orphan stuck in `idle in transaction` holding locks, "
+                    "was never observed; the reaper deliberately does not target that state, "
+                    "so it cannot hide one if it appears."
                 ),
                 "",
             ]
         )
         return lines
     lines.append(
-        "Peak count of this harness's backends by `pg_stat_activity.state`, sampled "
-        "immediately after each kill and before any recovery process connected:"
+        f"Peak count of this harness's backends by `pg_stat_activity.state`, across "
+        f"{samples} samples taken immediately after each kill and before any recovery "
+        "process connected:"
     )
     lines.append("")
     lines.append("| Backend state | Peak observed |")
@@ -730,19 +787,94 @@ def _render_observations(
         f"- `orphaned_approvals`: {counted['orphaned_approvals']} unconsumed approval rows "
         "left by kills inside the approval window."
     )
-    orphaned = sorted(
-        {
-            str(cell["boundary"])
-            for cell in report["cells"]
-            if int(cell.get("diff", {}).get("observations", {}).get("orphaned_approvals", 0)) > 0
-        }
-    )
+    orphaning = [
+        cell
+        for cell in report["cells"]
+        if int(cell.get("diff", {}).get("observations", {}).get("orphaned_approvals", 0)) > 0
+    ]
+    orphaned = sorted({str(cell["boundary"]) for cell in orphaning})
     if orphaned:
         lines.append(
             "- boundaries that orphan an approval: " + ", ".join(f"`{b}`" for b in orphaned)
         )
     lines.append("")
+    lines.extend(_render_orphaned_approval_footnote(report, orphaning, orphaned))
     return lines
+
+
+def _render_orphaned_approval_footnote(
+    report: dict[str, Any], orphaning: Sequence[dict[str, Any]], boundaries: Sequence[str]
+) -> list[str]:
+    """Define the one non-zero number in the table, and why it is not a defect.
+
+    This footnote exists because ``orphaned_approvals: 56`` reads like a bug
+    report until someone says what an orphaned approval is. Curating it to zero
+    would have been easy and dishonest; explaining it is the alternative.
+    """
+    if not orphaning:
+        return []
+    scenarios = sorted({str(cell["scenario"]) for cell in orphaning})
+    per_cell = sorted(
+        {int(cell["diff"]["observations"]["orphaned_approvals"]) for cell in orphaning}
+    )
+    minted = sorted(
+        scenario
+        for scenario in report["scenarios"]
+        if int(report["golden"][scenario]["end_state"]["approvals_total"]) > 0
+    )
+    return [
+        "### What `orphaned_approvals` counts",
+        "",
+        (
+            "An **orphaned approval** is a durable approval row with no matching executed "
+            "operation: `approvals_total` exceeded the golden run while `approvals_consumed`, "
+            "`ledger_max_rows_per_key` and `fixture_mutation_count` all matched it exactly. "
+            "It is neither a lost incident nor a duplicate mutation - both of those are "
+            "separate verdicts in the table above, and both are zero."
+        ),
+        "",
+        (
+            f"Every orphaning cell orphans exactly {' and '.join(str(n) for n in per_cell)} "
+            f"approval, across {len(boundaries)} boundaries x {len(scenarios)} scenarios = "
+            f"{len(orphaning)} cells. Those scenarios are exactly the "
+            f"{len(minted)} whose golden run mints an approval at all; the remaining "
+            f"{len(report['scenarios']) - len(minted)} defer, block, or take no action, so "
+            "they have no token to orphan. The four boundaries are exactly the kill points "
+            "between the approval commit and the operation commit."
+        ),
+        "",
+        (
+            "The mechanism: a kill in that window loses the in-memory handle to a token that "
+            "is *already durable*. Recovery cannot tell a committed-but-unspent token from one "
+            "it never minted, so it mints a fresh token for the identical canonical action and "
+            "spends that one. The pre-kill token is left un-redeemed. Approval issuance is "
+            "therefore not idempotent across a crash - but redemption is, and redemption is "
+            "what mutates."
+        ),
+        "",
+        "An un-redeemed token is not a spendable capability:",
+        "",
+        (
+            "- It is bound to a canonical action hash covering thread id, actor, permission, "
+            "evidence ids and arguments. `_token_matches_approval` compares the durable row, "
+            "the presented token and a freshly recomputed hash three ways, so it cannot be "
+            "presented for a different action or by a different actor."
+        ),
+        (
+            "- The ledger's idempotency key is `uuid5(thread_id, action_hash)` - a pure "
+            "function of the binding the token already carries. The only key an orphan can "
+            "derive is the one the recovered operation already occupies, and that collision "
+            "routes into the replay branch, which rejects a token id that does not match the "
+            "ledger row's."
+        ),
+        "",
+        (
+            "Both are exercised against a real orphan left by a real kill in "
+            "`tests/chaos/test_orphaned_approvals.py`, which drives one killed cell and then "
+            "attempts to spend what it left behind."
+        ),
+        "",
+    ]
 
 
 def _render_coverage(report: dict[str, Any]) -> list[str]:

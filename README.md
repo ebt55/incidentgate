@@ -39,16 +39,25 @@ raw results that regenerate from one command.
 ### 1. Durability under real process kills
 
 The worker is killed with `os._exit(137)` at **every node boundary of every
-scenario**, then recovered with fresh processes and diffed against a golden
-no-kill run.
+runnable scenario**, then recovered with fresh processes and diffed against a
+golden no-kill run.
 
 | Measure | Result |
 | --- | --- |
-| Kill points × scenarios | 22 boundaries × 10 scenarios = 220 cells |
-| Cells where the boundary exists and fired | **120** |
-| Recovered to the golden end state | **120** |
+| Kill points × scenarios | 22 boundaries × 22 scenarios = 484 cells |
+| Cells where the boundary exists and fired | **324** |
+| Recovered to the golden end state | **324** |
 | Duplicate mutations | **0** |
 | Lost incidents | **0** |
+| Other durable end-state divergences | **0** |
+| Harness errors | **0** |
+
+The other 160 cells are `n/a` — that boundary does not exist on that scenario's
+path — and every one is published with the reason it does not apply rather than
+dropped from the table.
+
+- [Published table](artifacts/chaos-matrix/kill-matrix.md) ·
+  [raw JSON](artifacts/chaos-matrix/kill-matrix.json) (authoritative)
 
 Every kill is a real subprocess death — the parent asserts the child's exit code
 before it attempts recovery. The differ compares a 17-field normalized
@@ -57,19 +66,39 @@ counters, approval consumption, audit event sequence, evidence reads, ticket
 notes), and a committed negative-control test plants a duplicate mutation
 directly in Postgres to prove the differ actually goes red when it should.
 
-Measured 2026-08-11. Regenerate with:
+Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
 
 ```bash
-uv run python -m incidentgate.chaos.matrix --out artifacts/chaos/
+uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
+
+That run takes roughly twenty minutes, because every cell is real processes
+against real Postgres. **CI therefore runs a documented subset, not the table
+above**: one scenario per tier (D1, S1, R01) × five boundaries covering every
+boundary class = 12 executed cells in about three quarters of a minute. The
+subset samples both dimensions rather than shrinking one, and
+`tests/chaos/test_kill_matrix.py` records why each member is in it. The full
+22-scenario matrix stays a command whose output is committed, so the expensive
+version does not have to run on every push.
 
 Two honest findings from that run, neither of which is a durability failure:
 
-- Approval issuance is **not** idempotent across a crash inside the approval
-  window. A kill there orphans an unconsumed token and recovery mints a second
-  one. Exactly-once still holds, because the ledger deduplicates on a
-  deterministic idempotency key — but the fix (reuse an unconsumed approval bound
-  to the same action hash) is queued.
+- **`orphaned_approvals: 56` — the one non-zero number in the table.** An
+  orphaned approval is a durable approval token with no matching executed
+  operation. Approval issuance is not idempotent across a crash: a kill between
+  the approval commit and the operation commit loses the in-memory handle to a
+  token that is *already durable*, so recovery mints a fresh token for the
+  identical canonical action and spends that one instead. It appears in exactly
+  the four boundaries inside that window × the fourteen scenarios that mint an
+  approval at all, exactly once each. It is neither a lost incident nor a
+  duplicate mutation — those are counted separately and both are zero — because
+  the leftover token is unspendable: it is bound to a canonical action hash
+  covering thread id, actor, permission, evidence ids and arguments, and the
+  ledger's idempotency key is `uuid5(thread_id, action_hash)`, a pure function
+  of that same binding. The only key an orphan can derive is the one the
+  recovered operation already occupies.
+  `tests/chaos/test_orphaned_approvals.py` drives a real killed cell and then
+  fails to spend what it left behind, four ways.
 - `runtime.status().pending` is not a real interrupt check; it reports a pending
   approval whenever a policy and action exist without a result, even mid-execute.
 
@@ -213,8 +242,7 @@ These are the things a reviewer should know before believing anything above.
 3. Wire the model proposer into the runtime so the three-condition comparison and
    the sabotage tier stop being vacuous.
 4. Implement R13–R20, then one real covert channel (T1) end-to-end.
-5. Publish the chaos matrix artifact, CI regression gates, the full timeline UI,
-   and a 90-second demo.
+5. CI regression gates, the full timeline UI, and a 90-second demo.
 
 ## License
 

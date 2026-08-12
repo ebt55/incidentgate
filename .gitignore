@@ -22,7 +22,16 @@ build/
 *.egg-info/
 coverage.xml
 .coverage
+
+# Transient chaos runs: exploratory matrices, partial scenario sweeps, anything
+# aimed here by `--out artifacts/chaos/`. These are working output and must stay
+# ignored, or a half-finished sweep can be committed as if it were the result.
 artifacts/chaos/
+# The *published* kill matrix is a deliberate exception and lives in its own
+# directory so it needs no `git add -f` and cannot be produced by accident:
+# `--out artifacts/chaos-matrix/` is the documented publishing command, and that
+# path is intentionally NOT ignored. Keeping the two apart is what lets the
+# README lead with a committed, reproducible table.
 
 # Local planning and multi-session handoff notes. These are working documents,
 # not project documentation, and they record local paths and scheduling context.

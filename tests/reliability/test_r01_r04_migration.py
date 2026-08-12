@@ -76,7 +76,7 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
             names = [row[0] for row in cursor.fetchall()]
             expected_names = [
-                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name for number in range(1, 14)
+                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name for number in range(1, 15)
             ]
             assert names == expected_names
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='upgrade-ticket'")
@@ -100,7 +100,7 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 13
+            assert cursor.fetchone()[0] == 14
             cursor.execute(
                 "SELECT count(*) FROM schema_migrations WHERE name = '011_reliability_r01_r04.sql'"
             )

@@ -190,6 +190,7 @@ class LabRepository:
                 "011_reliability_r01_r04.sql",
                 "012_reliability_r05_r08.sql",
                 "013_reliability_r09_r12.sql",
+                "014_audit_insertion_sequence.sql",
             )
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at "
@@ -1360,8 +1361,11 @@ class LabRepository:
             raise ValueError("timeline limit must be between 1 and 100")
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
+                # Ordered by insertion sequence, not created_at. The timestamp is
+                # informational: it is written by the application for some events
+                # and by the database for others, so it cannot define causal order.
                 "SELECT incident_id, event_type, actor, payload, created_at FROM audit_timeline "
-                "WHERE incident_id = %s ORDER BY created_at ASC, audit_id ASC LIMIT %s",
+                "WHERE incident_id = %s ORDER BY sequence ASC LIMIT %s",
                 (incident_id, limit),
             )
             rows = cursor.fetchall()
@@ -1948,9 +1952,13 @@ class LabRepository:
             )
             result = self._result()
             cursor.execute(
-                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload) "
-                "VALUES (%s, %s, 'rollback_committed', %s, %s)",
-                (uuid4(), context.incident_id, context.actor, json.dumps(result)),
+                # created_at is supplied from the same application clock every other
+                # audit event uses. Omitting it took the database server's DEFAULT
+                # now(), which put two timebases in one column.
+                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload, "
+                "created_at) "
+                "VALUES (%s, %s, 'rollback_committed', %s, %s, %s)",
+                (uuid4(), context.incident_id, context.actor, json.dumps(result), now),
             )
             ledger = {
                 "action_hash": action_hash,
@@ -2459,9 +2467,11 @@ class LabRepository:
                 "UPDATE approvals SET consumed_at = %s WHERE token_id = %s", (now, token.token_id)
             )
             cursor.execute(
-                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (uuid4(), context.incident_id, transition, context.actor, json.dumps(result)),
+                # Same application clock as every other audit event; see above.
+                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload, "
+                "created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (uuid4(), context.incident_id, transition, context.actor, json.dumps(result), now),
             )
             ledger = {
                 "action_hash": action_hash,

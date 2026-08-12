@@ -131,8 +131,9 @@ COMPARISON_SPEC: tuple[FieldSpec, ...] = (
     ),
     FieldSpec(
         "audit_sequence",
-        "audit_timeline events in order",
-        "(event_type, actor, reason, action_hash present); "
+        "audit_timeline events in insertion order",
+        "(event_type, actor, reason, action_hash present); ordered by insertion "
+        "sequence, which is causal and clock-independent; "
         "created_at, audit_id, thread_id and the hash value discarded",
         RULE_EQUAL,
         STATE_DIVERGENCE,
@@ -285,8 +286,13 @@ def _capture_approvals(cursor: Any, incident: str) -> dict[str, Any]:
 
 def _capture_audit(cursor: Any, incident: str) -> dict[str, Any]:
     cursor.execute(
+        # Insertion sequence is the only causal key here. The previous ordering led
+        # with created_at -- written from two different clocks -- and then broke ties
+        # on event_type, the reason text, and a content-derived uuid. Every one of
+        # those is content, not causality: renaming a reason silently reordered the
+        # sequence this differ compares for exact equality.
         "SELECT event_type, actor, payload FROM audit_timeline WHERE incident_id = %s "
-        "ORDER BY created_at, event_type, coalesce(payload->>'reason', ''), audit_id",
+        "ORDER BY sequence",
         (incident,),
     )
     events = []

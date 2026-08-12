@@ -50,13 +50,22 @@ def repository() -> LabRepository:
 def _inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     thread = f"{scenario.lower()}-{uuid4().hex[:12]}"
     incident = IncidentIdentity(
-        incident_id=f"INC-{scenario}", scenario_id=scenario, thread_id=thread,
+        incident_id=f"INC-{scenario}",
+        scenario_id=scenario,
+        thread_id=thread,
         correlation_id=f"corr-{thread}",
     )
     permission = "observability:read" if scenario == "R05" else "operations:write"
-    return incident, Caller(actor="operator-1", role=Role.OPERATOR), ToolCallContext(
-        incident_id=incident.incident_id, thread_id=thread,
-        correlation_id=incident.correlation_id, actor="operator-1", permission=permission,
+    return (
+        incident,
+        Caller(actor="operator-1", role=Role.OPERATOR),
+        ToolCallContext(
+            incident_id=incident.incident_id,
+            thread_id=thread,
+            correlation_id=incident.correlation_id,
+            actor="operator-1",
+            permission=permission,
+        ),
     )
 
 
@@ -121,7 +130,9 @@ def test_r06_r08_pending_approval_does_not_fabricate_a_component(
         repository.reset_checkpoint(scenario)
 
 
-def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(repository: LabRepository) -> None:
+def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(
+    repository: LabRepository,
+) -> None:
     repository.reset_checkpoint("R05")
     repository.inject_checkpoint("R05")
     incident, caller, context = _inputs("R05")
@@ -137,13 +148,21 @@ def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(reposit
         assert completed.result is not None
         assert completed.pending is None
         assert completed.result.final_state == "resolved"
-        assert completed.result.report.diagnosis == "database lock contention: tx-4401 blocks orders writes"
+        assert (
+            completed.result.report.diagnosis
+            == "database lock contention: tx-4401 blocks orders writes"
+        )
         assert completed.result.reasons == ("lock_auto_release_observed_no_action",)
         public_result = completed.result.model_dump(mode="json", exclude_none=True)
-        assert all(name not in public_result for name in ("policy", "monitor", "approval", "operation", "idempotency_key"))
+        assert all(
+            name not in public_result
+            for name in ("policy", "monitor", "approval", "operation", "idempotency_key")
+        )
         records = repository.r05_resume_evidence(context)
         assert [record.tool_name for record in records] == [
-            "observability.database_locks", "observability.query_metrics", "observability.database_locks"
+            "observability.database_locks",
+            "observability.query_metrics",
+            "observability.database_locks",
         ]
         assert records[-1].payload["virtual_time_fixture"] is True
         assert records[-1].payload["auto_release_observed_at_seconds"] >= 45
@@ -154,7 +173,9 @@ def test_r05_no_action_recovers_ordered_durable_reads_after_process_loss(reposit
 
 
 @pytest.mark.parametrize("scenario", ("R06", "R07", "R08"))
-def test_r06_r08_approval_and_response_loss_replay_are_exact(repository: LabRepository, scenario: str) -> None:
+def test_r06_r08_approval_and_response_loss_replay_are_exact(
+    repository: LabRepository, scenario: str
+) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)
@@ -179,7 +200,9 @@ def test_r06_r08_approval_and_response_loss_replay_are_exact(repository: LabRepo
 
 
 @pytest.mark.parametrize("scenario", ("R05", "R06", "R07", "R08"))
-def test_r05_r08_telemetry_uses_safe_workflow_trace(repository: LabRepository, scenario: str) -> None:
+def test_r05_r08_telemetry_uses_safe_workflow_trace(
+    repository: LabRepository, scenario: str
+) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)
@@ -191,32 +214,57 @@ def test_r05_r08_telemetry_uses_safe_workflow_trace(repository: LabRepository, s
             if scenario != "R05":
                 assert isinstance(started, PendingApproval)
                 runtime.approve(incident.thread_id, Principal("approver-1", Role.APPROVER))
-        spans = [span for span in exporter.get_finished_spans() if span.name.startswith(scenario.lower())]
+        spans = [
+            span for span in exporter.get_finished_spans() if span.name.startswith(scenario.lower())
+        ]
         assert spans and len({span.context.trace_id for span in spans}) == 1
-        allowed = {"incident_id", "thread_id", "correlation_id", "actor", "permission", "action_hash", "idempotency_key"}
+        allowed = {
+            "incident_id",
+            "thread_id",
+            "correlation_id",
+            "actor",
+            "permission",
+            "action_hash",
+            "idempotency_key",
+        }
         assert all(set(span.attributes) <= allowed for span in spans)
     finally:
         telemetry.shutdown()
         repository.reset_checkpoint(scenario)
 
 
-def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(repository: LabRepository) -> None:
+def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(
+    repository: LabRepository,
+) -> None:
     repository.reset_checkpoint("R05")
     try:
         client = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
         client.post("/mock-login", data={"actor": "operator-1"})
         home = client.get("/")
-        nonce = home.text.split("action='/incidents/r05/prepare'>")[1].split("value='")[1].split("'")[0]
-        prepared = client.post("/incidents/r05/prepare", data={"nonce": nonce}, follow_redirects=False)
+        nonce = (
+            home.text.split("action='/incidents/r05/prepare'>")[1].split("value='")[1].split("'")[0]
+        )
+        prepared = client.post(
+            "/incidents/r05/prepare", data={"nonce": nonce}, follow_redirects=False
+        )
         thread = prepared.headers["location"].split("/")[2]
         prompt = client.get(f"/incidents/{thread}/start")
         start_nonce = prompt.text.split("name='nonce' value='")[1].split("'")[0]
-        client.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False)
+        client.post(
+            f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False
+        )
         fresh = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
         fresh.post("/mock-login", data={"actor": "approver-1"})
         page = fresh.get(f"/threads/{thread}").text.lower()
-        assert "deterministic virtual fixture observation" in page and "auto-release" in page and "no-action" in page
-        assert all(word not in page for word in ("policy:", "monitor:", "approval", "operation", "idempotency", "token"))
+        assert (
+            "deterministic virtual fixture observation" in page
+            and "auto-release" in page
+            and "no-action" in page
+        )
+        assert all(
+            word not in page
+            for word in ("policy:", "monitor:", "approval", "operation", "idempotency", "token")
+        )
     finally:
         repository.reset_checkpoint("R05")
 
@@ -225,33 +273,81 @@ def test_r05_host_terminal_page_is_safe_and_describes_the_virtual_fixture(reposi
 @pytest.mark.parametrize(
     ("scenario", "reads", "operation", "proposer", "bad_argument"),
     (
-        ("R06", ("query_plan", "query_metrics"), "enable_query_plan_baseline_orders", DeterministicR06Proposer, ("index", "wrong-index")),
-        ("R07", ("replica_status", "request_routing"), "route_customer_reads_primary", DeterministicR07Proposer, ("routing", "replica-a")),
-        ("R08", ("credential_status", "database_health"), "rotate_credential_db_app_2026_09", DeterministicR08Proposer, ("active_id", "db-app-2026-08")),
+        (
+            "R06",
+            ("query_plan", "query_metrics"),
+            "enable_query_plan_baseline_orders",
+            DeterministicR06Proposer,
+            ("index", "wrong-index"),
+        ),
+        (
+            "R07",
+            ("replica_status", "request_routing"),
+            "route_customer_reads_primary",
+            DeterministicR07Proposer,
+            ("routing", "replica-a"),
+        ),
+        (
+            "R08",
+            ("credential_status", "database_health"),
+            "rotate_credential_db_app_2026_09",
+            DeterministicR08Proposer,
+            ("active_id", "db-app-2026-08"),
+        ),
     ),
 )
 async def test_public_fastmcp_r05_r08_capabilities_and_safe_denials(
-    repository: LabRepository, scenario: str, reads: tuple[str, ...], operation: str,
-    proposer: type[object], bad_argument: tuple[str, object],
+    repository: LabRepository,
+    scenario: str,
+    reads: tuple[str, ...],
+    operation: str,
+    proposer: type[object],
+    bad_argument: tuple[str, object],
 ) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, write_context = _inputs(scenario)
     read_context = write_context.model_copy(update={"permission": "observability:read"})
-    observe = observability_server(ObservabilityService(repository), Principal("operator-1", Role.OPERATOR))
-    execute = operations_server(OperationsService(repository), Principal("operator-1", Role.OPERATOR))
+    observe = observability_server(
+        ObservabilityService(repository), Principal("operator-1", Role.OPERATOR)
+    )
+    execute = operations_server(
+        OperationsService(repository), Principal("operator-1", Role.OPERATOR)
+    )
     try:
         assert set(reads) <= {tool.name for tool in await observe.list_tools()}
         assert operation in {tool.name for tool in await execute.list_tools()}
-        records = [EvidenceRecord.model_validate((await observe.call_tool(name, {"context": read_context.model_dump(mode="json")}))[1]) for name in reads]
+        records = [
+            EvidenceRecord.model_validate(
+                (await observe.call_tool(name, {"context": read_context.model_dump(mode="json")}))[
+                    1
+                ]
+            )
+            for name in reads
+        ]
         _, action = proposer().propose(incident, caller, write_context, tuple(records))  # type: ignore[operator]
         now = datetime.now(UTC)
-        token = ApprovalService(repository, lambda: now, incident_id=incident.incident_id, thread_id=incident.thread_id).approve(
-            ApprovalRequest(action_hash=canonical_action_hash(action), actor=caller.actor, requested_at=now, expires_at=now + timedelta(minutes=5), one_time_use_id=uuid4()), Principal("approver-1", Role.APPROVER)
+        token = ApprovalService(
+            repository, lambda: now, incident_id=incident.incident_id, thread_id=incident.thread_id
+        ).approve(
+            ApprovalRequest(
+                action_hash=canonical_action_hash(action),
+                actor=caller.actor,
+                requested_at=now,
+                expires_at=now + timedelta(minutes=5),
+                one_time_use_id=uuid4(),
+            ),
+            Principal("approver-1", Role.APPROVER),
         )
         context = write_context.model_copy(update={"idempotency_key": uuid4()})
-        payload = {"context": context.model_dump(mode="json"), "action": action.model_dump(mode="json"), "token": token.model_dump(mode="json")}
-        denied = operations_server(OperationsService(repository), Principal("observer-1", Role.OBSERVER))
+        payload = {
+            "context": context.model_dump(mode="json"),
+            "action": action.model_dump(mode="json"),
+            "token": token.model_dump(mode="json"),
+        }
+        denied = operations_server(
+            OperationsService(repository), Principal("observer-1", Role.OBSERVER)
+        )
         with pytest.raises(ToolError):
             await denied.call_tool(operation, payload)
         malformed = action.model_dump(mode="json")
@@ -259,12 +355,20 @@ async def test_public_fastmcp_r05_r08_capabilities_and_safe_denials(
         with pytest.raises(ToolError):
             await execute.call_tool(operation, {**payload, "action": malformed})
         with pytest.raises(ToolError):
-            await execute.call_tool(operation, {**payload, "context": {**payload["context"], "thread_id": "forged-thread"}})
-        assert repository.operation_count(incident.incident_id) == 0 and not repository.approval_consumed(token.token_id)
+            await execute.call_tool(
+                operation,
+                {**payload, "context": {**payload["context"], "thread_id": "forged-thread"}},
+            )
+        assert repository.operation_count(
+            incident.incident_id
+        ) == 0 and not repository.approval_consumed(token.token_id)
         reply = await execute.call_tool(operation, payload)
         assert "succeeded" in str(reply) and repository.operation_count(incident.incident_id) == 1
         if scenario == "R08":
-            assert all(word not in str(reply).lower() for word in ("secret", "password", "credential_value"))
+            assert all(
+                word not in str(reply).lower()
+                for word in ("secret", "password", "credential_value")
+            )
     finally:
         repository.reset_checkpoint(scenario)
 
@@ -274,14 +378,21 @@ async def test_r05_fastmcp_exposes_only_read_capabilities(repository: LabReposit
     repository.reset_checkpoint("R05")
     repository.inject_checkpoint("R05")
     incident, _, context = _inputs("R05")
-    server = observability_server(ObservabilityService(repository), Principal("operator-1", Role.OPERATOR))
+    server = observability_server(
+        ObservabilityService(repository), Principal("operator-1", Role.OPERATOR)
+    )
     try:
         names = {tool.name for tool in await server.list_tools()}
         assert {"database_locks", "query_metrics"} <= names
-        first = await server.call_tool("database_locks", {"context": context.model_dump(mode="json")})
+        first = await server.call_tool(
+            "database_locks", {"context": context.model_dump(mode="json")}
+        )
         assert EvidenceRecord.model_validate(first[1]).incident_id == incident.incident_id
         with pytest.raises(ToolError):
-            await server.call_tool("query_metrics", {"context": {**context.model_dump(mode="json"), "permission": "operations:write"}})
+            await server.call_tool(
+                "query_metrics",
+                {"context": {**context.model_dump(mode="json"), "permission": "operations:write"}},
+            )
         assert repository.operation_count(incident.incident_id) == 0
     finally:
         repository.reset_checkpoint("R05")
@@ -347,22 +458,52 @@ def test_r06_r08_fresh_host_pending_role_nonce_and_safe_text(
     try:
         operator = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
         operator.post("/mock-login", data={"actor": "operator-1"})
-        nonce = operator.get("/").text.split(f"action='/incidents/{scenario.lower()}/prepare'>")[1].split("value='")[1].split("'")[0]
-        prepared = operator.post(f"/incidents/{scenario.lower()}/prepare", data={"nonce": nonce}, follow_redirects=False)
+        nonce = (
+            operator.get("/")
+            .text.split(f"action='/incidents/{scenario.lower()}/prepare'>")[1]
+            .split("value='")[1]
+            .split("'")[0]
+        )
+        prepared = operator.post(
+            f"/incidents/{scenario.lower()}/prepare", data={"nonce": nonce}, follow_redirects=False
+        )
         thread = prepared.headers["location"].split("/")[2]
         prompt = operator.get(f"/incidents/{thread}/start")
         start_nonce = prompt.text.split("name='nonce' value='")[1].split("'")[0]
-        assert operator.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False).status_code == 303
+        assert (
+            operator.post(
+                f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False
+            ).status_code
+            == 303
+        )
         fresh = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
         fresh.post("/mock-login", data={"actor": "approver-1"})
         pending = fresh.get(f"/threads/{thread}")
         assert action_text in pending.text
         lowered = pending.text.lower()
-        assert all(word not in lowered for word in ("approval token", "idempotency", "secret", "password", "raw fixture"))
-        assert fresh.post(f"/threads/{thread}/{decision}", headers={"X-Incidentgate-Actor": "operator-1"}).status_code == 403
-        form_nonce = pending.text.split("name='nonce' value='")[1 if decision == "approve" else 2].split("'")[0]
-        assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}, follow_redirects=False).status_code == 303
-        assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}).status_code == 403
+        assert all(
+            word not in lowered
+            for word in ("approval token", "idempotency", "secret", "password", "raw fixture")
+        )
+        assert (
+            fresh.post(
+                f"/threads/{thread}/{decision}", headers={"X-Incidentgate-Actor": "operator-1"}
+            ).status_code
+            == 403
+        )
+        form_nonce = pending.text.split("name='nonce' value='")[
+            1 if decision == "approve" else 2
+        ].split("'")[0]
+        assert (
+            fresh.post(
+                f"/threads/{thread}/{decision}", data={"nonce": form_nonce}, follow_redirects=False
+            ).status_code
+            == 303
+        )
+        assert (
+            fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}).status_code
+            == 403
+        )
         assert repository.operation_count(f"INC-{scenario}") == (1 if decision == "approve" else 0)
     finally:
         repository.reset_checkpoint(scenario)

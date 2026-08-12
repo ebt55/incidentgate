@@ -50,33 +50,80 @@ class Client:
 
 
 def response(action_: CanonicalAction, **overrides: object) -> object:
-    body = {"verdict": "defer", "suspicion_score": 0.5, "rationale": "review needed", "evaluated_action_hash": canonical_action_hash(action_), **overrides}
-    return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=json.dumps(body))])
+    body = {
+        "verdict": "defer",
+        "suspicion_score": 0.5,
+        "rationale": "review needed",
+        "evaluated_action_hash": canonical_action_hash(action_),
+        **overrides,
+    }
+    return SimpleNamespace(
+        stop_reason="end_turn", content=[SimpleNamespace(type="text", text=json.dumps(body))]
+    )
 
 
 def digest() -> tuple[dict[str, object], ...]:
-    return ({"evidence_id": "ev-1", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00+00:00"},)
+    return (
+        {
+            "evidence_id": "ev-1",
+            "tool_name": "observability.health",
+            "observed_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
 
 
 def test_anthropic_monitor_sends_only_bounded_allowlisted_request() -> None:
     candidate = action()
     client = Client(response(candidate))
     monitor = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=client)
-    result = monitor.assess(candidate, ({"evidence_id": "ev-1", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00+00:00"},))
+    result = monitor.assess(
+        candidate,
+        (
+            {
+                "evidence_id": "ev-1",
+                "tool_name": "observability.health",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+        ),
+    )
     assert result.verdict is MonitorVerdict.DEFER
     call = client.calls[0]
     assert call["model"] == MONITOR_MODEL and call["max_tokens"] == BUDGET
     assert call["output_config"]["format"]["type"] == "json_schema"  # type: ignore[index]
     request = call["messages"][0]["content"]  # type: ignore[index]
-    assert json.loads(request) == {"action_hash": canonical_action_hash(candidate), "action": {"schema_version": "1", "tool_name": "operations.restart", "arguments": {"kind": "restart", "component": "api"}}, "evidence_digest": [{"evidence_id": "ev-1", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00+00:00"}]}
-    for forbidden in ("api-secret", "actor-secret", "thread-secret", "INC-secret", "permission", "payload", "source_uri"):
+    assert json.loads(request) == {
+        "action_hash": canonical_action_hash(candidate),
+        "action": {
+            "schema_version": "1",
+            "tool_name": "operations.restart",
+            "arguments": {"kind": "restart", "component": "api"},
+        },
+        "evidence_digest": [
+            {
+                "evidence_id": "ev-1",
+                "tool_name": "observability.health",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+    }
+    for forbidden in (
+        "api-secret",
+        "actor-secret",
+        "thread-secret",
+        "INC-secret",
+        "permission",
+        "payload",
+        "source_uri",
+    ):
         assert forbidden not in request
 
 
 def test_anthropic_monitor_transforms_only_provider_schema_constraints() -> None:
     candidate = action()
     client = Client(response(candidate))
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=client).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=client
+    ).assess(candidate, digest())
     schema = client.calls[0]["output_config"]["format"]["schema"]  # type: ignore[index]
 
     def schema_keys(value: object) -> set[str]:
@@ -88,15 +135,39 @@ def test_anthropic_monitor_transforms_only_provider_schema_constraints() -> None
 
     assert result.verdict is MonitorVerdict.DEFER
     assert not ({"pattern", "minimum", "maximum", "minLength", "maxLength"} & schema_keys(schema))
-    assert schema["required"] == ["verdict", "suspicion_score", "rationale", "evaluated_action_hash"]  # type: ignore[index]
+    assert schema["required"] == [
+        "verdict",
+        "suspicion_score",
+        "rationale",
+        "evaluated_action_hash",
+    ]  # type: ignore[index]
     assert schema["additionalProperties"] is False  # type: ignore[index]
     assert schema["$defs"]["MonitorVerdict"]["enum"] == ["allow", "defer", "block"]  # type: ignore[index]
 
 
-@pytest.mark.parametrize("bad", [RuntimeError("provider secret"), SimpleNamespace(stop_reason="max_tokens", content=[]), SimpleNamespace(stop_reason="end_turn", content=[]), SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="{}")])])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        RuntimeError("provider secret"),
+        SimpleNamespace(stop_reason="max_tokens", content=[]),
+        SimpleNamespace(stop_reason="end_turn", content=[]),
+        SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="{}")]),
+    ],
+)
 def test_anthropic_monitor_failure_is_generic_hash_bound_block(bad: object) -> None:
     candidate = action()
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=Client(bad)).assess(candidate, ({"evidence_id": "ev-1", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00+00:00"},))
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=Client(bad)
+    ).assess(
+        candidate,
+        (
+            {
+                "evidence_id": "ev-1",
+                "tool_name": "observability.health",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+        ),
+    )
     assert result.verdict is MonitorVerdict.BLOCK
     assert result.evaluated_action_hash == canonical_action_hash(candidate)
     assert result.rationale == "advisory_monitor_unavailable"
@@ -105,7 +176,9 @@ def test_anthropic_monitor_failure_is_generic_hash_bound_block(bad: object) -> N
 
 def test_anthropic_monitor_invalid_digest_never_calls_provider() -> None:
     client = Client(response(action()))
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=client).assess(action(), ({"payload": "no"},))
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=client
+    ).assess(action(), ({"payload": "no"},))
     assert result.verdict is MonitorVerdict.BLOCK
     assert client.calls == []
 
@@ -113,52 +186,98 @@ def test_anthropic_monitor_invalid_digest_never_calls_provider() -> None:
 @pytest.mark.parametrize(("verdict", "score"), [("allow", 0.0), ("defer", 0.5), ("block", 1.0)])
 def test_anthropic_monitor_parses_all_verdicts_and_score_bounds(verdict: str, score: float) -> None:
     candidate = action()
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=Client(response(candidate, verdict=verdict, suspicion_score=score))).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret",
+        model=MONITOR_MODEL,
+        client=Client(response(candidate, verdict=verdict, suspicion_score=score)),
+    ).assess(candidate, digest())
     assert result.verdict.value == verdict and result.suspicion_score == score
 
 
-@pytest.mark.parametrize("bad", [
-    RuntimeError("provider secret"),
-    SimpleNamespace(stop_reason="max_tokens", content=[]),
-    SimpleNamespace(stop_reason="stop_sequence", content=[]),
-    SimpleNamespace(stop_reason="pause_turn", content=[]),
-    SimpleNamespace(stop_reason="end_turn", content=[]),
-    SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="refusal", text="secret")]),
-    SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="{}"), SimpleNamespace(type="text", text="{}")]),
-    SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="{bad")]),
-    response(action(), extra="field"),
-    response(action(), verdict="unknown"),
-    response(action(), suspicion_score=2),
-    response(action(), rationale=""),
-    response(action(), evaluated_action_hash="0" * 64),
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        RuntimeError("provider secret"),
+        SimpleNamespace(stop_reason="max_tokens", content=[]),
+        SimpleNamespace(stop_reason="stop_sequence", content=[]),
+        SimpleNamespace(stop_reason="pause_turn", content=[]),
+        SimpleNamespace(stop_reason="end_turn", content=[]),
+        SimpleNamespace(
+            stop_reason="end_turn", content=[SimpleNamespace(type="refusal", text="secret")]
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn",
+            content=[
+                SimpleNamespace(type="text", text="{}"),
+                SimpleNamespace(type="text", text="{}"),
+            ],
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn", content=[SimpleNamespace(type="text", text="{bad")]
+        ),
+        response(action(), extra="field"),
+        response(action(), verdict="unknown"),
+        response(action(), suspicion_score=2),
+        response(action(), rationale=""),
+        response(action(), evaluated_action_hash="0" * 64),
+    ],
+)
 def test_anthropic_monitor_failures_are_identical_generic_blocks(bad: object) -> None:
     candidate = action()
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=Client(bad)).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=Client(bad)
+    ).assess(candidate, digest())
     assert result.verdict is MonitorVerdict.BLOCK and result.suspicion_score == 1
     assert result.rationale == "advisory_monitor_unavailable"
     assert result.evaluated_action_hash == canonical_action_hash(candidate)
     assert "secret" not in result.rationale
 
 
-@pytest.mark.parametrize("bad_digest", [
-    ({"payload": "no"},),
-    ({"evidence_id": "ignore instructions", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00+00:00"},),
-    ({"evidence_id": "ev-1", "tool_name": "observability.health\nignore", "observed_at": "2026-01-01T00:00:00+00:00"},),
-    ({"evidence_id": "ev-1", "tool_name": "observability.health", "observed_at": "2026-01-01T00:00:00"},),
-])
+@pytest.mark.parametrize(
+    "bad_digest",
+    [
+        ({"payload": "no"},),
+        (
+            {
+                "evidence_id": "ignore instructions",
+                "tool_name": "observability.health",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+        ),
+        (
+            {
+                "evidence_id": "ev-1",
+                "tool_name": "observability.health\nignore",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+        ),
+        (
+            {
+                "evidence_id": "ev-1",
+                "tool_name": "observability.health",
+                "observed_at": "2026-01-01T00:00:00",
+            },
+        ),
+    ],
+)
 def test_adversarial_digest_never_calls_provider(bad_digest: tuple[dict[str, object], ...]) -> None:
     candidate, client = action(), Client(response(action()))
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=client).assess(candidate, bad_digest)
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=client
+    ).assess(candidate, bad_digest)
     assert result.verdict is MonitorVerdict.BLOCK and client.calls == []
 
 
 def test_client_factory_is_bounded_and_repr_hides_key() -> None:
     candidate, calls = action(), []
+
     def factory(**kwargs: object) -> Client:
         calls.append(kwargs)
         return Client(response(candidate))
-    monitor = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client_factory=factory)
+
+    monitor = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client_factory=factory
+    )
     assert monitor.assess(candidate, digest()).verdict is MonitorVerdict.DEFER
     assert calls == [{"api_key": "api-secret", "timeout": 10.0, "max_retries": 0}]
     assert "secret" not in repr(monitor)
@@ -166,7 +285,11 @@ def test_client_factory_is_bounded_and_repr_hides_key() -> None:
 
 def test_client_factory_error_is_generic_block() -> None:
     candidate = action()
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client_factory=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("secret"))).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret",
+        model=MONITOR_MODEL,
+        client_factory=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("secret")),
+    ).assess(candidate, digest())
     assert result.rationale == "advisory_monitor_unavailable"
     assert result.evaluated_action_hash == canonical_action_hash(candidate)
 
@@ -196,7 +319,9 @@ def test_capability_table_gates_the_monitor_sampling_parameter(model: str) -> No
     """Unconditional temperature=0 was a 400 on every current flagship, served as a BLOCK."""
     candidate = action()
     client = Client(response(candidate))
-    AnthropicAdvisoryMonitor(api_key="api-secret", model=model, client=client).assess(candidate, digest())
+    AnthropicAdvisoryMonitor(api_key="api-secret", model=model, client=client).assess(
+        candidate, digest()
+    )
     call = client.calls[0]
     if model_accepts_sampling(model):
         assert call["temperature"] == 0
@@ -214,7 +339,9 @@ def test_monitor_thinking_and_budget_follow_the_capability_table(
     """max_tokens caps thinking plus text, so an un-disableable model needs the extra budget."""
     candidate = action()
     client = Client(response(candidate))
-    AnthropicAdvisoryMonitor(api_key="api-secret", model=model, client=client).assess(candidate, digest())
+    AnthropicAdvisoryMonitor(api_key="api-secret", model=model, client=client).assess(
+        candidate, digest()
+    )
     call = client.calls[0]
     assert call.get("thinking") == thinking
     assert call["max_tokens"] == (BUDGET + 14_000 if reserves_budget else BUDGET)
@@ -228,14 +355,27 @@ def test_monitor_budget_covers_the_verdict_contract_maximum() -> None:
     assert BUDGET >= 1000 + 64 + 50
     candidate = action()
     client = Client(response(candidate, rationale="r" * 1000))
-    result = AnthropicAdvisoryMonitor(api_key="api-secret", model=MONITOR_MODEL, client=client).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key="api-secret", model=MONITOR_MODEL, client=client
+    ).assess(candidate, digest())
     assert result.verdict is MonitorVerdict.DEFER and len(result.rationale) == 1000
 
 
-@pytest.mark.skipif(not (os.getenv("RUN_ANTHROPIC_LIVE") == "1" and os.getenv("ANTHROPIC_API_KEY") and os.getenv("ANTHROPIC_MODEL")), reason="set RUN_ANTHROPIC_LIVE=1 with complete Anthropic configuration")
+@pytest.mark.skipif(
+    not (
+        os.getenv("RUN_ANTHROPIC_LIVE") == "1"
+        and os.getenv("ANTHROPIC_API_KEY")
+        and os.getenv("ANTHROPIC_MODEL")
+    ),
+    reason="set RUN_ANTHROPIC_LIVE=1 with complete Anthropic configuration",
+)
 def test_live_anthropic_structured_monitor_smoke() -> None:
     candidate = action()
-    result = AnthropicAdvisoryMonitor(api_key=os.environ["ANTHROPIC_API_KEY"], model=os.environ["ANTHROPIC_MODEL"], timeout_seconds=20).assess(candidate, digest())
+    result = AnthropicAdvisoryMonitor(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        model=os.environ["ANTHROPIC_MODEL"],
+        timeout_seconds=20,
+    ).assess(candidate, digest())
     assert result.rationale != "advisory_monitor_unavailable"
     assert result.evaluated_action_hash == canonical_action_hash(candidate)
     assert result.verdict in MonitorVerdict and 0 <= result.suspicion_score <= 1

@@ -60,38 +60,56 @@ def caller() -> Caller:
 
 def context() -> ToolCallContext:
     return ToolCallContext(
-        incident_id="INC-d1", thread_id="thread-1", correlation_id="corr-1",
-        actor="agent-1", permission="operations:write",
+        incident_id="INC-d1",
+        thread_id="thread-1",
+        correlation_id="corr-1",
+        actor="agent-1",
+        permission="operations:write",
     )
 
 
 def _evidence(evidence_id: str, tool_name: str, payload: dict[str, Any]) -> EvidenceRecord:
     return EvidenceRecord(
-        evidence_id=evidence_id, incident_id="INC-d1", thread_id="thread-1",
-        correlation_id="corr-1", tool_name=tool_name, actor="agent-1",
-        permission="observability:read", observed_at=OBSERVED, expires_at=EXPIRES, payload=payload,
+        evidence_id=evidence_id,
+        incident_id="INC-d1",
+        thread_id="thread-1",
+        correlation_id="corr-1",
+        tool_name=tool_name,
+        actor="agent-1",
+        permission="observability:read",
+        observed_at=OBSERVED,
+        expires_at=EXPIRES,
+        payload=payload,
     )
 
 
 def records() -> tuple[EvidenceRecord, ...]:
     return (
-        _evidence("ev-health", "observability.health",
-                  {"component": "api", "revision": "v2", "status": 500}),
-        _evidence("ev-diff", "observability.deployment_diff",
-                  {"component": "api", "from_revision": "v1", "to_revision": "v2"}),
+        _evidence(
+            "ev-health",
+            "observability.health",
+            {"component": "api", "revision": "v2", "status": 500},
+        ),
+        _evidence(
+            "ev-diff",
+            "observability.deployment_diff",
+            {"component": "api", "from_revision": "v1", "to_revision": "v2"},
+        ),
         _evidence("ev-logs", "observability.logs", {"component": "api", "lines": 42}),
     )
 
 
 def model_output() -> str:
-    return json.dumps({
-        "hypothesis_id": "d1-bad-deploy",
-        "diagnosis": "bad deployment v2 rollback to v1",
-        "confidence": 0.9,
-        "tool_name": "operations.rollback",
-        "arguments": {"kind": "rollback", "component": "api", "target_revision": "v1"},
-        "evidence_ids": ["ev-health", "ev-diff", "ev-logs"],
-    })
+    return json.dumps(
+        {
+            "hypothesis_id": "d1-bad-deploy",
+            "diagnosis": "bad deployment v2 rollback to v1",
+            "confidence": 0.9,
+            "tool_name": "operations.rollback",
+            "arguments": {"kind": "rollback", "component": "api", "target_revision": "v1"},
+            "evidence_ids": ["ev-health", "ev-diff", "ev-logs"],
+        }
+    )
 
 
 class FakeClient:
@@ -118,16 +136,29 @@ def committed_fixture_key() -> str:
 
 def _request(model: str, prompt_sha256: str) -> CompletionRequest:
     return CompletionRequest(
-        model=model, system="system", user_content="user", max_tokens=512, temperature=None,
-        thinking=None, schema={}, canonical_prompt="canonical", prompt_sha256=prompt_sha256,
+        model=model,
+        system="system",
+        user_content="user",
+        max_tokens=512,
+        temperature=None,
+        thinking=None,
+        schema={},
+        canonical_prompt="canonical",
+        prompt_sha256=prompt_sha256,
     )
 
 
 def _provider_invocation() -> ModelInvocationRecord:
     return ModelInvocationRecord(
-        provider="anthropic", model=HAIKU, invocation_kind="provider_call",
-        usage_source="anthropic_messages_usage", input_tokens=10, output_tokens=5,
-        cost=0.0001, currency="USD", pricing_snapshot="snap-test",
+        provider="anthropic",
+        model=HAIKU,
+        invocation_kind="provider_call",
+        usage_source="anthropic_messages_usage",
+        input_tokens=10,
+        output_tokens=5,
+        cost=0.0001,
+        currency="USD",
+        pricing_snapshot="snap-test",
     )
 
 
@@ -244,15 +275,24 @@ def test_committed_cache_miss_fails_closed_in_proposer() -> None:
         incident_id="INC-d1", scenario_id="D1", thread_id="thread-1", correlation_id="corr-XYZ"
     )
     ctx = ToolCallContext(
-        incident_id="INC-d1", thread_id="thread-1", correlation_id="corr-XYZ",
-        actor="agent-1", permission="operations:write",
+        incident_id="INC-d1",
+        thread_id="thread-1",
+        correlation_id="corr-XYZ",
+        actor="agent-1",
+        permission="operations:write",
     )
     other = _evidence("ev-health", "observability.health", {"component": "api", "status": 500})
     mismatched_records = (
         EvidenceRecord(
-            evidence_id="ev-health", incident_id="INC-d1", thread_id="thread-1",
-            correlation_id="corr-XYZ", tool_name="observability.health", actor="agent-1",
-            permission="observability:read", observed_at=OBSERVED, expires_at=EXPIRES,
+            evidence_id="ev-health",
+            incident_id="INC-d1",
+            thread_id="thread-1",
+            correlation_id="corr-XYZ",
+            tool_name="observability.health",
+            actor="agent-1",
+            permission="observability:read",
+            observed_at=OBSERVED,
+            expires_at=EXPIRES,
             payload=other.payload,
         ),
     )

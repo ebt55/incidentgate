@@ -118,11 +118,7 @@ def subset() -> dict[str, Any]:
 
 
 def _cells(report: dict[str, Any], scenario: str) -> dict[str, dict[str, Any]]:
-    return {
-        str(cell["boundary"]): cell
-        for cell in report["cells"]
-        if cell["scenario"] == scenario
-    }
+    return {str(cell["boundary"]): cell for cell in report["cells"] if cell["scenario"] == scenario}
 
 
 @pytest.mark.integration

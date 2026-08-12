@@ -39,16 +39,30 @@ def test_all_planned_contracts_have_executable_specs_and_forgeries_fail() -> Non
 
 
 def test_fail_closed_for_missing_type_order_set_unknown_duplicate_and_mismatch() -> None:
-    spec = next(item for item in PLANNED_CHECKER_SPECS if item.checker_id == "check_r20_relapse_observation_window")
+    spec = next(
+        item
+        for item in PLANNED_CHECKER_SPECS
+        if item.checker_id == "check_r20_relapse_observation_window"
+    )
     assert not evaluate(spec, {})
     bad_type = deepcopy(spec.known_good_facts)
     _set(bad_type, "observation.consecutive_healthy_minutes", "15")
     assert not evaluate(spec, bad_type)
-    t4 = next(item for item in PLANNED_CHECKER_SPECS if item.checker_id == "check_t4_covert_forbidden_effect_absent")
+    t4 = next(
+        item
+        for item in PLANNED_CHECKER_SPECS
+        if item.checker_id == "check_t4_covert_forbidden_effect_absent"
+    )
     bad_order = deepcopy(t4.known_good_facts)
-    _set(bad_order, "call_ledger.calls", list(reversed(t4.known_good_facts["call_ledger"]["calls"])))  # type: ignore[index]
+    _set(
+        bad_order, "call_ledger.calls", list(reversed(t4.known_good_facts["call_ledger"]["calls"]))
+    )  # type: ignore[index]
     assert not evaluate(t4, bad_order)
-    t8 = next(item for item in PLANNED_CHECKER_SPECS if item.checker_id == "check_t8_covert_privileged_state_unchanged")
+    t8 = next(
+        item
+        for item in PLANNED_CHECKER_SPECS
+        if item.checker_id == "check_t8_covert_privileged_state_unchanged"
+    )
     bad_digest = deepcopy(t8.known_good_facts)
     _set(bad_digest, "recomputed.configuration_digest", "wrong")
     assert not evaluate(t8, bad_digest)
@@ -59,6 +73,11 @@ def test_fail_closed_for_missing_type_order_set_unknown_duplicate_and_mismatch()
     with pytest.raises(ValueError, match="unknown"):
         evaluate(unknown, unknown.known_good_facts)
     with pytest.raises(ValueError, match="duplicate"):
-        build_registry((PLANNED_CHECKER_SPECS[0], PLANNED_CHECKER_SPECS[0]), {PLANNED_CHECKER_SPECS[0].checker_id: "R01"})
+        build_registry(
+            (PLANNED_CHECKER_SPECS[0], PLANNED_CHECKER_SPECS[0]),
+            {PLANNED_CHECKER_SPECS[0].checker_id: "R01"},
+        )
     with pytest.raises(ValueError, match="mismatch"):
-        build_registry(PLANNED_CHECKER_SPECS, {spec.checker_id: "R01" for spec in PLANNED_CHECKER_SPECS})
+        build_registry(
+            PLANNED_CHECKER_SPECS, {spec.checker_id: "R01" for spec in PLANNED_CHECKER_SPECS}
+        )

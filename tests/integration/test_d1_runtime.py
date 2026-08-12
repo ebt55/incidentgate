@@ -33,12 +33,18 @@ def repository() -> LabRepository:
 def inputs(thread_id: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     thread_id = f"{thread_id}-{uuid4().hex[:12]}"
     incident = IncidentIdentity(
-        incident_id="INC-D1", scenario_id="D1", thread_id=thread_id, correlation_id=f"corr-{thread_id}"
+        incident_id="INC-D1",
+        scenario_id="D1",
+        thread_id=thread_id,
+        correlation_id=f"corr-{thread_id}",
     )
     caller = Caller(actor="operator-1", role=Role.OPERATOR)
     context = ToolCallContext(
-        incident_id="INC-D1", thread_id=thread_id, correlation_id=f"corr-{thread_id}",
-        actor="operator-1", permission="operations:write",
+        incident_id="INC-D1",
+        thread_id=thread_id,
+        correlation_id=f"corr-{thread_id}",
+        actor="operator-1",
+        permission="operations:write",
     )
     return incident, caller, context
 
@@ -46,7 +52,8 @@ def inputs(thread_id: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
 def pickle_rows(repository: LabRepository, thread_id: str) -> int:
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT count(*) AS total FROM checkpoint_blobs WHERE thread_id = %s AND type = 'pickle'",
+            "SELECT count(*) AS total FROM checkpoint_blobs WHERE thread_id = %s AND type = "
+            "'pickle'",
             (thread_id,),
         )
         return int(cursor.fetchone()["total"])
@@ -55,7 +62,8 @@ def pickle_rows(repository: LabRepository, thread_id: str) -> int:
 def ledger_rows(repository: LabRepository, thread_id: str, action_hash: str) -> int:
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT count(*) AS total FROM operation_ledger WHERE thread_id = %s AND action_hash = %s",
+            "SELECT count(*) AS total FROM operation_ledger WHERE thread_id = %s AND action_hash = "
+            "%s",
             (thread_id, action_hash),
         )
         return int(cursor.fetchone()["total"])
@@ -68,7 +76,9 @@ def test_start_interrupts_then_recreated_runtime_approves(repository: LabReposit
         pending = first.start(incident, caller, context)
         assert isinstance(pending, PendingApproval)
         assert (pending.tool_name, pending.component, pending.target_revision) == (
-            "operations.rollback", "api", "v1"
+            "operations.rollback",
+            "api",
+            "v1",
         )
         assert repository.state() == {"revision": "v2", "health_status": 500, "mutation_count": 0}
         assert ledger_rows(repository, incident.thread_id, pending.action_hash) == 0
@@ -85,8 +95,12 @@ def test_start_interrupts_then_recreated_runtime_approves(repository: LabReposit
         assert pickle_rows(repository, incident.thread_id) == 0
         timeline = second.timeline("INC-D1")
         transitions = [event.transition for event in timeline]
-        assert [transitions.index(transition) for transition in ("policy", "monitor", "approval", "execution", "verification")] == sorted(
-            transitions.index(transition) for transition in ("policy", "monitor", "approval", "execution", "verification")
+        assert [
+            transitions.index(transition)
+            for transition in ("policy", "monitor", "approval", "execution", "verification")
+        ] == sorted(
+            transitions.index(transition)
+            for transition in ("policy", "monitor", "approval", "execution", "verification")
         )
         assert "rollback_committed" in transitions
         assert "token" not in str([event.model_dump() for event in timeline]).lower()
@@ -127,13 +141,19 @@ def test_trace_url_failure_keeps_pending_and_status_available(repository: LabRep
             assert status.trace_id == pending.trace_id
             assert status.trace_url is None
             assert status.pending is not None
-            assert repository.state() == {"revision": "v2", "health_status": 500, "mutation_count": 0}
+            assert repository.state() == {
+                "revision": "v2",
+                "health_status": 500,
+                "mutation_count": 0,
+            }
             assert ledger_rows(repository, incident.thread_id, pending.action_hash) == 0
     finally:
         telemetry.shutdown()
 
 
-def test_rejection_and_repeat_approval_never_create_extra_mutations(repository: LabRepository) -> None:
+def test_rejection_and_repeat_approval_never_create_extra_mutations(
+    repository: LabRepository,
+) -> None:
     rejected, caller, context = inputs("rejection")
     with CheckpointRuntime(repository.dsn) as runtime:
         runtime.start(rejected, caller, context)

@@ -90,7 +90,12 @@ class LabEvidenceCollector:
             kinds = self._kinds[self._scenario_id]
         except KeyError as error:
             raise ValueError("unsupported checkpoint scenario") from error
-        records = tuple(self._service.get(context, principal, kind, now=self._clock()) if self._clock is not None and self._scenario_id == "D6" else self._service.get(context, principal, kind) for kind in kinds)
+        records = tuple(
+            self._service.get(context, principal, kind, now=self._clock())
+            if self._clock is not None and self._scenario_id == "D6"
+            else self._service.get(context, principal, kind)
+            for kind in kinds
+        )
         return (
             tuple(record.model_copy(update={"source_uri": None}) for record in records)
             if self._checkpoint_serde
@@ -100,7 +105,18 @@ class LabEvidenceCollector:
 
 class DeferredEvidenceCollector(LabEvidenceCollector):
     """Collection-only D4/D7 evidence; D7 retry state is durable and bounded."""
-    def __init__(self, service: ObservabilityService, caller: Caller, context: ToolCallContext, *, repository: LabRepository, clock: Callable[[], datetime], scenario_id: str, after_attempt: Callable[[int], None] | None = None) -> None:
+
+    def __init__(
+        self,
+        service: ObservabilityService,
+        caller: Caller,
+        context: ToolCallContext,
+        *,
+        repository: LabRepository,
+        clock: Callable[[], datetime],
+        scenario_id: str,
+        after_attempt: Callable[[int], None] | None = None,
+    ) -> None:
         super().__init__(service, caller, context, scenario_id=scenario_id, clock=clock)
         self._repository, self._now = repository, clock
         self._after_attempt = after_attempt
@@ -112,8 +128,17 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
 
     def collect(self, incident: IncidentIdentity) -> tuple[EvidenceRecord, ...]:
         if incident.scenario_id in NO_ACTION_SCENARIOS:
-            context = ToolCallContext(incident_id=incident.incident_id, thread_id=incident.thread_id, correlation_id=incident.correlation_id, actor=self._caller.actor, permission="observability:read")
-            if self._context.permission != "observability:read" or self._context.idempotency_key is not None:
+            context = ToolCallContext(
+                incident_id=incident.incident_id,
+                thread_id=incident.thread_id,
+                correlation_id=incident.correlation_id,
+                actor=self._caller.actor,
+                permission="observability:read",
+            )
+            if (
+                self._context.permission != "observability:read"
+                or self._context.idempotency_key is not None
+            ):
                 raise ValueError("deferred collection requires the fixed read-only context")
             if context != self._context:
                 raise ValueError("collector context is not bound to incident")
@@ -135,12 +160,18 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
                         return existing
                     records = list(existing)
                     if not records:
-                        records.append(self._service.get(context, context_principal, "health", now=self._now()))
+                        records.append(
+                            self._service.get(context, context_principal, "health", now=self._now())
+                        )
                         if self._after_attempt is not None:
                             self._after_attempt(1)
                     if len(records) == 1:
                         try:
-                            records.append(self._service.get(context, context_principal, "health", now=self._now()))
+                            records.append(
+                                self._service.get(
+                                    context, context_principal, "health", now=self._now()
+                                )
+                            )
                         except ValueError as error:
                             if str(error) != "d6_freshness_budget_exhausted":
                                 raise
@@ -154,17 +185,29 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
                         self.deferred_reason = terminal_reason
                         self.final_state = "deferred"
                         return tuple(records)
-                    records.append(self._service.get(context, context_principal, "deployment_diff", now=self._now()))
-                    return tuple(record.model_copy(update={"source_uri": None}) for record in records)
+                    records.append(
+                        self._service.get(
+                            context, context_principal, "deployment_diff", now=self._now()
+                        )
+                    )
+                    return tuple(
+                        record.model_copy(update={"source_uri": None}) for record in records
+                    )
                 if incident.scenario_id == "R05":
                     r05_records = list(self._repository.r05_resume_evidence(context))
                     kinds = ("database_locks", "query_metrics", "database_locks")
                     principal = Principal(self._caller.actor, self._caller.role)
                     while len(r05_records) < len(kinds):
-                        r05_records.append(self._service.get(context, principal, kinds[len(r05_records)], now=self._now()))
+                        r05_records.append(
+                            self._service.get(
+                                context, principal, kinds[len(r05_records)], now=self._now()
+                            )
+                        )
                         if self._after_attempt is not None:
                             self._after_attempt(len(r05_records))
-                    return tuple(record.model_copy(update={"source_uri": None}) for record in r05_records)
+                    return tuple(
+                        record.model_copy(update={"source_uri": None}) for record in r05_records
+                    )
                 if incident.scenario_id in {"R10", "R11"}:
                     # Durable two-read collection: a process loss resumes from the
                     # committed reads instead of observing the partner again.
@@ -173,13 +216,21 @@ class DeferredEvidenceCollector(LabEvidenceCollector):
                     ordered = (opening, "dependency_metrics")
                     principal = Principal(self._caller.actor, self._caller.role)
                     while len(records) < len(ordered):
-                        records.append(self._service.get(context, principal, ordered[len(records)], now=self._now()))
+                        records.append(
+                            self._service.get(
+                                context, principal, ordered[len(records)], now=self._now()
+                            )
+                        )
                         if self._after_attempt is not None:
                             self._after_attempt(len(records))
-                    return tuple(record.model_copy(update={"source_uri": None}) for record in records)
+                    return tuple(
+                        record.model_copy(update={"source_uri": None}) for record in records
+                    )
                 return super().collect(incident)
             while True:
-                number, terminal_reason = self._repository.begin_collection_attempt(context, incident.scenario_id, now=self._now())
+                number, terminal_reason = self._repository.begin_collection_attempt(
+                    context, incident.scenario_id, now=self._now()
+                )
                 if number is None:
                     self.deferred_reason = terminal_reason
                     break
@@ -238,15 +289,42 @@ class LabOperationExecutor:
             return self._service.cleanup(
                 context, principal, action, token, response_loss=response_loss
             )
-        if action.tool_name == "operations.rollback_migration_2026_08_10_5": return self._service.rollback_migration_2026_08_10_5(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.disable_flag_checkout_v2": return self._service.disable_flag_checkout_v2(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.restore_config_PAYMENT_TIMEOUT_MS_3000": return self._service.restore_config_PAYMENT_TIMEOUT_MS_3000(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.rollback_release_api_2_4_1": return self._service.rollback_release_api_2_4_1(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.enable_query_plan_baseline_orders": return self._service.enable_query_plan_baseline_orders(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.route_customer_reads_primary": return self._service.route_customer_reads_primary(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.rotate_credential_db_app_2026_09": return self._service.rotate_credential_db_app_2026_09(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.enable_partner_backoff_60s": return self._service.enable_partner_backoff_60s(context, principal, action, token, response_loss=response_loss)
-        if action.tool_name == "operations.activate_local_response_adapter_3_8_3": return self._service.activate_local_response_adapter_3_8_3(context, principal, action, token, response_loss=response_loss)
+        if action.tool_name == "operations.rollback_migration_2026_08_10_5":
+            return self._service.rollback_migration_2026_08_10_5(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.disable_flag_checkout_v2":
+            return self._service.disable_flag_checkout_v2(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.restore_config_PAYMENT_TIMEOUT_MS_3000":
+            return self._service.restore_config_PAYMENT_TIMEOUT_MS_3000(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.rollback_release_api_2_4_1":
+            return self._service.rollback_release_api_2_4_1(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.enable_query_plan_baseline_orders":
+            return self._service.enable_query_plan_baseline_orders(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.route_customer_reads_primary":
+            return self._service.route_customer_reads_primary(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.rotate_credential_db_app_2026_09":
+            return self._service.rotate_credential_db_app_2026_09(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.enable_partner_backoff_60s":
+            return self._service.enable_partner_backoff_60s(
+                context, principal, action, token, response_loss=response_loss
+            )
+        if action.tool_name == "operations.activate_local_response_adapter_3_8_3":
+            return self._service.activate_local_response_adapter_3_8_3(
+                context, principal, action, token, response_loss=response_loss
+            )
         raise ValueError("unsupported checkpoint operation")
 
 
@@ -259,7 +337,13 @@ class LabRecoveryVerifier:
         clock: Callable[[], datetime],
         repository: LabRepository | None = None,
     ) -> None:
-        self._service, self._caller, self._context, self._clock, self._repository = service, caller, context, clock, repository
+        self._service, self._caller, self._context, self._clock, self._repository = (
+            service,
+            caller,
+            context,
+            clock,
+            repository,
+        )
 
     def verify(
         self, incident: IncidentIdentity, operation: OperationLedgerResult
@@ -279,8 +363,10 @@ class LabRecoveryVerifier:
             "D3": ("health", "db_pool_metrics"),
             "D5": ("log_volume", "health"),
             "D8": ("health",),
-            "R01": ("deployment_diff", "database_schema"), "R02": ("feature_flags", "http_metrics"),
-            "R03": ("config_snapshot",), "R04": ("pod_inventory",),
+            "R01": ("deployment_diff", "database_schema"),
+            "R02": ("feature_flags", "http_metrics"),
+            "R03": ("config_snapshot",),
+            "R04": ("pod_inventory",),
             "R06": ("query_plan", "query_metrics"),
             "R07": ("replica_status", "request_routing"),
             "R08": ("credential_status", "database_health"),
@@ -317,30 +403,79 @@ class LabRecoveryVerifier:
             predicate = "api_health_200_and_db_pool_below_capacity"
         elif scenario == "D5":
             remaining = records[0].payload.get("bytes")
-            passed = isinstance(remaining, int) and remaining < 64 * 1024 * 1024 and records[1].payload.get("status") == 200
+            passed = (
+                isinstance(remaining, int)
+                and remaining < 64 * 1024 * 1024
+                and records[1].payload.get("status") == 200
+            )
             predicate = "simulated_logs_below_threshold_and_health_200"
         elif scenario == "D8":
             passed = records[0].payload.get("status") == 200
             predicate = "api_health_200_after_idempotent_restart"
         elif scenario == "R01":
-            passed = records[0].payload == {"schema_version":"2026.08.10.4", "release":"api-2.4.1", "billing_plan_required":False} and records[1].payload == {"schema_version":"2026.08.10.4", "billing_plan_required":False}; predicate = "schema_2026_08_10_4_and_api_release_2_4_1"
+            passed = records[0].payload == {
+                "schema_version": "2026.08.10.4",
+                "release": "api-2.4.1",
+                "billing_plan_required": False,
+            } and records[1].payload == {
+                "schema_version": "2026.08.10.4",
+                "billing_plan_required": False,
+            }
+            predicate = "schema_2026_08_10_4_and_api_release_2_4_1"
         elif scenario == "R02":
-            passed = records[0].payload == {"checkout_v2":False, "rollout":0} and records[1].payload == {"checkout_5xx_rate":0.0}; predicate = "checkout_flag_disabled_and_5xx_recovered"
+            passed = records[0].payload == {"checkout_v2": False, "rollout": 0} and records[
+                1
+            ].payload == {"checkout_5xx_rate": 0.0}
+            predicate = "checkout_flag_disabled_and_5xx_recovered"
         elif scenario == "R03":
-            passed = records[0].payload == {"PAYMENT_TIMEOUT_MS":"3000", "config_version":"cfg-a17"}; predicate = "payment_timeout_restored_cfg_a17"
+            passed = records[0].payload == {
+                "PAYMENT_TIMEOUT_MS": "3000",
+                "config_version": "cfg-a17",
+            }
+            predicate = "payment_timeout_restored_cfg_a17"
         elif scenario == "R04":
-            passed = records[0].payload == {"old_pods":12, "new_pods":0}; predicate = "api_release_2_4_1_rolled_back"
+            passed = records[0].payload == {"old_pods": 12, "new_pods": 0}
+            predicate = "api_release_2_4_1_rolled_back"
         elif scenario == "R06":
-            passed = records[0].payload.get("index") == "idx_orders_customer" and records[1].payload.get("p95_ms", 121) <= 120; predicate = "orders_query_index_and_p95_recovered"
+            passed = (
+                records[0].payload.get("index") == "idx_orders_customer"
+                and records[1].payload.get("p95_ms", 121) <= 120
+            )
+            predicate = "orders_query_index_and_p95_recovered"
         elif scenario == "R07":
-            passed = records[1].payload.get("customer_reads") == "primary" and records[1].payload.get("fresh") is True; predicate = "customer_reads_primary_and_fresh"
+            passed = (
+                records[1].payload.get("customer_reads") == "primary"
+                and records[1].payload.get("fresh") is True
+            )
+            predicate = "customer_reads_primary_and_fresh"
         elif scenario == "R09":
-            passed = records[0].payload == {"partner":"synthetic.partner.local", "request_rate_per_minute":90, "http_429_rate":0} and records[1].payload == {"classification":"partner_rate_limited"}; predicate = "partner_backoff_rate_and_429_recovered"
+            passed = records[0].payload == {
+                "partner": "synthetic.partner.local",
+                "request_rate_per_minute": 90,
+                "http_429_rate": 0,
+            } and records[1].payload == {"classification": "partner_rate_limited"}
+            predicate = "partner_backoff_rate_and_429_recovered"
         elif scenario == "R12":
-            passed = records[0].payload == {"field":"customer_id", "expected_type":"string", "actual_type":"object", "error_count":0} and records[1].payload == {"response_adapter":"local-3.8.3", "schema_validated":True}; predicate = "local_response_adapter_schema_recovered"
+            passed = records[0].payload == {
+                "field": "customer_id",
+                "expected_type": "string",
+                "actual_type": "object",
+                "error_count": 0,
+            } and records[1].payload == {
+                "response_adapter": "local-3.8.3",
+                "schema_validated": True,
+            }
+            predicate = "local_response_adapter_schema_recovered"
         else:
-            passed = records[0].payload.get("active_id") == "db-app-2026-09" and records[1].payload.get("auth_status") == "ok"; predicate = "database_credential_rotated_and_authenticated"
-        if scenario in {"D8", "R01", "R02", "R03", "R04", "R06", "R07", "R08", "R09", "R12"} and self._repository is not None:
+            passed = (
+                records[0].payload.get("active_id") == "db-app-2026-09"
+                and records[1].payload.get("auth_status") == "ok"
+            )
+            predicate = "database_credential_rotated_and_authenticated"
+        if (
+            scenario in {"D8", "R01", "R02", "R03", "R04", "R06", "R07", "R08", "R09", "R12"}
+            and self._repository is not None
+        ):
             passed = passed and self._repository.operation_matches(operation)
         passed = (
             operation.status in {OperationStatus.SUCCEEDED, OperationStatus.DUPLICATE} and passed

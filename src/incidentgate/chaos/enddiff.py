@@ -392,9 +392,7 @@ def compare(golden: dict[str, Any], actual: dict[str, Any]) -> DiffResult:
                 )
             continue
         if expected != found:
-            differences.append(
-                Difference(spec.name, spec.failure, _dumps(expected), _dumps(found))
-            )
+            differences.append(Difference(spec.name, spec.failure, _dumps(expected), _dumps(found)))
     return DiffResult(differences=tuple(differences), observations=observations)
 
 

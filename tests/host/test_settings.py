@@ -41,7 +41,14 @@ def test_partial_langfuse_settings_are_rejected() -> None:
 
 
 def test_complete_langfuse_settings_build_external_config_without_network() -> None:
-    settings = settings_from_env({"DATABASE_URL": "postgresql://example", "LANGFUSE_PUBLIC_KEY": "pk", "LANGFUSE_SECRET_KEY": "sk", "LANGFUSE_BASE_URL": "https://langfuse.example"})
+    settings = settings_from_env(
+        {
+            "DATABASE_URL": "postgresql://example",
+            "LANGFUSE_PUBLIC_KEY": "pk",
+            "LANGFUSE_SECRET_KEY": "sk",
+            "LANGFUSE_BASE_URL": "https://langfuse.example",
+        }
+    )
     config = telemetry_config(settings)
     assert config.external is True
     assert config.langfuse_public_key == "pk"
@@ -54,7 +61,9 @@ def test_local_telemetry_is_explicit_when_langfuse_is_absent() -> None:
 
 def test_direct_partial_settings_do_not_enable_external_telemetry() -> None:
     with pytest.raises(ValueError, match="Langfuse configuration"):
-        telemetry_config(HostSettings(database_url="postgresql://example", langfuse_public_key="pk"))
+        telemetry_config(
+            HostSettings(database_url="postgresql://example", langfuse_public_key="pk")
+        )
 
 
 def test_runtime_factory_defers_runtime_construction() -> None:
@@ -64,10 +73,25 @@ def test_runtime_factory_defers_runtime_construction() -> None:
 
 def test_anthropic_settings_are_explicit_complete_and_repr_safe() -> None:
     with pytest.raises(ValueError, match="Anthropic provider"):
-        settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret"})
+        settings_from_env(
+            {
+                "DATABASE_URL": "postgresql://example",
+                "ADVISORY_MONITOR_PROVIDER": "anthropic",
+                "ANTHROPIC_API_KEY": "secret",
+            }
+        )
     with pytest.raises(ValueError, match="ADVISORY_MONITOR_PROVIDER"):
-        settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "unknown"})
-    settings = settings_from_env({"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret", "ANTHROPIC_MODEL": MONITOR_MODEL})
+        settings_from_env(
+            {"DATABASE_URL": "postgresql://example", "ADVISORY_MONITOR_PROVIDER": "unknown"}
+        )
+    settings = settings_from_env(
+        {
+            "DATABASE_URL": "postgresql://example",
+            "ADVISORY_MONITOR_PROVIDER": "anthropic",
+            "ANTHROPIC_API_KEY": "secret",
+            "ANTHROPIC_MODEL": MONITOR_MODEL,
+        }
+    )
     assert settings.monitor_provider == "anthropic"
     assert "secret" not in repr(settings)
 
@@ -108,10 +132,15 @@ def test_unknown_anthropic_model_is_rejected_at_settings_construction() -> None:
         )
     assert "sk-ant" not in str(raised.value)  # the rejected value is never echoed
     # A listed id is accepted, so the check gates only ids the capability table cannot shape.
-    assert settings_from_env({**env, "ANTHROPIC_MODEL": MONITOR_MODEL}).anthropic_model == MONITOR_MODEL
+    assert (
+        settings_from_env({**env, "ANTHROPIC_MODEL": MONITOR_MODEL}).anthropic_model
+        == MONITOR_MODEL
+    )
 
 
-def test_anthropic_runtime_factory_selects_provider_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anthropic_runtime_factory_selects_provider_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import incidentgate.host.app as host_app
 
     captured: list[object] = []
@@ -152,4 +181,11 @@ def test_host_startup_initializes_without_destructive_reset() -> None:
     )
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"status": "ok"}
-    assert repository.calls == ["migrate", "initialize_d1", "initialize_d2", "initialize_d3", "initialize_d4", "initialize_d7"]
+    assert repository.calls == [
+        "migrate",
+        "initialize_d1",
+        "initialize_d2",
+        "initialize_d3",
+        "initialize_d4",
+        "initialize_d7",
+    ]

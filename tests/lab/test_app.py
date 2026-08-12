@@ -26,4 +26,6 @@ def test_local_fault_boundary_requires_mock_admin_auth_and_reflects_target() -> 
     assert response.status_code == 200
     assert response.json()["health_status"] == 500
     assert client.get("/health").status_code == 500
-    assert client.post("/admin/reset", headers={ADMIN_HEADER: "test-admin"}).json()["revision"] == "v1"
+    assert (
+        client.post("/admin/reset", headers={ADMIN_HEADER: "test-admin"}).json()["revision"] == "v1"
+    )

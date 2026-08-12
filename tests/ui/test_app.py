@@ -20,9 +20,16 @@ class FakeController:
 class FakeRuntime:
     def __init__(self) -> None:
         self.pending = SimpleNamespace(
-            thread_id="", incident_id="INC-D1", component="api", target_revision="v1",
-            evidence_ids=("ev-safe",), monitor_verdict="defer", requires_reason=True,
-            monitor_rationale="<monitor>", trace_id="trace-safe", trace_url="javascript:alert(1)",
+            thread_id="",
+            incident_id="INC-D1",
+            component="api",
+            target_revision="v1",
+            evidence_ids=("ev-safe",),
+            monitor_verdict="defer",
+            requires_reason=True,
+            monitor_rationale="<monitor>",
+            trace_id="trace-safe",
+            trace_url="javascript:alert(1)",
         )
         self.pending_threads: set[str] = set()
         self.started = self.approved = self.rejected = 0
@@ -41,24 +48,40 @@ class FakeRuntime:
         return self.status(thread_id)
 
     def status(self, thread_id: str) -> object:
-        return SimpleNamespace(thread_id=thread_id, incident_id="INC-D1", pending=self.pending if thread_id in self.pending_threads and thread_id not in self.results else None, result=self.results.get(thread_id))
+        return SimpleNamespace(
+            thread_id=thread_id,
+            incident_id="INC-D1",
+            pending=self.pending
+            if thread_id in self.pending_threads and thread_id not in self.results
+            else None,
+            result=self.results.get(thread_id),
+        )
 
     def approve(self, thread_id: str, approver: object, *, reason: str | None = None) -> object:
         self.approved += 1
         self.last_reason = reason or ""
         self.results[thread_id] = SimpleNamespace(
-            final_state="resolved", approval=SimpleNamespace(decision="approve", reason=reason),
+            final_state="resolved",
+            approval=SimpleNamespace(decision="approve", reason=reason),
             operation=SimpleNamespace(status="succeeded", idempotency_key="idem-safe"),
-            verification=SimpleNamespace(predicate="health is 200", passed=True, evidence_ids=("ev-fresh",)),
+            verification=SimpleNamespace(
+                predicate="health is 200", passed=True, evidence_ids=("ev-fresh",)
+            ),
             policy=SimpleNamespace(decision="require_approval"),
             monitor=SimpleNamespace(verdict="defer", rationale="<result-monitor>"),
-            trace_id="trace-safe", trace_url="javascript:secret-token",
+            trace_id="trace-safe",
+            trace_url="javascript:secret-token",
         )
         return self.status(thread_id)
 
     def reject(self, thread_id: str, approver: object, *, reason: str | None = None) -> object:
         self.rejected += 1
-        self.results[thread_id] = SimpleNamespace(final_state="blocked", approval=SimpleNamespace(decision="reject"), operation=None, verification=None)
+        self.results[thread_id] = SimpleNamespace(
+            final_state="blocked",
+            approval=SimpleNamespace(decision="reject"),
+            operation=None,
+            verification=None,
+        )
         return self.status(thread_id)
 
     def timeline(self, incident_id: str, *, limit: int = 50) -> tuple[object, ...]:
@@ -94,26 +117,38 @@ def login(test_client: TestClient, actor: str) -> None:
 def prepared_thread(test_client: TestClient) -> str:
     login(test_client, "operator-1")
     response = test_client.get("/")
-    response = test_client.post("/incidents/d1/prepare", data={"nonce": nonce(response.text)}, follow_redirects=False)
+    response = test_client.post(
+        "/incidents/d1/prepare", data={"nonce": nonce(response.text)}, follow_redirects=False
+    )
     return response.headers["location"].split("/")[2]
 
 
 def start_thread(test_client: TestClient, thread: str) -> None:
     prompt = test_client.get(f"/incidents/{thread}/start")
-    response = test_client.post(f"/incidents/{thread}/start", data={"nonce": nonce(prompt.text)}, follow_redirects=False)
+    response = test_client.post(
+        f"/incidents/{thread}/start", data={"nonce": nonce(prompt.text)}, follow_redirects=False
+    )
     assert response.status_code == 303
 
 
 def test_role_boundaries_unknown_identity_and_no_preapproval_execution() -> None:
     test_client, runtime, controller = client()
     assert test_client.get("/", headers=headers("nobody")).status_code == 200
-    assert test_client.post("/incidents/d1/prepare", headers=headers("approver-1")).status_code == 403
+    assert (
+        test_client.post("/incidents/d1/prepare", headers=headers("approver-1")).status_code == 403
+    )
     thread = prepared_thread(test_client)
     assert controller.prepared == 1 and runtime.started == 0
-    assert test_client.post(f"/incidents/{thread}/start", headers=headers("approver-1")).status_code == 403
+    assert (
+        test_client.post(f"/incidents/{thread}/start", headers=headers("approver-1")).status_code
+        == 403
+    )
     start_thread(test_client, thread)
     assert runtime.started == 1 and runtime.approved == 0
-    assert test_client.post(f"/threads/{thread}/approve", headers=headers("operator-1")).status_code == 403
+    assert (
+        test_client.post(f"/threads/{thread}/approve", headers=headers("operator-1")).status_code
+        == 403
+    )
     assert runtime.closes >= 1
 
 
@@ -128,11 +163,26 @@ def test_defer_reason_nonce_and_completed_timeline_are_safe() -> None:
     assert "&lt;monitor&gt;" in pending.text and "javascript:" not in pending.text
     assert "token" not in pending.text.lower() and "raw-log" not in pending.text.lower()
     approval_nonce = nonce(pending.text)
-    assert test_client.post(f"/threads/{thread}/approve", data={"nonce": approval_nonce}).status_code == 422
-    assert test_client.post(f"/threads/{thread}/approve", data={"nonce": approval_nonce, "reason": "<ok>"}).status_code == 403
+    assert (
+        test_client.post(f"/threads/{thread}/approve", data={"nonce": approval_nonce}).status_code
+        == 422
+    )
+    assert (
+        test_client.post(
+            f"/threads/{thread}/approve", data={"nonce": approval_nonce, "reason": "<ok>"}
+        ).status_code
+        == 403
+    )
     pending = test_client.get(f"/threads/{thread}")
     approval_nonce = nonce(pending.text)
-    assert test_client.post(f"/threads/{thread}/approve", data={"nonce": approval_nonce, "reason": "<ok>"}, follow_redirects=False).status_code == 303
+    assert (
+        test_client.post(
+            f"/threads/{thread}/approve",
+            data={"nonce": approval_nonce, "reason": "<ok>"},
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
     login(test_client, "observer-1")
     done = test_client.get(f"/threads/{thread}")
     assert runtime.approved == 1 and "Fresh recovery" in done.text and "ev-fresh" in done.text
@@ -148,7 +198,9 @@ def test_nonce_is_bound_to_thread() -> None:
     login(test_client, "approver-1")
     page = test_client.get(f"/threads/{first}")
     approval_nonce = nonce(page.text)
-    response = test_client.post(f"/threads/{second}/reject", data={"nonce": approval_nonce, "reason": "no"})
+    response = test_client.post(
+        f"/threads/{second}/reject", data={"nonce": approval_nonce, "reason": "no"}
+    )
     assert response.status_code == 403
 
 
@@ -158,13 +210,28 @@ def test_prepare_and_start_nonces_are_action_scoped_and_one_use() -> None:
     home = test_client.get("/")
     prepare_nonce = nonce(home.text)
     assert test_client.post("/incidents/d1/prepare", data={}).status_code == 403
-    response = test_client.post("/incidents/d1/prepare", data={"nonce": prepare_nonce}, follow_redirects=False)
+    response = test_client.post(
+        "/incidents/d1/prepare", data={"nonce": prepare_nonce}, follow_redirects=False
+    )
     assert response.status_code == 303
-    assert test_client.post("/incidents/d1/prepare", data={"nonce": prepare_nonce}).status_code == 403
+    assert (
+        test_client.post("/incidents/d1/prepare", data={"nonce": prepare_nonce}).status_code == 403
+    )
     thread = response.headers["location"].split("/")[2]
     prompt = test_client.get(f"/incidents/{thread}/start")
     start_nonce = nonce(prompt.text)
-    assert test_client.post(f"/incidents/{thread}/start", data={"nonce": prepare_nonce}).status_code == 403
+    assert (
+        test_client.post(f"/incidents/{thread}/start", data={"nonce": prepare_nonce}).status_code
+        == 403
+    )
     assert runtime.started == 0
-    assert test_client.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False).status_code == 303
-    assert test_client.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}).status_code == 403
+    assert (
+        test_client.post(
+            f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False
+        ).status_code
+        == 303
+    )
+    assert (
+        test_client.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}).status_code
+        == 403
+    )

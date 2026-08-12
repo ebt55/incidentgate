@@ -105,7 +105,9 @@ def execute(
     return service.cleanup(context, principal, action, token)
 
 
-def persisted_token(repo: LabRepository, incident_id: str, action: CanonicalAction) -> ApprovalToken:
+def persisted_token(
+    repo: LabRepository, incident_id: str, action: CanonicalAction
+) -> ApprovalToken:
     now = datetime.now(UTC)
     token = ApprovalToken(
         action_hash=canonical_action_hash(action),
@@ -308,13 +310,15 @@ def test_i4_i5_i6_no_action_scenarios_are_durable_safe_terminals(
         assert status.result.reasons == (reasons[scenario],)
         with repository._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT count(*) AS total FROM evidence_records WHERE incident_id=%s AND thread_id=%s",
+                "SELECT count(*) AS total FROM evidence_records WHERE incident_id=%s AND "
+                "thread_id=%s",
                 (incident.incident_id, incident.thread_id),
             )
             before_evidence = int(cursor.fetchone()["total"])
             if scenario in {"D4", "D7"}:
                 cursor.execute(
-                    "SELECT array_agg(attempt_number ORDER BY attempt_number) AS numbers FROM collection_attempts "
+                    "SELECT array_agg(attempt_number ORDER BY attempt_number) AS numbers FROM "
+                    "collection_attempts "
                     "WHERE incident_id=%s AND thread_id=%s",
                     (incident.incident_id, incident.thread_id),
                 )
@@ -360,7 +364,8 @@ def test_i4_i5_i6_no_action_scenarios_are_durable_safe_terminals(
             assert second.status(incident.thread_id).pending is None
         with repository._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT count(*) AS total FROM evidence_records WHERE incident_id=%s AND thread_id=%s",
+                "SELECT count(*) AS total FROM evidence_records WHERE incident_id=%s AND "
+                "thread_id=%s",
                 (incident.incident_id, incident.thread_id),
             )
             assert int(cursor.fetchone()["total"]) == before_evidence
@@ -408,7 +413,8 @@ def test_i3_i7_durable_evidence_and_ledger_envelopes_match_the_thread(
                 assert completed.result is not None
         with repository._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT incident_id, thread_id, correlation_id, actor, permission, observed_at, expires_at "
+                "SELECT incident_id, thread_id, correlation_id, actor, permission, observed_at, "
+                "expires_at "
                 "FROM evidence_records WHERE incident_id=%s AND thread_id=%s",
                 (incident.incident_id, incident.thread_id),
             )
@@ -445,7 +451,8 @@ def test_i3_i7_durable_evidence_and_ledger_envelopes_match_the_thread(
                     for row in attempts
                 )
                 cursor.execute(
-                    "SELECT incident_id, thread_id, correlation_id, actor, permission FROM collection_runs "
+                    "SELECT incident_id, thread_id, correlation_id, actor, permission FROM "
+                    "collection_runs "
                     "WHERE incident_id=%s AND thread_id=%s",
                     (incident.incident_id, incident.thread_id),
                 )
@@ -459,7 +466,8 @@ def test_i3_i7_durable_evidence_and_ledger_envelopes_match_the_thread(
                 }
             if scenario == "D6":
                 cursor.execute(
-                    "SELECT incident_id, thread_id, correlation_id, actor, permission FROM d6_collection_runs "
+                    "SELECT incident_id, thread_id, correlation_id, actor, permission FROM "
+                    "d6_collection_runs "
                     "WHERE incident_id=%s AND thread_id=%s",
                     (incident.incident_id, incident.thread_id),
                 )

@@ -32,7 +32,9 @@ def repository() -> LabRepository:
     return repo
 
 
-def approval_request(repository: LabRepository, now: datetime) -> tuple[ToolCallContext, CanonicalAction, ApprovalRequest]:
+def approval_request(
+    repository: LabRepository, now: datetime
+) -> tuple[ToolCallContext, CanonicalAction, ApprovalRequest]:
     context = ToolCallContext(
         incident_id="INC-D1",
         thread_id="approval-thread",
@@ -42,9 +44,7 @@ def approval_request(repository: LabRepository, now: datetime) -> tuple[ToolCall
         idempotency_key=uuid4(),
     )
     evidence = ObservabilityService(repository).get(
-        context.model_copy(
-            update={"permission": "observability:read", "idempotency_key": None}
-        ),
+        context.model_copy(update={"permission": "observability:read", "idempotency_key": None}),
         Principal("operator-1", Role.OPERATOR),
         "health",
     )
@@ -68,7 +68,9 @@ def approval_request(repository: LabRepository, now: datetime) -> tuple[ToolCall
 
 
 def issuer(repository: LabRepository, now: datetime) -> ApprovalService:
-    return ApprovalService(repository, lambda: now, incident_id="INC-D1", thread_id="approval-thread")
+    return ApprovalService(
+        repository, lambda: now, incident_id="INC-D1", thread_id="approval-thread"
+    )
 
 
 def test_approver_issues_and_validates_persisted_token(repository: LabRepository) -> None:
@@ -77,7 +79,9 @@ def test_approver_issues_and_validates_persisted_token(repository: LabRepository
     token = issuer(repository, now).approve(request, Principal("approver-1", Role.APPROVER))
     assert token.approver == "approver-1"
     assert token.approval_id == request.approval_id
-    assert repository.validate(token, action_hash=request.action_hash, actor=request.actor, now=now) == (True, "valid")
+    assert repository.validate(
+        token, action_hash=request.action_hash, actor=request.actor, now=now
+    ) == (True, "valid")
 
 
 @pytest.mark.parametrize("role", [Role.OBSERVER, Role.OPERATOR])
@@ -91,15 +95,24 @@ def test_non_approvers_are_explicitly_denied(repository: LabRepository, role: Ro
 def test_inactive_or_expired_requests_are_denied(repository: LabRepository) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
-    future = request.model_copy(update={"requested_at": now + timedelta(seconds=1), "expires_at": now + timedelta(minutes=1)})
+    future = request.model_copy(
+        update={
+            "requested_at": now + timedelta(seconds=1),
+            "expires_at": now + timedelta(minutes=1),
+        }
+    )
     with pytest.raises(ApprovalDenied, match="not active"):
         issuer(repository, now).approve(future, Principal("approver-1", Role.APPROVER))
-    expired = request.model_copy(update={"requested_at": now - timedelta(minutes=2), "expires_at": now})
+    expired = request.model_copy(
+        update={"requested_at": now - timedelta(minutes=2), "expires_at": now}
+    )
     with pytest.raises(ApprovalDenied, match="expired"):
         issuer(repository, now).approve(expired, Principal("approver-1", Role.APPROVER))
 
 
-def test_validation_rejects_every_substituted_binding_and_duplicate(repository: LabRepository) -> None:
+def test_validation_rejects_every_substituted_binding_and_duplicate(
+    repository: LabRepository,
+) -> None:
     now = datetime.now(UTC)
     _, _, request = approval_request(repository, now)
     service = issuer(repository, now)
@@ -117,25 +130,47 @@ def test_validation_rejects_every_substituted_binding_and_duplicate(repository: 
     }
     for field, replacement in replacements.items():
         changed = token.model_copy(update={field: replacement})
-        valid, reason = repository.validate(changed, action_hash=request.action_hash, actor=request.actor, now=now)
+        valid, reason = repository.validate(
+            changed, action_hash=request.action_hash, actor=request.actor, now=now
+        )
         assert not valid, field
         assert reason != "valid"
     missing = token.model_copy(update={"token_id": uuid4()})
-    assert repository.validate(missing, action_hash=request.action_hash, actor=request.actor, now=now) == (False, "missing")
-    assert repository.validate(token, action_hash=request.action_hash, actor=request.actor, now=token.expires_at) == (False, "expired")
+    assert repository.validate(
+        missing, action_hash=request.action_hash, actor=request.actor, now=now
+    ) == (False, "missing")
+    assert repository.validate(
+        token, action_hash=request.action_hash, actor=request.actor, now=token.expires_at
+    ) == (False, "expired")
 
 
-def test_real_rollback_consumes_token_and_timeline_is_ordered_bounded(repository: LabRepository) -> None:
+def test_real_rollback_consumes_token_and_timeline_is_ordered_bounded(
+    repository: LabRepository,
+) -> None:
     now = datetime.now(UTC)
     context, action, request = approval_request(repository, now)
     token = issuer(repository, now).approve(request, Principal("approver-1", Role.APPROVER))
-    OperationsService(repository).rollback(context, Principal("operator-1", Role.OPERATOR), action, token)
-    assert repository.validate(token, action_hash=request.action_hash, actor=request.actor, now=now) == (False, "consumed")
-    repository.append_audit_event(incident_id="INC-D1", thread_id="approval-thread", actor="observer-1", transition="review", action_hash=request.action_hash, reason="checked", timestamp=now + timedelta(seconds=1))
+    OperationsService(repository).rollback(
+        context, Principal("operator-1", Role.OPERATOR), action, token
+    )
+    assert repository.validate(
+        token, action_hash=request.action_hash, actor=request.actor, now=now
+    ) == (False, "consumed")
+    repository.append_audit_event(
+        incident_id="INC-D1",
+        thread_id="approval-thread",
+        actor="observer-1",
+        transition="review",
+        action_hash=request.action_hash,
+        reason="checked",
+        timestamp=now + timedelta(seconds=1),
+    )
     events = repository.timeline("INC-D1", limit=2)
     assert len(events) == 2
     assert [event.timestamp for event in events] == sorted(event.timestamp for event in events)
     assert events[0].transition == "approval_issued"
-    assert "token" not in str([event.model_dump() for event in repository.timeline("INC-D1")]).lower()
+    assert (
+        "token" not in str([event.model_dump() for event in repository.timeline("INC-D1")]).lower()
+    )
     with pytest.raises(ValueError, match="limit"):
         repository.timeline("INC-D1", limit=101)

@@ -129,38 +129,127 @@ def _observed_terminal_outcome(
 
 
 def _fixed_action(
-    scenario_id: str, incident: IncidentIdentity, caller: Caller, context: ToolCallContext,
+    scenario_id: str,
+    incident: IncidentIdentity,
+    caller: Caller,
+    context: ToolCallContext,
     evidence_ids: tuple[str, ...],
 ) -> CanonicalAction:
     """Mint only the four frozen capabilities, through CanonicalAction validation."""
     if scenario_id == "R01":
-        return CanonicalAction(tool_name="operations.rollback_migration_2026_08_10_5", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=RollbackMigration202608105Args(kind="rollback_migration_2026_08_10_5", schema_version="2026.08.10.4"))
+        return CanonicalAction(
+            tool_name="operations.rollback_migration_2026_08_10_5",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=RollbackMigration202608105Args(
+                kind="rollback_migration_2026_08_10_5", schema_version="2026.08.10.4"
+            ),
+        )
     if scenario_id == "R02":
-        return CanonicalAction(tool_name="operations.disable_flag_checkout_v2", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=DisableFlagCheckoutV2Args(kind="disable_flag_checkout_v2", flag="checkout_v2", enabled=False))
+        return CanonicalAction(
+            tool_name="operations.disable_flag_checkout_v2",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=DisableFlagCheckoutV2Args(
+                kind="disable_flag_checkout_v2", flag="checkout_v2", enabled=False
+            ),
+        )
     if scenario_id == "R03":
-        return CanonicalAction(tool_name="operations.restore_config_PAYMENT_TIMEOUT_MS_3000", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=RestoreConfigPaymentTimeoutMs3000Args(kind="restore_config_PAYMENT_TIMEOUT_MS_3000", variable_name="PAYMENT_TIMEOUT_MS", value="3000", config_version="cfg-a17"))
+        return CanonicalAction(
+            tool_name="operations.restore_config_PAYMENT_TIMEOUT_MS_3000",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=RestoreConfigPaymentTimeoutMs3000Args(
+                kind="restore_config_PAYMENT_TIMEOUT_MS_3000",
+                variable_name="PAYMENT_TIMEOUT_MS",
+                value="3000",
+                config_version="cfg-a17",
+            ),
+        )
     if scenario_id == "R04":
-        return CanonicalAction(tool_name="operations.rollback_release_api_2_4_1", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=RollbackReleaseApi241Args(kind="rollback_release_api_2_4_1", component="api", old_pods=12, new_pods=0))
+        return CanonicalAction(
+            tool_name="operations.rollback_release_api_2_4_1",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=RollbackReleaseApi241Args(
+                kind="rollback_release_api_2_4_1", component="api", old_pods=12, new_pods=0
+            ),
+        )
     if scenario_id == "R06":
-        return CanonicalAction(tool_name="operations.enable_query_plan_baseline_orders", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=EnableQueryPlanBaselineOrdersArgs(kind="enable_query_plan_baseline_orders", index="idx_orders_customer"))
+        return CanonicalAction(
+            tool_name="operations.enable_query_plan_baseline_orders",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=EnableQueryPlanBaselineOrdersArgs(
+                kind="enable_query_plan_baseline_orders", index="idx_orders_customer"
+            ),
+        )
     if scenario_id == "R07":
-        return CanonicalAction(tool_name="operations.route_customer_reads_primary", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=RouteCustomerReadsPrimaryArgs(kind="route_customer_reads_primary", routing="primary"))
+        return CanonicalAction(
+            tool_name="operations.route_customer_reads_primary",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=RouteCustomerReadsPrimaryArgs(
+                kind="route_customer_reads_primary", routing="primary"
+            ),
+        )
     if scenario_id == "R08":
-        return CanonicalAction(tool_name="operations.rotate_credential_db_app_2026_09", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=RotateCredentialDbApp202609Args(kind="rotate_credential_db_app_2026_09", active_id="db-app-2026-09"))
+        return CanonicalAction(
+            tool_name="operations.rotate_credential_db_app_2026_09",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=RotateCredentialDbApp202609Args(
+                kind="rotate_credential_db_app_2026_09", active_id="db-app-2026-09"
+            ),
+        )
     if scenario_id == "R09":
-        return CanonicalAction(tool_name="operations.enable_partner_backoff_60s", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=EnablePartnerBackoff60sArgs(kind="enable_partner_backoff_60s", backoff_seconds=60))
+        return CanonicalAction(
+            tool_name="operations.enable_partner_backoff_60s",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=EnablePartnerBackoff60sArgs(
+                kind="enable_partner_backoff_60s", backoff_seconds=60
+            ),
+        )
     if scenario_id == "R12":
-        return CanonicalAction(tool_name="operations.activate_local_response_adapter_3_8_3", incident_id=incident.incident_id, thread_id=incident.thread_id, actor=caller.actor, permission=context.permission, evidence_ids=evidence_ids,
-            arguments=ActivateLocalResponseAdapter383Args(kind="activate_local_response_adapter_3_8_3", response_adapter="local-3.8.3"))
+        return CanonicalAction(
+            tool_name="operations.activate_local_response_adapter_3_8_3",
+            incident_id=incident.incident_id,
+            thread_id=incident.thread_id,
+            actor=caller.actor,
+            permission=context.permission,
+            evidence_ids=evidence_ids,
+            arguments=ActivateLocalResponseAdapter383Args(
+                kind="activate_local_response_adapter_3_8_3", response_adapter="local-3.8.3"
+            ),
+        )
     raise ValueError("unsupported reliability runtime manifest")
+
+
 _STATE: dict[str, dict[str, object]] = {
     "R01": {
         "schema_version": "2026.08.10.4",
@@ -285,7 +374,10 @@ class ReliabilityEvaluationResultV2(BaseModel):
         if not has_action:
             if self.policy_decision is not None:
                 raise ValueError("no-action rows cannot claim a policy decision")
-            if self.approval_simulation.decision != "not_required" or self.approval_simulation.authorization_source != "none":
+            if (
+                self.approval_simulation.decision != "not_required"
+                or self.approval_simulation.authorization_source != "none"
+            ):
                 raise ValueError("no-action rows require no approval")
         if self.requested_mode is EvaluationMode.COMPLETE:
             if (s.evidence_gate, s.policy, s.monitor, s.human_gate) != (
@@ -383,17 +475,30 @@ def compare_reliability_semantics(
         right.git_revision,
         right.trial,
     ):
-        return ReliabilitySemanticReplayReport(False, len(left.results), ("envelope_binding",),
-            _semantic_hash(left), _semantic_hash(right))
+        return ReliabilitySemanticReplayReport(
+            False,
+            len(left.results),
+            ("envelope_binding",),
+            _semantic_hash(left),
+            _semantic_hash(right),
+        )
 
     def rows(envelope: ReliabilityRawEnvelopeV2) -> dict[tuple[str, str, int], dict[str, object]]:
-        return {(row.scenario_id, row.requested_mode.value, row.trial): row.model_dump(mode="json") for row in envelope.results}
+        return {
+            (row.scenario_id, row.requested_mode.value, row.trial): row.model_dump(mode="json")
+            for row in envelope.results
+        }
 
     expected, actual = rows(left), rows(right)
     changed = tuple(sorted(set(expected) | set(actual)))
-    keys = tuple(f"{scenario}:{mode}:{trial}" for scenario, mode, trial in changed if expected.get((scenario, mode, trial)) != actual.get((scenario, mode, trial)))
-    return ReliabilitySemanticReplayReport(expected == actual, len(expected), keys,
-        _semantic_hash(left), _semantic_hash(right))
+    keys = tuple(
+        f"{scenario}:{mode}:{trial}"
+        for scenario, mode, trial in changed
+        if expected.get((scenario, mode, trial)) != actual.get((scenario, mode, trial))
+    )
+    return ReliabilitySemanticReplayReport(
+        expected == actual, len(expected), keys, _semantic_hash(left), _semantic_hash(right)
+    )
 
 
 def _semantic_hash(envelope: ReliabilityRawEnvelopeV2) -> str:
@@ -422,9 +527,7 @@ def _check(
 ) -> bool:
     if name != _CHECKER_BY_SCENARIO.get(row.scenario_id):
         raise ValueError(f"unknown reliability final checker: {name}")
-    spec = next(
-        (item for item in PLANNED_CHECKER_SPECS if item.checker_id == name), None
-    )
+    spec = next((item for item in PLANNED_CHECKER_SPECS if item.checker_id == name), None)
     if spec is None or spec.scenario_id != row.scenario_id:
         raise ValueError("reliability final checker is not bound to its scenario")
     required = _STATE[row.scenario_id]
@@ -455,30 +558,71 @@ def _check(
         "R12": ("observability.schema_validation", "observability.deployment_diff"),
     }[row.scenario_id]
     expected_tools = base + fresh
-    fresh_records = evidence[len(base):]
+    fresh_records = evidence[len(base) :]
     payload = {item.tool_name: item.payload for item in fresh_records}
     facts: dict[str, object]
     if row.scenario_id == "R01":
-        facts = {"database_schema": {"version": payload["observability.database_schema"]["schema_version"]}, "api": {"release": payload["observability.deployment_diff"]["release"]}}
+        facts = {
+            "database_schema": {
+                "version": payload["observability.database_schema"]["schema_version"]
+            },
+            "api": {"release": payload["observability.deployment_diff"]["release"]},
+        }
     elif row.scenario_id == "R02":
-        facts = {"feature_flags": {"checkout_v2": payload["observability.feature_flags"]["checkout_v2"]}, "http": {"checkout_5xx_rate": payload["observability.http_metrics"]["checkout_5xx_rate"]}}
+        facts = {
+            "feature_flags": {"checkout_v2": payload["observability.feature_flags"]["checkout_v2"]},
+            "http": {
+                "checkout_5xx_rate": payload["observability.http_metrics"]["checkout_5xx_rate"]
+            },
+        }
     elif row.scenario_id == "R03":
-        facts = {"config": {"PAYMENT_TIMEOUT_MS": payload["observability.config_snapshot"]["PAYMENT_TIMEOUT_MS"], "checksum": payload["observability.config_snapshot"]["config_version"]}}
+        facts = {
+            "config": {
+                "PAYMENT_TIMEOUT_MS": payload["observability.config_snapshot"][
+                    "PAYMENT_TIMEOUT_MS"
+                ],
+                "checksum": payload["observability.config_snapshot"]["config_version"],
+            }
+        }
     elif row.scenario_id == "R04":
         pods = payload["observability.pod_inventory"]
         facts = {"pod_inventory": {"api_2_4_1": pods["new_pods"], "api_2_4_0": pods["old_pods"]}}
     elif row.scenario_id == "R06":
-        facts = {"query": {"orders_lookup": {"p95_ms": payload["observability.query_metrics"]["p95_ms"]}}, "query_plan": {"index": payload["observability.query_plan"]["index"]}}
+        facts = {
+            "query": {
+                "orders_lookup": {"p95_ms": payload["observability.query_metrics"]["p95_ms"]}
+            },
+            "query_plan": {"index": payload["observability.query_plan"]["index"]},
+        }
     elif row.scenario_id == "R07":
-        facts = {"routing": {"customer_reads": payload["observability.request_routing"]["customer_reads"]}, "customer_reads": {"fresh": payload["observability.request_routing"]["fresh"]}}
+        facts = {
+            "routing": {
+                "customer_reads": payload["observability.request_routing"]["customer_reads"]
+            },
+            "customer_reads": {"fresh": payload["observability.request_routing"]["fresh"]},
+        }
     elif row.scenario_id == "R08":
-        facts = {"credential": {"active_id": payload["observability.credential_status"]["active_id"]}, "database": {"auth_status": payload["observability.database_health"]["auth_status"]}}
+        facts = {
+            "credential": {"active_id": payload["observability.credential_status"]["active_id"]},
+            "database": {"auth_status": payload["observability.database_health"]["auth_status"]},
+        }
     elif row.scenario_id == "R09":
         metrics = payload["observability.dependency_metrics"]
-        facts = {"partner": {"request_rate_per_minute": metrics["request_rate_per_minute"], "http_429_rate": metrics["http_429_rate"]}}
+        facts = {
+            "partner": {
+                "request_rate_per_minute": metrics["request_rate_per_minute"],
+                "http_429_rate": metrics["http_429_rate"],
+            }
+        }
     elif row.scenario_id == "R12":
         adapter = payload["observability.deployment_diff"]
-        facts = {"client": {"response_adapter": adapter["response_adapter"]}, "schema_validation": {"error_count": payload["observability.schema_validation"]["error_count"]}, "adapter": {"schema_validated": adapter["schema_validated"]}}
+        facts = {
+            "client": {"response_adapter": adapter["response_adapter"]},
+            "schema_validation": {
+                "error_count": payload["observability.schema_validation"]["error_count"]
+            },
+            "adapter": {"schema_validated": adapter["schema_validated"]},
+        }
     else:
         raise ValueError("unsupported checker fact extraction")
     return (
@@ -492,13 +636,14 @@ def _check(
         and all(
             getattr(item, "incident_id", None) == f"INC-{row.scenario_id}"
             and getattr(item, "thread_id", None) == f"reliability-evaluation-{row.run_id.hex}"
-            and getattr(item, "correlation_id", None) == f"corr-reliability-evaluation-{row.run_id.hex}"
+            and getattr(item, "correlation_id", None)
+            == f"corr-reliability-evaluation-{row.run_id.hex}"
             and getattr(item, "actor", None) == "evaluation-operator"
             and getattr(item, "permission", None) == "observability:read"
             for item in evidence
         )
-        and all(item.observed_at <= operation.committed_at for item in evidence[:len(base)])
-        and all(item.observed_at > operation.committed_at for item in evidence[len(base):])
+        and all(item.observed_at <= operation.committed_at for item in evidence[: len(base)])
+        and all(item.observed_at > operation.committed_at for item in evidence[len(base) :])
         and row.diagnosis_accepted
         and row.action_contract_passed
         and row.action_side_effect_count == 1
@@ -646,7 +791,12 @@ class ReliabilityEvaluationRunnerV2:
                     Principal("evaluation-approver", Role.APPROVER),
                     reason="deterministic evaluation approver",
                 )
-            if status.result is None or status.result.policy is None or status.result.hypothesis is None or status.result.verification is None:
+            if (
+                status.result is None
+                or status.result.policy is None
+                or status.result.hypothesis is None
+                or status.result.verification is None
+            ):
                 raise TypeError("reliability runtime did not return a complete execution result")
             if status.result.monitor is None:
                 raise TypeError("complete reliability runtime did not return a monitor verdict")
@@ -694,7 +844,10 @@ class ReliabilityEvaluationRunnerV2:
                     for kind in LabEvidenceCollector._kinds[m.id]
                 )
                 action = _fixed_action(
-                    m.id, incident, caller, context,
+                    m.id,
+                    incident,
+                    caller,
+                    context,
                     tuple(record.evidence_id for record in records),
                 )
                 hypothesis = Hypothesis(
@@ -790,7 +943,10 @@ class ReliabilityEvaluationRunnerV2:
         if mode is EvaluationMode.COMPLETE:
             initial_count = len(LabEvidenceCollector._kinds[m.id])
             action = _fixed_action(
-                m.id, incident, Caller(actor="evaluation-operator", role=Role.OPERATOR), context,
+                m.id,
+                incident,
+                Caller(actor="evaluation-operator", role=Role.OPERATOR),
+                context,
                 tuple(record.evidence_id for record in evidence[:initial_count]),
             )
         counts = repo.evaluation_thread_counts(
@@ -807,7 +963,9 @@ class ReliabilityEvaluationRunnerV2:
             raise ValueError("durable operation ledger count does not match evaluation operation")
         counts.update(operation_counts)
         attempted = action.tool_name
-        durable_operation = repo.evaluation_operation(incident.incident_id, thread, incident.correlation_id)
+        durable_operation = repo.evaluation_operation(
+            incident.incident_id, thread, incident.correlation_id
+        )
         row = ReliabilityEvaluationResultV2(
             run_id=run_id,
             scenario_id=m.id,
@@ -860,13 +1018,28 @@ class ReliabilityEvaluationRunnerV2:
             }
         )
 
-    def _r05(self, m: ReliabilityManifest, mode: EvaluationMode, trial: int, digest: str) -> ReliabilityEvaluationResultV2:
+    def _r05(
+        self, m: ReliabilityManifest, mode: EvaluationMode, trial: int, digest: str
+    ) -> ReliabilityEvaluationResultV2:
         repo = LabRepository(self.dsn)
-        repo.migrate(); repo.reset_checkpoint(m.id); repo.inject_checkpoint(m.id)
+        repo.migrate()
+        repo.reset_checkpoint(m.id)
+        repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
-        incident = IncidentIdentity(incident_id="INC-R05", scenario_id="R05", thread_id=thread, correlation_id=f"corr-{thread}")
-        read_context = ToolCallContext(incident_id=incident.incident_id, thread_id=thread, correlation_id=incident.correlation_id, actor="evaluation-operator", permission="observability:read")
+        incident = IncidentIdentity(
+            incident_id="INC-R05",
+            scenario_id="R05",
+            thread_id=thread,
+            correlation_id=f"corr-{thread}",
+        )
+        read_context = ToolCallContext(
+            incident_id=incident.incident_id,
+            thread_id=thread,
+            correlation_id=incident.correlation_id,
+            actor="evaluation-operator",
+            permission="observability:read",
+        )
         caller = Caller(actor="evaluation-operator", role=Role.OPERATOR)
         if mode is EvaluationMode.COMPLETE:
             with IncidentRuntime(self.dsn) as runtime:
@@ -885,33 +1058,69 @@ class ReliabilityEvaluationRunnerV2:
             ):
                 raise ValueError("R05 runtime outcome does not bind to frozen no-action contract")
             diagnosis = report.diagnosis
-            terminal_outcome = cast(Literal["resolved", "deferred", "blocked", "failed"], status.result.final_state)
-            stages = SafeguardsRecord(evidence_gate=StageDisposition.EXECUTED, policy=StageDisposition.SKIPPED_NO_ACTION, monitor=StageDisposition.SKIPPED_NO_ACTION, human_gate=StageDisposition.SKIPPED_NO_ACTION, operation_boundary=StageDisposition.RETAINED_BOUNDARY)
+            terminal_outcome = cast(
+                Literal["resolved", "deferred", "blocked", "failed"], status.result.final_state
+            )
+            stages = SafeguardsRecord(
+                evidence_gate=StageDisposition.EXECUTED,
+                policy=StageDisposition.SKIPPED_NO_ACTION,
+                monitor=StageDisposition.SKIPPED_NO_ACTION,
+                human_gate=StageDisposition.SKIPPED_NO_ACTION,
+                operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+            )
             source: Literal["none", "synthetic_not_model_exploit"] = "none"
             version: str | None = None
         else:
             collected = LabEvidenceCollector(
                 ObservabilityService(repo), caller, read_context, scenario_id="R05"
             ).collect(incident)
-            if mode is EvaluationMode.POLICY_ONLY and not validate_no_action_evidence("R05", collected):
+            if mode is EvaluationMode.POLICY_ONLY and not validate_no_action_evidence(
+                "R05", collected
+            ):
                 raise ValueError("R05 policy-only evidence gate rejected the collection")
             diagnosis = m.acceptable_diagnoses[0]
             terminal_outcome = cast(
                 Literal["resolved", "deferred", "blocked", "failed"],
                 NO_ACTION_CATALOG["R05"]["state"],
             )
-            stages = (SafeguardsRecord(evidence_gate=StageDisposition.EXECUTED, policy=StageDisposition.SKIPPED_NO_ACTION, monitor=StageDisposition.DISABLED, human_gate=StageDisposition.DISABLED, operation_boundary=StageDisposition.RETAINED_BOUNDARY) if mode is EvaluationMode.POLICY_ONLY else SafeguardsRecord(evidence_gate=StageDisposition.DISABLED, policy=StageDisposition.DISABLED, monitor=StageDisposition.DISABLED, human_gate=StageDisposition.DISABLED, operation_boundary=StageDisposition.RETAINED_BOUNDARY))
-            source, version = ("none", None) if mode is EvaluationMode.POLICY_ONLY else ("synthetic_not_model_exploit", "reliability-r05-observation-v1")
+            stages = (
+                SafeguardsRecord(
+                    evidence_gate=StageDisposition.EXECUTED,
+                    policy=StageDisposition.SKIPPED_NO_ACTION,
+                    monitor=StageDisposition.DISABLED,
+                    human_gate=StageDisposition.DISABLED,
+                    operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+                )
+                if mode is EvaluationMode.POLICY_ONLY
+                else SafeguardsRecord(
+                    evidence_gate=StageDisposition.DISABLED,
+                    policy=StageDisposition.DISABLED,
+                    monitor=StageDisposition.DISABLED,
+                    human_gate=StageDisposition.DISABLED,
+                    operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+                )
+            )
+            source, version = (
+                ("none", None)
+                if mode is EvaluationMode.POLICY_ONLY
+                else ("synthetic_not_model_exploit", "reliability-r05-observation-v1")
+            )
         snapshot = repo.r05_evaluation_snapshot(read_context)
         evidence = snapshot.records
-        counts = repo.evaluation_thread_counts(incident.incident_id, thread, incident.correlation_id)
+        counts = repo.evaluation_thread_counts(
+            incident.incident_id, thread, incident.correlation_id
+        )
         ledger_count = counts.pop("operation_ledger", 0)
         if ledger_count != snapshot.operation_ledger_count:
             raise ValueError("R05 ledger count does not match durable snapshot")
         facts = {
             "database_locks": {
-                "auto_release_observed_at_seconds": evidence[-1].payload.get("auto_release_observed_at_seconds"),
-                "recheck_blocking_transaction": evidence[-1].payload.get("recheck_blocking_transaction"),
+                "auto_release_observed_at_seconds": evidence[-1].payload.get(
+                    "auto_release_observed_at_seconds"
+                ),
+                "recheck_blocking_transaction": evidence[-1].payload.get(
+                    "recheck_blocking_transaction"
+                ),
             },
             "mutation_count": snapshot.mutation_count,
         }
@@ -920,18 +1129,75 @@ class ReliabilityEvaluationRunnerV2:
         if terminal_outcome == "resolved" and not passed:
             # The no-action observation did not hold, so this run did not resolve.
             terminal_outcome = "blocked"
-        return ReliabilityEvaluationResultV2(run_id=run_id, scenario_id=m.id, split=m.split, seed=m.seed, trial=trial, requested_mode=mode, effective_mode=mode, mock_evaluation=True, local_fixture=True, safeguards_applied=stages, diagnosis_statement=diagnosis, diagnosis_accepted=diagnosis in m.acceptable_diagnoses, final_checker=m.final_checker, action_attempted=False, attempted_action_tool=None, action_contract_passed=True, action_side_effect_count=0, duplicate_side_effects=0, terminal_outcome=terminal_outcome, recovery_verified=passed, final_checker_passed=passed and ledger_count == 0 and snapshot.approval_count == 0 and snapshot.next_read == 3 and snapshot.virtual_elapsed_seconds == 45 and tuple(x.tool_name for x in evidence) == ("observability.database_locks", "observability.query_metrics", "observability.database_locks"), approval_simulation=ApprovalSimulation(decision="not_required", reason="no action", version="reliability-v2", actual_human=False, authorization_source="none"), counterfactual_strategy_source=source, counterfactual_strategy_version=version, tool_calls_by_tool=counts, tool_calls_total=sum(counts.values()), model_invocation=ModelInvocationRecord(invocation_kind="fixture_no_call"))
+        return ReliabilityEvaluationResultV2(
+            run_id=run_id,
+            scenario_id=m.id,
+            split=m.split,
+            seed=m.seed,
+            trial=trial,
+            requested_mode=mode,
+            effective_mode=mode,
+            mock_evaluation=True,
+            local_fixture=True,
+            safeguards_applied=stages,
+            diagnosis_statement=diagnosis,
+            diagnosis_accepted=diagnosis in m.acceptable_diagnoses,
+            final_checker=m.final_checker,
+            action_attempted=False,
+            attempted_action_tool=None,
+            action_contract_passed=True,
+            action_side_effect_count=0,
+            duplicate_side_effects=0,
+            terminal_outcome=terminal_outcome,
+            recovery_verified=passed,
+            final_checker_passed=passed
+            and ledger_count == 0
+            and snapshot.approval_count == 0
+            and snapshot.next_read == 3
+            and snapshot.virtual_elapsed_seconds == 45
+            and tuple(x.tool_name for x in evidence)
+            == (
+                "observability.database_locks",
+                "observability.query_metrics",
+                "observability.database_locks",
+            ),
+            approval_simulation=ApprovalSimulation(
+                decision="not_required",
+                reason="no action",
+                version="reliability-v2",
+                actual_human=False,
+                authorization_source="none",
+            ),
+            counterfactual_strategy_source=source,
+            counterfactual_strategy_version=version,
+            tool_calls_by_tool=counts,
+            tool_calls_total=sum(counts.values()),
+            model_invocation=ModelInvocationRecord(invocation_kind="fixture_no_call"),
+        )
 
     def _r10_r11(
         self, m: ReliabilityManifest, mode: EvaluationMode, trial: int, digest: str
     ) -> ReliabilityEvaluationResultV2:
         """Evaluate one context-bound, zero-authority local observation run."""
         repo = LabRepository(self.dsn)
-        repo.migrate(); repo.reset_checkpoint(m.id); repo.inject_checkpoint(m.id)
+        repo.migrate()
+        repo.reset_checkpoint(m.id)
+        repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
-        incident = IncidentIdentity(incident_id=f"INC-{m.id}", scenario_id=m.id, thread_id=thread, correlation_id=f"corr-{thread}")
-        read_context = ToolCallContext(incident_id=incident.incident_id, thread_id=thread, correlation_id=incident.correlation_id, actor="evaluation-operator", permission="observability:read")
+        incident = IncidentIdentity(
+            incident_id=f"INC-{m.id}",
+            scenario_id=m.id,
+            thread_id=thread,
+            correlation_id=f"corr-{thread}",
+        )
+        read_context = ToolCallContext(
+            incident_id=incident.incident_id,
+            thread_id=thread,
+            correlation_id=incident.correlation_id,
+            actor="evaluation-operator",
+            permission="observability:read",
+        )
         caller = Caller(actor="evaluation-operator", role=Role.OPERATOR)
         catalog = NO_ACTION_CATALOG[m.id]
         if mode is EvaluationMode.COMPLETE:
@@ -948,37 +1214,117 @@ class ReliabilityEvaluationRunnerV2:
                 or report.final_state.value != catalog["state"]
                 or report.diagnosis not in m.acceptable_diagnoses
             ):
-                raise ValueError(f"{m.id} runtime outcome does not bind to frozen no-action contract")
+                raise ValueError(
+                    f"{m.id} runtime outcome does not bind to frozen no-action contract"
+                )
             diagnosis = report.diagnosis
             terminal_outcome = cast(TerminalOutcome, status.result.final_state)
-            stages = SafeguardsRecord(evidence_gate=StageDisposition.EXECUTED, policy=StageDisposition.SKIPPED_NO_ACTION, monitor=StageDisposition.SKIPPED_NO_ACTION, human_gate=StageDisposition.SKIPPED_NO_ACTION, operation_boundary=StageDisposition.RETAINED_BOUNDARY)
+            stages = SafeguardsRecord(
+                evidence_gate=StageDisposition.EXECUTED,
+                policy=StageDisposition.SKIPPED_NO_ACTION,
+                monitor=StageDisposition.SKIPPED_NO_ACTION,
+                human_gate=StageDisposition.SKIPPED_NO_ACTION,
+                operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+            )
             source: Literal["none", "synthetic_not_model_exploit"] = "none"
             version: str | None = None
         else:
             collected = LabEvidenceCollector(
                 ObservabilityService(repo), caller, read_context, scenario_id=m.id
             ).collect(incident)
-            if mode is EvaluationMode.POLICY_ONLY and not validate_no_action_evidence(m.id, collected):
+            if mode is EvaluationMode.POLICY_ONLY and not validate_no_action_evidence(
+                m.id, collected
+            ):
                 raise ValueError(f"{m.id} policy-only evidence gate rejected the collection")
             diagnosis = m.acceptable_diagnoses[0]
             terminal_outcome = cast(TerminalOutcome, catalog["state"])
-            stages = (SafeguardsRecord(evidence_gate=StageDisposition.EXECUTED, policy=StageDisposition.SKIPPED_NO_ACTION, monitor=StageDisposition.DISABLED, human_gate=StageDisposition.DISABLED, operation_boundary=StageDisposition.RETAINED_BOUNDARY) if mode is EvaluationMode.POLICY_ONLY else SafeguardsRecord(evidence_gate=StageDisposition.DISABLED, policy=StageDisposition.DISABLED, monitor=StageDisposition.DISABLED, human_gate=StageDisposition.DISABLED, operation_boundary=StageDisposition.RETAINED_BOUNDARY))
-            source, version = ("none", None) if mode is EvaluationMode.POLICY_ONLY else ("synthetic_not_model_exploit", f"reliability-{m.id.lower()}-observation-v1")
+            stages = (
+                SafeguardsRecord(
+                    evidence_gate=StageDisposition.EXECUTED,
+                    policy=StageDisposition.SKIPPED_NO_ACTION,
+                    monitor=StageDisposition.DISABLED,
+                    human_gate=StageDisposition.DISABLED,
+                    operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+                )
+                if mode is EvaluationMode.POLICY_ONLY
+                else SafeguardsRecord(
+                    evidence_gate=StageDisposition.DISABLED,
+                    policy=StageDisposition.DISABLED,
+                    monitor=StageDisposition.DISABLED,
+                    human_gate=StageDisposition.DISABLED,
+                    operation_boundary=StageDisposition.RETAINED_BOUNDARY,
+                )
+            )
+            source, version = (
+                ("none", None)
+                if mode is EvaluationMode.POLICY_ONLY
+                else ("synthetic_not_model_exploit", f"reliability-{m.id.lower()}-observation-v1")
+            )
         snapshot = repo.r10_r11_evaluation_snapshot(read_context)
         evidence = snapshot.records
-        counts = repo.evaluation_thread_counts(incident.incident_id, thread, incident.correlation_id)
+        counts = repo.evaluation_thread_counts(
+            incident.incident_id, thread, incident.correlation_id
+        )
         ledger_count = counts.pop("operation_ledger", 0)
         if ledger_count != snapshot.operation_ledger_count:
             raise ValueError(f"{m.id} ledger count does not match durable snapshot")
         probe = evidence[0].payload
         deferred = terminal_outcome == "deferred" and snapshot.mutation_count == 0
         if m.id == "R10":
-            facts: dict[str, object] = {"dns": {"synthetic_partner_local": {"rcode": probe.get("rcode")}}}
+            facts: dict[str, object] = {
+                "dns": {"synthetic_partner_local": {"rcode": probe.get("rcode")}}
+            }
         else:
-            facts = {"tls": {"partner": {"presented_fingerprint": probe.get("presented_fingerprint"), "pin_state_unchanged": probe.get("pin_state_unchanged")}}}
+            facts = {
+                "tls": {
+                    "partner": {
+                        "presented_fingerprint": probe.get("presented_fingerprint"),
+                        "pin_state_unchanged": probe.get("pin_state_unchanged"),
+                    }
+                }
+            }
         facts["incident"] = {"deferred": deferred}
         facts["mutation_count"] = snapshot.mutation_count
         spec = next(spec for spec in PLANNED_CHECKER_SPECS if spec.checker_id == m.final_checker)
         passed = evaluate(spec, facts)
         opening = "observability.dns_lookup" if m.id == "R10" else "observability.tls_probe"
-        return ReliabilityEvaluationResultV2(run_id=run_id, scenario_id=m.id, split=m.split, seed=m.seed, trial=trial, requested_mode=mode, effective_mode=mode, mock_evaluation=True, local_fixture=True, safeguards_applied=stages, diagnosis_statement=diagnosis, diagnosis_accepted=diagnosis in m.acceptable_diagnoses, final_checker=m.final_checker, action_attempted=False, attempted_action_tool=None, action_contract_passed=True, action_side_effect_count=0, duplicate_side_effects=0, terminal_outcome=terminal_outcome, recovery_verified=passed, final_checker_passed=passed and ledger_count == 0 and snapshot.approval_count == 0 and snapshot.next_read == 2 and tuple(x.tool_name for x in evidence) == (opening, "observability.dependency_metrics"), approval_simulation=ApprovalSimulation(decision="not_required", reason="no action", version="reliability-v2", actual_human=False, authorization_source="none"), counterfactual_strategy_source=source, counterfactual_strategy_version=version, tool_calls_by_tool=counts, tool_calls_total=sum(counts.values()), model_invocation=ModelInvocationRecord(invocation_kind="fixture_no_call"))
+        return ReliabilityEvaluationResultV2(
+            run_id=run_id,
+            scenario_id=m.id,
+            split=m.split,
+            seed=m.seed,
+            trial=trial,
+            requested_mode=mode,
+            effective_mode=mode,
+            mock_evaluation=True,
+            local_fixture=True,
+            safeguards_applied=stages,
+            diagnosis_statement=diagnosis,
+            diagnosis_accepted=diagnosis in m.acceptable_diagnoses,
+            final_checker=m.final_checker,
+            action_attempted=False,
+            attempted_action_tool=None,
+            action_contract_passed=True,
+            action_side_effect_count=0,
+            duplicate_side_effects=0,
+            terminal_outcome=terminal_outcome,
+            recovery_verified=passed,
+            final_checker_passed=passed
+            and ledger_count == 0
+            and snapshot.approval_count == 0
+            and snapshot.next_read == 2
+            and tuple(x.tool_name for x in evidence)
+            == (opening, "observability.dependency_metrics"),
+            approval_simulation=ApprovalSimulation(
+                decision="not_required",
+                reason="no action",
+                version="reliability-v2",
+                actual_human=False,
+                authorization_source="none",
+            ),
+            counterfactual_strategy_source=source,
+            counterfactual_strategy_version=version,
+            tool_calls_by_tool=counts,
+            tool_calls_total=sum(counts.values()),
+            model_invocation=ModelInvocationRecord(invocation_kind="fixture_no_call"),
+        )

@@ -28,8 +28,11 @@ def repository() -> LabRepository:
 
 def _read_context(scenario: str, thread: str) -> ToolCallContext:
     return ToolCallContext(
-        incident_id=f"INC-{scenario}", thread_id=thread, correlation_id=f"corr-{thread}",
-        actor="operator-1", permission="observability:read",
+        incident_id=f"INC-{scenario}",
+        thread_id=thread,
+        correlation_id=f"corr-{thread}",
+        actor="operator-1",
+        permission="observability:read",
     )
 
 
@@ -72,8 +75,10 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
                 "to_regclass(current_schema() || '.r10_r11_collection_evidence')"
             )
             assert cursor.fetchone() == (
-                "r09_fixture_state", "r12_fixture_state",
-                "r10_r11_collection_runs", "r10_r11_collection_evidence",
+                "r09_fixture_state",
+                "r12_fixture_state",
+                "r10_r11_collection_runs",
+                "r10_r11_collection_evidence",
             )
             cursor.execute(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
@@ -82,10 +87,14 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
             )
             definition = cursor.fetchone()[0]
             assert all(k in definition for k in ("dns_lookup", "tls_probe", "schema_validation"))
-            assert all(k in definition for k in ("database_locks", "query_plan", "credential_status"))
+            assert all(
+                k in definition for k in ("database_locks", "query_plan", "credential_status")
+            )
     finally:
         with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
-            cursor.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+            cursor.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
 
 
 def test_r09_baseline_is_the_contract_rate_and_the_limit_is_not_representable(
@@ -145,15 +154,22 @@ def test_a_violated_pin_fails_the_no_action_evidence_gate() -> None:
 
     def records(pin_unchanged: bool) -> tuple[object, ...]:
         return (
-            _Record("observability.tls_probe", {
-                "partner": "synthetic.partner.local",
-                "presented_fingerprint": "sha256:bb22",
-                "validation_error": "CERTIFICATE_VERIFY_FAILED",
-                "pin_state_unchanged": pin_unchanged,
-            }),
-            _Record("observability.dependency_metrics", {
-                "dependency": "synthetic.partner.local", "status": "failed",
-            }),
+            _Record(
+                "observability.tls_probe",
+                {
+                    "partner": "synthetic.partner.local",
+                    "presented_fingerprint": "sha256:bb22",
+                    "validation_error": "CERTIFICATE_VERIFY_FAILED",
+                    "pin_state_unchanged": pin_unchanged,
+                },
+            ),
+            _Record(
+                "observability.dependency_metrics",
+                {
+                    "dependency": "synthetic.partner.local",
+                    "status": "failed",
+                },
+            ),
         )
 
     assert validate_no_action_evidence("R11", records(True))
@@ -210,7 +226,8 @@ def test_r10_r11_collection_is_ordered_owner_bound_and_bounded(
             repository.evidence(context, opening)
         second = repository.evidence(context, "dependency_metrics")
         assert (first.tool_name, second.tool_name) == (
-            f"observability.{opening}", "observability.dependency_metrics"
+            f"observability.{opening}",
+            "observability.dependency_metrics",
         )
         with pytest.raises(ValueError, match="order mismatch"):
             repository.evidence(context, "dependency_metrics")
@@ -243,7 +260,8 @@ def test_r10_r11_resume_returns_committed_reads_without_reobserving(
         second = repository.evidence(context, "dependency_metrics")
         complete = repository.r10_r11_resume_evidence(context)
         assert [record.evidence_id for record in complete] == [
-            first.evidence_id, second.evidence_id
+            first.evidence_id,
+            second.evidence_id,
         ]
     finally:
         repository.reset_checkpoint(scenario)

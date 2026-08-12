@@ -45,17 +45,19 @@ class ModelCapability:
     thinking: ThinkingPolicy
 
 
-MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType({
-    "claude-opus-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
-    "claude-opus-4-8": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
-    "claude-opus-4-7": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
-    "claude-opus-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-    "claude-sonnet-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
-    "claude-sonnet-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-    "claude-haiku-4-5": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-    "claude-haiku-4-5-20251001": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-    "claude-fable-5": ModelCapability(accepts_sampling=False, thinking="reserve_budget"),
-})
+MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
+    {
+        "claude-opus-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
+        "claude-opus-4-8": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
+        "claude-opus-4-7": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
+        "claude-opus-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+        "claude-sonnet-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
+        "claude-sonnet-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+        "claude-haiku-4-5": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+        "claude-haiku-4-5-20251001": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+        "claude-fable-5": ModelCapability(accepts_sampling=False, thinking="reserve_budget"),
+    }
+)
 
 # An id this table has never seen fails closed on both axes. Sampling: treated as rejected, so a
 # wrong guess costs a loud ValueError at construction rather than an HTTP 400 mid-incident, and it

@@ -273,12 +273,8 @@ def run_cell(
     """Reset, kill at the boundary, recover, and diff against the golden run."""
     reset_scenario(repository, scenario)
     thread_id = f"chaos-{scenario.lower()}-{_slug(boundary)}-{uuid4().hex[:8]}"
-    result = drive(
-        dsn, scenario, thread_id, kill_at=boundary, kill_phase=_phase_of(boundary)
-    )
-    actual = enddiff.capture(
-        dsn, scenario, final_state=result.final_state, reasons=result.reasons
-    )
+    result = drive(dsn, scenario, thread_id, kill_at=boundary, kill_phase=_phase_of(boundary))
+    actual = enddiff.capture(dsn, scenario, final_state=result.final_state, reasons=result.reasons)
     diff = enddiff.compare(golden_state, actual)
     exit_codes = [run.returncode for run in result.runs]
     cell: dict[str, Any] = {
@@ -329,9 +325,7 @@ def run_golden(
     reset_scenario(repository, scenario)
     thread_id = f"chaos-{scenario.lower()}-golden-{uuid4().hex[:8]}"
     result = drive(dsn, scenario, thread_id)
-    state = enddiff.capture(
-        dsn, scenario, final_state=result.final_state, reasons=result.reasons
-    )
+    state = enddiff.capture(dsn, scenario, final_state=result.final_state, reasons=result.reasons)
     return result, state
 
 
@@ -358,9 +352,7 @@ def run_matrix(
             "phases": list(result.phases),
             "boundaries": list(result.boundaries),
             "graph_nodes": list(result.graph_nodes),
-            "unreached_graph_nodes": [
-                node for node in result.graph_nodes if node not in reached
-            ],
+            "unreached_graph_nodes": [node for node in result.graph_nodes if node not in reached],
             "terminal": {"final_state": result.final_state, "reasons": list(result.reasons)},
             "end_state": state,
         }
@@ -529,9 +521,7 @@ def _render_table(
 
 def _render_failures(report: dict[str, Any]) -> list[str]:
     failing = [
-        cell
-        for cell in report["cells"]
-        if cell.get("status") in {STATUS_FAIL, STATUS_ERROR}
+        cell for cell in report["cells"] if cell.get("status") in {STATUS_FAIL, STATUS_ERROR}
     ]
     lines = ["## Failures", ""]
     if not failing:
@@ -576,7 +566,9 @@ def _render_observations(
         }
     )
     if orphaned:
-        lines.append("- boundaries that orphan an approval: " + ", ".join(f"`{b}`" for b in orphaned))
+        lines.append(
+            "- boundaries that orphan an approval: " + ", ".join(f"`{b}`" for b in orphaned)
+        )
     lines.append("")
     return lines
 

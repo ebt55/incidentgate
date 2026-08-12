@@ -97,42 +97,61 @@ def test_r09_r12_live_matrix_has_exact_durable_tool_counts() -> None:
     r10_rows = [r for r in no_action if r.scenario_id == "R10"]
     no_action_stages = {r.requested_mode: r.safeguards_applied.model_dump() for r in r10_rows}
     assert no_action_stages[EvaluationMode.COMPLETE] == {
-        "evidence_gate": "executed", "policy": "skipped_no_action",
-        "monitor": "skipped_no_action", "human_gate": "skipped_no_action",
+        "evidence_gate": "executed",
+        "policy": "skipped_no_action",
+        "monitor": "skipped_no_action",
+        "human_gate": "skipped_no_action",
         "operation_boundary": "retained_boundary",
     }
     assert no_action_stages[EvaluationMode.POLICY_ONLY] == {
-        "evidence_gate": "executed", "policy": "skipped_no_action",
-        "monitor": "disabled", "human_gate": "disabled",
+        "evidence_gate": "executed",
+        "policy": "skipped_no_action",
+        "monitor": "disabled",
+        "human_gate": "disabled",
         "operation_boundary": "retained_boundary",
     }
     assert no_action_stages[EvaluationMode.UNGATED] == {
-        "evidence_gate": "disabled", "policy": "disabled",
-        "monitor": "disabled", "human_gate": "disabled",
+        "evidence_gate": "disabled",
+        "policy": "disabled",
+        "monitor": "disabled",
+        "human_gate": "disabled",
         "operation_boundary": "retained_boundary",
     }
     r09_rows = [r for r in action if r.scenario_id == "R09"]
     action_stages = {r.requested_mode: r.safeguards_applied.model_dump() for r in r09_rows}
     assert action_stages[EvaluationMode.COMPLETE] == {
-        "evidence_gate": "executed", "policy": "executed", "monitor": "executed",
-        "human_gate": "executed", "operation_boundary": "retained_boundary",
+        "evidence_gate": "executed",
+        "policy": "executed",
+        "monitor": "executed",
+        "human_gate": "executed",
+        "operation_boundary": "retained_boundary",
     }
     assert action_stages[EvaluationMode.POLICY_ONLY] == {
-        "evidence_gate": "executed", "policy": "executed", "monitor": "disabled",
-        "human_gate": "disabled", "operation_boundary": "retained_boundary",
+        "evidence_gate": "executed",
+        "policy": "executed",
+        "monitor": "disabled",
+        "human_gate": "disabled",
+        "operation_boundary": "retained_boundary",
     }
     assert action_stages[EvaluationMode.UNGATED] == {
-        "evidence_gate": "disabled", "policy": "disabled", "monitor": "disabled",
-        "human_gate": "disabled", "operation_boundary": "retained_boundary",
+        "evidence_gate": "disabled",
+        "policy": "disabled",
+        "monitor": "disabled",
+        "human_gate": "disabled",
+        "operation_boundary": "retained_boundary",
     }
 
     # A clean revision replays the full matrix and a mixed action/no-action subset
     # exactly, across both semantic paths.
     assert runner.replay(envelope, _manifests()).matched
     subset = runner.run(
-        _manifests()[0:2], trial=74,
+        _manifests()[0:2],
+        trial=74,
         modes=(EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED),
     )
-    assert runner.replay(
-        subset, _manifests()[0:2], (EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED)
-    ).compared_count == 4
+    assert (
+        runner.replay(
+            subset, _manifests()[0:2], (EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED)
+        ).compared_count
+        == 4
+    )

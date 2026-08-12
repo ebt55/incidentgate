@@ -30,7 +30,9 @@ TokenChange = Callable[[ApprovalToken], ApprovalToken]
 def repository() -> LabRepository:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        pytest.skip("Postgres D1 integration requires DATABASE_URL; Docker is not required for unit tests")
+        pytest.skip(
+            "Postgres D1 integration requires DATABASE_URL; Docker is not required for unit tests"
+        )
     repo = LabRepository(dsn)
     repo.migrate()
     repo.migrate()
@@ -39,7 +41,9 @@ def repository() -> LabRepository:
     return repo
 
 
-def operation(repository: LabRepository) -> tuple[ToolCallContext, Principal, CanonicalAction, ApprovalToken]:
+def operation(
+    repository: LabRepository,
+) -> tuple[ToolCallContext, Principal, CanonicalAction, ApprovalToken]:
     context = ToolCallContext(
         incident_id="INC-D1",
         thread_id="thread-d1",
@@ -130,11 +134,15 @@ def test_rollback_is_bound_atomic_and_idempotent(repository: LabRepository) -> N
     }
     assert repository.state() == {"revision": "v1", "health_status": 200, "mutation_count": 1}
     with pytest.raises(ApprovalDenied):
-        service.rollback(context.model_copy(update={"idempotency_key": uuid4()}), principal, action, token)
+        service.rollback(
+            context.model_copy(update={"idempotency_key": uuid4()}), principal, action, token
+        )
     assert repository.state()["mutation_count"] == 1
 
 
-def test_valid_approval_against_non_injected_target_is_not_consumed(repository: LabRepository) -> None:
+def test_valid_approval_against_non_injected_target_is_not_consumed(
+    repository: LabRepository,
+) -> None:
     repository.reset_d1()
     context, principal, action, token = operation(repository)
     repository.record_approval(token, "INC-D1")
@@ -182,7 +190,9 @@ def test_context_or_action_mismatch_never_mutates(
     repository.record_approval(token, "INC-D1")
     altered_context, altered_action, altered_token = change(context, action, token)
     with pytest.raises(LabError):
-        OperationsService(repository).rollback(altered_context, principal, altered_action, altered_token)
+        OperationsService(repository).rollback(
+            altered_context, principal, altered_action, altered_token
+        )
     assert_unchanged(repository)
 
 
@@ -209,10 +219,14 @@ def test_replay_rejects_substituted_context_or_token(repository: LabRepository) 
     repository.record_approval(token, "INC-D1")
     service = OperationsService(repository)
     service.rollback(context, principal, action, token)
-    retry = service.rollback(context.model_copy(update={"correlation_id": "retry-correlation"}), principal, action, token)
+    retry = service.rollback(
+        context.model_copy(update={"correlation_id": "retry-correlation"}), principal, action, token
+    )
     assert retry.context == context
     with pytest.raises(ApprovalDenied):
-        service.rollback(context.model_copy(update={"thread_id": "other"}), principal, action, token)
+        service.rollback(
+            context.model_copy(update={"thread_id": "other"}), principal, action, token
+        )
     with pytest.raises(ApprovalDenied):
         service.rollback(context, principal, action, token.model_copy(update={"approver": "other"}))
     assert repository.state()["mutation_count"] == 1
@@ -233,7 +247,8 @@ def test_unknown_or_disallowed_evidence_never_mutates(repository: LabRepository)
         OperationsService(repository).rollback(context, principal, unknown_action, unknown_token)
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "UPDATE evidence_records SET tool_name = 'observability.unsupported' WHERE evidence_id = %s",
+            "UPDATE evidence_records SET tool_name = 'observability.unsupported' WHERE evidence_id "
+            "= %s",
             (action.evidence_ids[0],),
         )
     repository.record_approval(token, "INC-D1")
@@ -242,12 +257,15 @@ def test_unknown_or_disallowed_evidence_never_mutates(repository: LabRepository)
     assert_unchanged(repository)
 
 
-def test_immutable_evidence_metadata_and_staleness_block_mutation(repository: LabRepository) -> None:
+def test_immutable_evidence_metadata_and_staleness_block_mutation(
+    repository: LabRepository,
+) -> None:
     context, principal, action, token = operation(repository)
     evidence_id = action.evidence_ids[0]
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT source_id, incident_id, thread_id, actor FROM evidence_records WHERE evidence_id = %s",
+            "SELECT source_id, incident_id, thread_id, actor FROM evidence_records WHERE "
+            "evidence_id = %s",
             (evidence_id,),
         )
         metadata = cursor.fetchone()

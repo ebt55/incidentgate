@@ -208,12 +208,30 @@ class IncidentRuntime:
         )
         observability = ObservabilityService(self._repository)
         if scenario_id in NO_ACTION_SCENARIOS:
+
             def crash_after_attempt(number: int) -> None:
                 if self._collection_crash_after_attempt == number:
                     self._collection_crash_after_attempt = None
                     raise RuntimeError("injected lab collection process loss")
-            collector = DeferredEvidenceCollector(observability, caller, context, repository=self._repository, clock=self._clock, scenario_id=scenario_id, after_attempt=crash_after_attempt if self._collection_crash_after_attempt is not None else None)
-            return build_deferred_graph(collector, LabAuditEmitter(self._repository, caller.actor), self._clock, checkpointer=self._checkpointer, telemetry=self._telemetry)
+
+            collector = DeferredEvidenceCollector(
+                observability,
+                caller,
+                context,
+                repository=self._repository,
+                clock=self._clock,
+                scenario_id=scenario_id,
+                after_attempt=crash_after_attempt
+                if self._collection_crash_after_attempt is not None
+                else None,
+            )
+            return build_deferred_graph(
+                collector,
+                LabAuditEmitter(self._repository, caller.actor),
+                self._clock,
+                checkpointer=self._checkpointer,
+                telemetry=self._telemetry,
+            )
         sources = {
             "D1": frozenset(
                 {"observability.health", "observability.deployment_diff", "observability.logs"}
@@ -222,10 +240,18 @@ class IncidentRuntime:
                 {"observability.health", "observability.config_diff", "observability.logs"}
             ),
             "D3": frozenset({"observability.health", "metrics.db_pool", "observability.logs"}),
-            "D5": frozenset({"observability.disk_metrics", "observability.log_volume", "observability.health"}),
+            "D5": frozenset(
+                {"observability.disk_metrics", "observability.log_volume", "observability.health"}
+            ),
             "D8": frozenset({"observability.health"}),
             "R01": frozenset({"observability.deployment_diff", "observability.database_schema"}),
-            "R02": frozenset({"observability.feature_flags", "observability.http_metrics", "observability.error_logs"}),
+            "R02": frozenset(
+                {
+                    "observability.feature_flags",
+                    "observability.http_metrics",
+                    "observability.error_logs",
+                }
+            ),
             "R03": frozenset({"observability.config_snapshot", "observability.error_logs"}),
             "R04": frozenset({"observability.deployment_diff", "observability.pod_inventory"}),
             "R06": frozenset({"observability.query_plan", "observability.query_metrics"}),
@@ -245,15 +271,24 @@ class IncidentRuntime:
             proposer = DeterministicD5Proposer()
         elif scenario_id == "D8":
             proposer = DeterministicD8Proposer()
-        elif scenario_id == "R01": proposer = DeterministicR01Proposer()
-        elif scenario_id == "R02": proposer = DeterministicR02Proposer()
-        elif scenario_id == "R03": proposer = DeterministicR03Proposer()
-        elif scenario_id == "R04": proposer = DeterministicR04Proposer()
-        elif scenario_id == "R06": proposer = DeterministicR06Proposer()
-        elif scenario_id == "R07": proposer = DeterministicR07Proposer()
-        elif scenario_id == "R08": proposer = DeterministicR08Proposer()
-        elif scenario_id == "R09": proposer = DeterministicR09Proposer()
-        elif scenario_id == "R12": proposer = DeterministicR12Proposer()
+        elif scenario_id == "R01":
+            proposer = DeterministicR01Proposer()
+        elif scenario_id == "R02":
+            proposer = DeterministicR02Proposer()
+        elif scenario_id == "R03":
+            proposer = DeterministicR03Proposer()
+        elif scenario_id == "R04":
+            proposer = DeterministicR04Proposer()
+        elif scenario_id == "R06":
+            proposer = DeterministicR06Proposer()
+        elif scenario_id == "R07":
+            proposer = DeterministicR07Proposer()
+        elif scenario_id == "R08":
+            proposer = DeterministicR08Proposer()
+        elif scenario_id == "R09":
+            proposer = DeterministicR09Proposer()
+        elif scenario_id == "R12":
+            proposer = DeterministicR12Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
         dependencies = WorkflowDependencies(
@@ -274,7 +309,9 @@ class IncidentRuntime:
                 caller,
                 response_loss_once=self._response_loss_once,
             ),
-            verifier=LabRecoveryVerifier(observability, caller, context, self._clock, self._repository),
+            verifier=LabRecoveryVerifier(
+                observability, caller, context, self._clock, self._repository
+            ),
             audit=LabAuditEmitter(self._repository, caller.actor),
             clock=self._clock,
             telemetry=self._telemetry,
@@ -391,7 +428,11 @@ class IncidentRuntime:
             )
         )
         trace_id, trace_url = self._trace(values)
-        attempts = self._repository.collection_attempt_numbers(incident_id, thread_id) if incident_id in {"INC-D4", "INC-D7"} else ()
+        attempts = (
+            self._repository.collection_attempt_numbers(incident_id, thread_id)
+            if incident_id in {"INC-D4", "INC-D7"}
+            else ()
+        )
         return RuntimeStatus(
             thread_id=thread_id,
             incident_id=incident_id,
@@ -478,7 +519,11 @@ class IncidentRuntime:
             )
         )
         trace_id, trace_url = self._trace(values)
-        attempts = self._repository.collection_attempt_numbers(incident_id, thread_id) if incident_id in {"INC-D4", "INC-D7"} else ()
+        attempts = (
+            self._repository.collection_attempt_numbers(incident_id, thread_id)
+            if incident_id in {"INC-D4", "INC-D7"}
+            else ()
+        )
         return RuntimeStatus(
             thread_id=thread_id,
             incident_id=incident_id,

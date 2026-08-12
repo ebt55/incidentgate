@@ -34,7 +34,8 @@ class ResponseCacheMiss(Exception):
 
 @dataclass(frozen=True)
 class ResponseCache:
-    """A directory of ``<model>/<prompt_sha256>.json`` entries, each self-describing for integrity."""
+    """A directory of ``<model>/<prompt_sha256>.json`` entries, each
+    self-describing for integrity."""
 
     root: Path
 

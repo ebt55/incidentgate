@@ -38,6 +38,14 @@ line-length = 100
 target-version = "py312"
 extend-exclude = [".uv-cache", ".venv"]
 
+[tool.ruff.lint]
+# extend-select, not select: the default rule set already in force here is broad
+# (it includes I, B, S, BLE and more -- the six existing `# noqa: BLE001` comments
+# depend on it). Replacing it with an explicit select would silently switch most of
+# that off. This only adds the one rule that was missing: line-length, which
+# line-length = 100 above had been configuring for a formatter that never ran.
+extend-select = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

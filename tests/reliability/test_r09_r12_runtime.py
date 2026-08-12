@@ -41,8 +41,13 @@ NO_ACTION_SCENARIOS = ("R10", "R11")
 # Nothing in any public surface may echo raw partner, certificate, or customer
 # material. These are the fixture's own sensitive-looking tokens.
 FORBIDDEN_TEXT = (
-    "secret", "password", "credential_value", "private_key", "customer_name",
-    "198.51.100.20", "raw fixture",
+    "secret",
+    "password",
+    "credential_value",
+    "private_key",
+    "customer_name",
+    "198.51.100.20",
+    "raw fixture",
 )
 
 
@@ -59,13 +64,22 @@ def repository() -> LabRepository:
 def _inputs(scenario: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     thread = f"{scenario.lower()}-{uuid4().hex[:12]}"
     incident = IncidentIdentity(
-        incident_id=f"INC-{scenario}", scenario_id=scenario, thread_id=thread,
+        incident_id=f"INC-{scenario}",
+        scenario_id=scenario,
+        thread_id=thread,
         correlation_id=f"corr-{thread}",
     )
     permission = "observability:read" if scenario in NO_ACTION_SCENARIOS else "operations:write"
-    return incident, Caller(actor="operator-1", role=Role.OPERATOR), ToolCallContext(
-        incident_id=incident.incident_id, thread_id=thread,
-        correlation_id=incident.correlation_id, actor="operator-1", permission=permission,
+    return (
+        incident,
+        Caller(actor="operator-1", role=Role.OPERATOR),
+        ToolCallContext(
+            incident_id=incident.incident_id,
+            thread_id=thread,
+            correlation_id=incident.correlation_id,
+            actor="operator-1",
+            permission=permission,
+        ),
     )
 
 
@@ -174,7 +188,8 @@ def test_r10_r11_defer_with_zero_authority_and_resume_after_process_loss(
         )
         records = repository.r10_r11_resume_evidence(context)
         assert [record.tool_name for record in records] == [
-            opening, "observability.dependency_metrics"
+            opening,
+            "observability.dependency_metrics",
         ]
         # The resumed run must not have re-probed: exactly two durable reads.
         assert len(records) == 2
@@ -211,8 +226,13 @@ def test_r09_r12_telemetry_uses_safe_workflow_trace(
         spans = [s for s in exporter.get_finished_spans() if s.name.startswith(scenario.lower())]
         assert spans and len({span.context.trace_id for span in spans}) == 1
         allowed = {
-            "incident_id", "thread_id", "correlation_id", "actor", "permission",
-            "action_hash", "idempotency_key",
+            "incident_id",
+            "thread_id",
+            "correlation_id",
+            "actor",
+            "permission",
+            "action_hash",
+            "idempotency_key",
         }
         assert all(set(span.attributes) <= allowed for span in spans)
         rendered = str([span.attributes for span in spans]).lower()
@@ -227,46 +247,68 @@ def test_r09_r12_telemetry_uses_safe_workflow_trace(
     ("scenario", "reads", "operation", "proposer", "bad_argument", "other_operation"),
     (
         (
-            "R09", ("dependency_metrics", "error_logs"), "enable_partner_backoff_60s",
-            DeterministicR09Proposer, ("backoff_seconds", 3600),
+            "R09",
+            ("dependency_metrics", "error_logs"),
+            "enable_partner_backoff_60s",
+            DeterministicR09Proposer,
+            ("backoff_seconds", 3600),
             "activate_local_response_adapter_3_8_3",
         ),
         (
-            "R12", ("schema_validation", "deployment_diff"),
-            "activate_local_response_adapter_3_8_3", DeterministicR12Proposer,
-            ("response_adapter", "remote-9.9.9"), "enable_partner_backoff_60s",
+            "R12",
+            ("schema_validation", "deployment_diff"),
+            "activate_local_response_adapter_3_8_3",
+            DeterministicR12Proposer,
+            ("response_adapter", "remote-9.9.9"),
+            "enable_partner_backoff_60s",
         ),
     ),
 )
 async def test_public_fastmcp_r09_r12_capabilities_and_safe_denials(
-    repository: LabRepository, scenario: str, reads: tuple[str, ...], operation: str,
-    proposer: type[object], bad_argument: tuple[str, object], other_operation: str,
+    repository: LabRepository,
+    scenario: str,
+    reads: tuple[str, ...],
+    operation: str,
+    proposer: type[object],
+    bad_argument: tuple[str, object],
+    other_operation: str,
 ) -> None:
     """Forged context, forged arguments, and cross-tool substitution are all refused."""
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, write_context = _inputs(scenario)
     read_context = write_context.model_copy(update={"permission": "observability:read"})
-    observe = observability_server(ObservabilityService(repository), Principal("operator-1", Role.OPERATOR))
-    execute = operations_server(OperationsService(repository), Principal("operator-1", Role.OPERATOR))
+    observe = observability_server(
+        ObservabilityService(repository), Principal("operator-1", Role.OPERATOR)
+    )
+    execute = operations_server(
+        OperationsService(repository), Principal("operator-1", Role.OPERATOR)
+    )
     try:
         assert set(reads) <= {tool.name for tool in await observe.list_tools()}
         assert operation in {tool.name for tool in await execute.list_tools()}
         records = [
             EvidenceRecord.model_validate(
-                (await observe.call_tool(name, {"context": read_context.model_dump(mode="json")}))[1]
+                (await observe.call_tool(name, {"context": read_context.model_dump(mode="json")}))[
+                    1
+                ]
             )
             for name in reads
         ]
         _, action = proposer().propose(incident, caller, write_context, tuple(records))  # type: ignore[operator]
         now = datetime.now(UTC)
         token = ApprovalService(
-            repository, lambda: now, incident_id=incident.incident_id,
+            repository,
+            lambda: now,
+            incident_id=incident.incident_id,
             thread_id=incident.thread_id,
         ).approve(
             ApprovalRequest(
-                action_hash=canonical_action_hash(action), actor=caller.actor, requested_at=now,
-                expires_at=now + timedelta(minutes=5), one_time_use_id=uuid4(),
+                action_hash=canonical_action_hash(action),
+                actor=caller.actor,
+                requested_at=now,
+                expires_at=now + timedelta(minutes=5),
+                one_time_use_id=uuid4(),
             ),
             Principal("approver-1", Role.APPROVER),
         )
@@ -276,7 +318,9 @@ async def test_public_fastmcp_r09_r12_capabilities_and_safe_denials(
             "action": action.model_dump(mode="json"),
             "token": token.model_dump(mode="json"),
         }
-        denied = operations_server(OperationsService(repository), Principal("observer-1", Role.OBSERVER))
+        denied = operations_server(
+            OperationsService(repository), Principal("observer-1", Role.OBSERVER)
+        )
         with pytest.raises(ToolError):
             await denied.call_tool(operation, payload)
         malformed = action.model_dump(mode="json")
@@ -285,7 +329,8 @@ async def test_public_fastmcp_r09_r12_capabilities_and_safe_denials(
             await execute.call_tool(operation, {**payload, "action": malformed})
         with pytest.raises(ToolError):
             await execute.call_tool(
-                operation, {**payload, "context": {**payload["context"], "thread_id": "forged-thread"}}
+                operation,
+                {**payload, "context": {**payload["context"], "thread_id": "forged-thread"}},
             )
         with pytest.raises(ToolError):
             await execute.call_tool(
@@ -320,7 +365,9 @@ async def test_r10_r11_fastmcp_exposes_only_ordered_read_capabilities(
     repository.inject_checkpoint(scenario)
     incident, _, context = _inputs(scenario)
     opening = "dns_lookup" if scenario == "R10" else "tls_probe"
-    server = observability_server(ObservabilityService(repository), Principal("operator-1", Role.OPERATOR))
+    server = observability_server(
+        ObservabilityService(repository), Principal("operator-1", Role.OPERATOR)
+    )
     try:
         names = {tool.name for tool in await server.list_tools()}
         assert {opening, "dependency_metrics"} <= names
@@ -339,7 +386,8 @@ async def test_r10_r11_fastmcp_exposes_only_ordered_read_capabilities(
             "dependency_metrics", {"context": context.model_dump(mode="json")}
         )
         assert EvidenceRecord.model_validate(second[1]).payload == {
-            "dependency": "synthetic.partner.local", "status": "failed",
+            "dependency": "synthetic.partner.local",
+            "status": "failed",
         }
         assert repository.operation_count(incident.incident_id) == 0
     finally:
@@ -394,11 +442,28 @@ def test_r09_r12_fresh_host_pending_role_nonce_and_safe_text(
         assert f"Proposed action: {proposed};" in pending.text
         assert "from v2 to" not in pending.text
         lowered = pending.text.lower()
-        assert all(word not in lowered for word in ("approval token", "idempotency", *FORBIDDEN_TEXT))
-        assert fresh.post(f"/threads/{thread}/{decision}", headers={"X-Incidentgate-Actor": "operator-1"}).status_code == 403
-        form_nonce = pending.text.split("name='nonce' value='")[1 if decision == "approve" else 2].split("'")[0]
-        assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}, follow_redirects=False).status_code == 303
-        assert fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}).status_code == 403
+        assert all(
+            word not in lowered for word in ("approval token", "idempotency", *FORBIDDEN_TEXT)
+        )
+        assert (
+            fresh.post(
+                f"/threads/{thread}/{decision}", headers={"X-Incidentgate-Actor": "operator-1"}
+            ).status_code
+            == 403
+        )
+        form_nonce = pending.text.split("name='nonce' value='")[
+            1 if decision == "approve" else 2
+        ].split("'")[0]
+        assert (
+            fresh.post(
+                f"/threads/{thread}/{decision}", data={"nonce": form_nonce}, follow_redirects=False
+            ).status_code
+            == 303
+        )
+        assert (
+            fresh.post(f"/threads/{thread}/{decision}", data={"nonce": form_nonce}).status_code
+            == 403
+        )
         assert repository.operation_count(f"INC-{scenario}") == (1 if decision == "approve" else 0)
     finally:
         repository.reset_checkpoint(scenario)
@@ -422,7 +487,9 @@ def test_r10_r11_fresh_host_terminal_page_states_the_local_referral(
         thread = prepared.headers["location"].split("/")[2]
         prompt = client.get(f"/incidents/{thread}/start")
         start_nonce = prompt.text.split("name='nonce' value='")[1].split("'")[0]
-        client.post(f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False)
+        client.post(
+            f"/incidents/{thread}/start", data={"nonce": start_nonce}, follow_redirects=False
+        )
         fresh = TestClient(create_host_app(HostSettings(database_url=repository.dsn)))
         fresh.post("/mock-login", data={"actor": "approver-1"})
         page = fresh.get(f"/threads/{thread}").text

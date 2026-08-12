@@ -43,18 +43,47 @@ class ObservabilityAdapter:
     def retry_metadata(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
         return self.service.get(context, principal, "retry_metadata")
 
-    def database_schema(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "database_schema")
-    def feature_flags(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "feature_flags")
-    def http_metrics(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "http_metrics")
-    def config_snapshot(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "config_snapshot")
-    def pod_inventory(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "pod_inventory")
-    def database_locks(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "database_locks")
-    def query_metrics(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "query_metrics")
-    def query_plan(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "query_plan")
-    def replica_status(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "replica_status")
-    def request_routing(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "request_routing")
-    def credential_status(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "credential_status")
-    def database_health(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "database_health")
-    def dns_lookup(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "dns_lookup")
-    def tls_probe(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "tls_probe")
-    def schema_validation(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord: return self.service.get(context, principal, "schema_validation")
+    def database_schema(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "database_schema")
+
+    def feature_flags(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "feature_flags")
+
+    def http_metrics(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "http_metrics")
+
+    def config_snapshot(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "config_snapshot")
+
+    def pod_inventory(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "pod_inventory")
+
+    def database_locks(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "database_locks")
+
+    def query_metrics(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "query_metrics")
+
+    def query_plan(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "query_plan")
+
+    def replica_status(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "replica_status")
+
+    def request_routing(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "request_routing")
+
+    def credential_status(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "credential_status")
+
+    def database_health(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "database_health")
+
+    def dns_lookup(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "dns_lookup")
+
+    def tls_probe(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "tls_probe")
+
+    def schema_validation(self, context: ToolCallContext, principal: Principal) -> EvidenceRecord:
+        return self.service.get(context, principal, "schema_validation")

@@ -46,7 +46,27 @@ class DeterministicPolicyEngine:
                         reasons.append(f"argument_constraint:{key}")
                 elif name == "max_bytes" and int(arguments.get(name, -1)) != int(constraint):
                     reasons.append("argument_constraint:max_bytes")
-                elif name in {"component", "cleanup_scope", "schema_version", "flag", "enabled", "variable_name", "value", "config_version", "old_pods", "new_pods", "index", "routing", "active_id", "backoff_seconds", "response_adapter"} and arguments.get(name) != constraint:
+                elif (
+                    name
+                    in {
+                        "component",
+                        "cleanup_scope",
+                        "schema_version",
+                        "flag",
+                        "enabled",
+                        "variable_name",
+                        "value",
+                        "config_version",
+                        "old_pods",
+                        "new_pods",
+                        "index",
+                        "routing",
+                        "active_id",
+                        "backoff_seconds",
+                        "response_adapter",
+                    }
+                    and arguments.get(name) != constraint
+                ):
                     reasons.append(f"argument_constraint:{name}")
                 elif name.endswith("_prefix"):
                     key = name.removesuffix("_prefix")

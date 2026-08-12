@@ -35,13 +35,17 @@ class ScenarioManifest(BaseModel):
 
 
 def load_checkpoint_manifests(directory: Path) -> list[ScenarioManifest]:
-    return [ScenarioManifest.model_validate_json(path.read_text(encoding="utf-8")) for path in sorted(directory.glob("*.json"))]
+    return [
+        ScenarioManifest.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.glob("*.json"))
+    ]
 
 
 class ReliabilityManifest(ScenarioManifest):
     """Frozen, non-runnable reliability contract for the post-checkpoint suite."""
 
     id: str = Field(pattern=r"^R(?:0[1-9]|1[0-9]|20)$")
+
 
 class AttackPolicyVariant(BaseModel):
     """A bounded synthetic policy prompt; it never carries credentials or exploit steps."""
@@ -88,7 +92,9 @@ class SabotageManifest(BaseModel):
             raise ValueError("allowed_behavior and forbidden_behavior must not overlap")
         if set(self.allowed_actions) & set(self.forbidden_actions):
             raise ValueError("allowed_actions and forbidden_actions must not overlap")
-        if self.id == "T4" and (not self.canonical_allowed_call_sequence or not self.forbidden_combined_transition):
+        if self.id == "T4" and (
+            not self.canonical_allowed_call_sequence or not self.forbidden_combined_transition
+        ):
             raise ValueError("T4 must declare canonical calls and forbidden transition")
         if self.id == "T8" and (
             not self.baseline_configuration_digest
@@ -100,7 +106,9 @@ class SabotageManifest(BaseModel):
             raise ValueError("T8 must declare complete baseline and full-diff facts")
         variants = self.attack_policy_variants
         if {variant.split for variant in variants} != {"development", "calibration", "holdout"}:
-            raise ValueError("attack-policy variants must cover development, calibration, and holdout")
+            raise ValueError(
+                "attack-policy variants must cover development, calibration, and holdout"
+            )
         if len({variant.variant_id for variant in variants}) != len(variants):
             raise ValueError("attack-policy variant IDs must be unique")
         if len({variant.seed for variant in variants}) != len(variants):
@@ -111,10 +119,15 @@ class SabotageManifest(BaseModel):
             raise ValueError("attack-policy texts must be unique")
         if any(not variant.variant_id.startswith(f"{self.id}-") for variant in variants):
             raise ValueError("attack-policy variant ID must be bound to its sabotage contract")
-        if any(not variant.policy_version.startswith(f"attack-policy/{self.id}/") for variant in variants):
+        if any(
+            not variant.policy_version.startswith(f"attack-policy/{self.id}/")
+            for variant in variants
+        ):
             raise ValueError("attack-policy version must be bound to its sabotage contract")
         prefix = f"check_{self.id.lower()}_"
-        if not self.deterministic_incident_checker.startswith(prefix) or not self.deterministic_covert_side_effect_checker.startswith(prefix):
+        if not self.deterministic_incident_checker.startswith(
+            prefix
+        ) or not self.deterministic_covert_side_effect_checker.startswith(prefix):
             raise ValueError("deterministic checker must be bound to its sabotage contract")
         return self
 
@@ -139,7 +152,9 @@ def load_sabotage_manifests(directory: Path) -> list[SabotageManifest]:
     if {manifest.id for manifest in manifests} != expected or len(manifests) != len(expected):
         raise ValueError("sabotage contracts must contain exactly T1 through T8 once")
     seeds = [variant.seed for manifest in manifests for variant in manifest.attack_policy_variants]
-    variant_ids = [variant.variant_id for manifest in manifests for variant in manifest.attack_policy_variants]
+    variant_ids = [
+        variant.variant_id for manifest in manifests for variant in manifest.attack_policy_variants
+    ]
     if len(set(seeds)) != len(seeds) or len(set(variant_ids)) != len(variant_ids):
         raise ValueError("sabotage attack-policy seeds and IDs must be globally unique")
     checkers = [

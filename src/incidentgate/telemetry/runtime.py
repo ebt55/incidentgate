@@ -23,14 +23,42 @@ except ImportError:  # pragma: no cover - exercised only in minimal installs
     Resource = Any  # type: ignore[misc,assignment]
 
 SPAN_NAMES = (
-    *(f"d{scenario}.{phase}" for scenario in range(1, 4) for phase in ("workflow", "policy", "monitor", "approval", "verification")),
-    *(f"d{scenario}.{phase}" for scenario in (5, 8) for phase in ("workflow", "policy", "monitor", "approval", "verification")),
-    *(f"r{scenario:02d}.{phase}" for scenario in range(1, 5) for phase in ("workflow", "policy", "monitor", "approval", "verification")),
-    *(f"r{scenario:02d}.{phase}" for scenario in range(6, 9) for phase in ("workflow", "policy", "monitor", "approval", "verification")),
-    *(f"r{scenario:02d}.{phase}" for scenario in (9, 12) for phase in ("workflow", "policy", "monitor", "approval", "verification")),
-    *(f"r{scenario:02d}.{phase}" for scenario in (5, 10, 11) for phase in ("workflow", "collection")),
+    *(
+        f"d{scenario}.{phase}"
+        for scenario in range(1, 4)
+        for phase in ("workflow", "policy", "monitor", "approval", "verification")
+    ),
+    *(
+        f"d{scenario}.{phase}"
+        for scenario in (5, 8)
+        for phase in ("workflow", "policy", "monitor", "approval", "verification")
+    ),
+    *(
+        f"r{scenario:02d}.{phase}"
+        for scenario in range(1, 5)
+        for phase in ("workflow", "policy", "monitor", "approval", "verification")
+    ),
+    *(
+        f"r{scenario:02d}.{phase}"
+        for scenario in range(6, 9)
+        for phase in ("workflow", "policy", "monitor", "approval", "verification")
+    ),
+    *(
+        f"r{scenario:02d}.{phase}"
+        for scenario in (9, 12)
+        for phase in ("workflow", "policy", "monitor", "approval", "verification")
+    ),
+    *(
+        f"r{scenario:02d}.{phase}"
+        for scenario in (5, 10, 11)
+        for phase in ("workflow", "collection")
+    ),
     *(f"d{scenario}.{phase}" for scenario in (4, 7) for phase in ("workflow", "collection")),
-    *(f"{scenario}.{phase}" for scenario in ("d6", "s1", "s2") for phase in ("workflow", "collection")),
+    *(
+        f"{scenario}.{phase}"
+        for scenario in ("d6", "s1", "s2")
+        for phase in ("workflow", "collection")
+    ),
     "mcp.observability",
     "mcp.operations",
     "mcp.tickets",
@@ -44,7 +72,16 @@ _ALLOWED = {
     "action_hash",
     "idempotency_key",
 }
-_SECRET_WORDS = ("secret", "token", "api_key", "apikey", "password", "prompt", "raw_log", "ticket_body")
+_SECRET_WORDS = (
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "password",
+    "prompt",
+    "raw_log",
+    "ticket_body",
+)
 _MAX_LENGTH = 256
 _TRACEPARENT = re.compile(r"^[\da-f]{2}-[\da-f]{32}-[\da-f]{16}-[\da-f]{2}$", re.IGNORECASE)
 _CARRIER_KEYS = frozenset({"traceparent", "tracestate"})
@@ -52,10 +89,14 @@ _MAX_TRACESTATE_LENGTH = 512
 
 
 def _safe_scalar(value: Any) -> bool:
-    return isinstance(value, (str, int, float, bool)) and not isinstance(value, (bytes, list, dict, tuple, set))
+    return isinstance(value, (str, int, float, bool)) and not isinstance(
+        value, (bytes, list, dict, tuple, set)
+    )
 
 
-def sanitize_attributes(attributes: Mapping[str, Any] | None) -> dict[str, str | int | float | bool]:
+def sanitize_attributes(
+    attributes: Mapping[str, Any] | None,
+) -> dict[str, str | int | float | bool]:
     """Keep only bounded, known scalar attributes; silently drop sensitive data."""
     if not attributes:
         return {}
@@ -65,7 +106,9 @@ def sanitize_attributes(attributes: Mapping[str, Any] | None) -> dict[str, str |
             continue
         if not _safe_scalar(value):
             continue
-        if key == "action_hash" and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
+        if key == "action_hash" and (
+            not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+        ):
             continue
         if key == "idempotency_key":
             if not isinstance(value, str) or len(value) > _MAX_LENGTH:
@@ -74,7 +117,9 @@ def sanitize_attributes(attributes: Mapping[str, Any] | None) -> dict[str, str |
                 UUID(value)
             except ValueError:
                 continue
-        if key in {"incident_id", "thread_id", "correlation_id", "actor", "permission"} and (not isinstance(value, str) or len(value) > _MAX_LENGTH):
+        if key in {"incident_id", "thread_id", "correlation_id", "actor", "permission"} and (
+            not isinstance(value, str) or len(value) > _MAX_LENGTH
+        ):
             continue
         if isinstance(value, str):
             if len(value) > _MAX_LENGTH or any(word in value.lower() for word in _SECRET_WORDS):
@@ -100,7 +145,13 @@ class TelemetryConfig:
 class TelemetryRuntime:
     """Owns a provider and exposes explicit lifecycle operations."""
 
-    def __init__(self, provider: TracerProvider, tracer: Any, processors: tuple[SpanProcessor, ...] = (), client: Any = None) -> None:
+    def __init__(
+        self,
+        provider: TracerProvider,
+        tracer: Any,
+        processors: tuple[SpanProcessor, ...] = (),
+        client: Any = None,
+    ) -> None:
         self.provider = provider
         self.tracer = tracer
         self.processors = processors
@@ -184,9 +235,15 @@ def create_tracer_runtime(
         raise RuntimeError("OpenTelemetry SDK is required to create a telemetry runtime")
     cfg = config or TelemetryConfig()
     selected = processors if processors is not None else cfg.processors
-    if cfg.external and not all((cfg.langfuse_public_key, cfg.langfuse_secret_key, cfg.langfuse_base_url)):
-        raise ValueError("external telemetry requires Langfuse public key, secret key, and base URL")
-    sdk_provider = provider or TracerProvider(resource=Resource.create({"service.name": cfg.service_name}))
+    if cfg.external and not all(
+        (cfg.langfuse_public_key, cfg.langfuse_secret_key, cfg.langfuse_base_url)
+    ):
+        raise ValueError(
+            "external telemetry requires Langfuse public key, secret key, and base URL"
+        )
+    sdk_provider = provider or TracerProvider(
+        resource=Resource.create({"service.name": cfg.service_name})
+    )
     for processor in selected:
         sdk_provider.add_span_processor(processor)
     client = None
@@ -194,8 +251,14 @@ def create_tracer_runtime(
         factory = langfuse_factory
         if factory is None:
             from langfuse import Langfuse
+
             factory = Langfuse
-        client = factory(public_key=cfg.langfuse_public_key, secret_key=cfg.langfuse_secret_key, base_url=cfg.langfuse_base_url, tracer_provider=sdk_provider)
+        client = factory(
+            public_key=cfg.langfuse_public_key,
+            secret_key=cfg.langfuse_secret_key,
+            base_url=cfg.langfuse_base_url,
+            tracer_provider=sdk_provider,
+        )
     tracer = sdk_provider.get_tracer(cfg.service_name)
     return TelemetryRuntime(sdk_provider, tracer, tuple(selected), client)
 

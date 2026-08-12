@@ -138,7 +138,9 @@ def test_reliability_response_loss_replays_one_durable_operation(
 
 
 @pytest.mark.parametrize("scenario", ("R01", "R02", "R03", "R04"))
-def test_reliability_phase_trace_is_one_safe_chain(repository: LabRepository, scenario: str) -> None:
+def test_reliability_phase_trace_is_one_safe_chain(
+    repository: LabRepository, scenario: str
+) -> None:
     repository.reset_checkpoint(scenario)
     repository.inject_checkpoint(scenario)
     incident, caller, context = _inputs(scenario)

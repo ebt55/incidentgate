@@ -91,38 +91,126 @@ class WorkflowDependencies:
 
 
 def build_deferred_graph(
-    collector: EvidenceCollector, audit: AuditEmitter, clock: Callable[[], datetime], *, checkpointer: Any = None, telemetry: TelemetryRuntime | None = None
+    collector: EvidenceCollector,
+    audit: AuditEmitter,
+    clock: Callable[[], datetime],
+    *,
+    checkpointer: Any = None,
+    telemetry: TelemetryRuntime | None = None,
 ) -> Any:
     """A collection-only graph for fixed no-action scenarios D4/D7."""
+
     def collect(state: WorkflowState) -> WorkflowState:
         incident, context = state["incident"], state["context"]
         caller = state["caller"]
-        if (context.incident_id != incident.incident_id or context.thread_id != incident.thread_id
-                or context.correlation_id != incident.correlation_id or context.actor != caller.actor
-                or context.permission != "observability:read" or context.idempotency_key is not None):
-            return {"result": WorkflowResult(final_state="blocked", reasons=("collection_context_mismatch",))}
+        if (
+            context.incident_id != incident.incident_id
+            or context.thread_id != incident.thread_id
+            or context.correlation_id != incident.correlation_id
+            or context.actor != caller.actor
+            or context.permission != "observability:read"
+            or context.idempotency_key is not None
+        ):
+            return {
+                "result": WorkflowResult(
+                    final_state="blocked", reasons=("collection_context_mismatch",)
+                )
+            }
         span = f"{incident.scenario_id.lower()}.collection"
-        with (telemetry.start_as_current_span(span, attributes={"incident_id": incident.incident_id, "thread_id": incident.thread_id, "correlation_id": incident.correlation_id, "actor": context.actor, "permission": context.permission}) if telemetry else nullcontext()):
+        with (
+            telemetry.start_as_current_span(
+                span,
+                attributes={
+                    "incident_id": incident.incident_id,
+                    "thread_id": incident.thread_id,
+                    "correlation_id": incident.correlation_id,
+                    "actor": context.actor,
+                    "permission": context.permission,
+                },
+            )
+            if telemetry
+            else nullcontext()
+        ):
             records = collector.collect(incident)
         if not validate_no_action_evidence(incident.scenario_id, records):
-            reason = str(getattr(collector, "deferred_reason", "no_action_evidence_validation_failed"))
+            reason = str(
+                getattr(collector, "deferred_reason", "no_action_evidence_validation_failed")
+            )
             final_state = str(getattr(collector, "final_state", "blocked"))
             if final_state != "blocked" and reason == "time_budget_exhausted":
                 terminal = IncidentState(final_state)
-                audit.emit(audit_event("collection_deferred", incident_id=incident.incident_id, thread_id=incident.thread_id, now=clock(), reason=reason))
-                return {"records": records, "result": WorkflowResult(final_state=final_state, reasons=(reason,), evidence_ids=tuple(record.evidence_id for record in records), report=IncidentReport(incident=incident.model_copy(update={"state": terminal}), diagnosis="stale health evidence", hypotheses=(), evidence_ids=tuple(record.evidence_id for record in records), final_state=terminal))}
-            return {"records": records, "result": WorkflowResult(final_state="blocked", reasons=("no_action_evidence_validation_failed",), evidence_ids=tuple(record.evidence_id for record in records))}
+                audit.emit(
+                    audit_event(
+                        "collection_deferred",
+                        incident_id=incident.incident_id,
+                        thread_id=incident.thread_id,
+                        now=clock(),
+                        reason=reason,
+                    )
+                )
+                return {
+                    "records": records,
+                    "result": WorkflowResult(
+                        final_state=final_state,
+                        reasons=(reason,),
+                        evidence_ids=tuple(record.evidence_id for record in records),
+                        report=IncidentReport(
+                            incident=incident.model_copy(update={"state": terminal}),
+                            diagnosis="stale health evidence",
+                            hypotheses=(),
+                            evidence_ids=tuple(record.evidence_id for record in records),
+                            final_state=terminal,
+                        ),
+                    ),
+                }
+            return {
+                "records": records,
+                "result": WorkflowResult(
+                    final_state="blocked",
+                    reasons=("no_action_evidence_validation_failed",),
+                    evidence_ids=tuple(record.evidence_id for record in records),
+                ),
+            }
         metadata = NO_ACTION_CATALOG[incident.scenario_id]
         diagnosis = str(getattr(collector, "diagnosis", metadata["diagnosis"]))
         reason = str(getattr(collector, "deferred_reason", metadata["reason"]))
         final_state = str(getattr(collector, "final_state", metadata["state"]))
         terminal = IncidentState(final_state)
-        audit.emit(audit_event(str(metadata["audit"]), incident_id=incident.incident_id, thread_id=incident.thread_id, now=clock(), reason=reason))
+        audit.emit(
+            audit_event(
+                str(metadata["audit"]),
+                incident_id=incident.incident_id,
+                thread_id=incident.thread_id,
+                now=clock(),
+                reason=reason,
+            )
+        )
         confidence = metadata["confidence"]
         assert isinstance(confidence, float)
-        hypothesis = Hypothesis(hypothesis_id=f"{incident.scenario_id.lower()}-deferred", statement=diagnosis, confidence=confidence, evidence_ids=tuple(record.evidence_id for record in records))
-        report = IncidentReport(incident=incident.model_copy(update={"state": terminal}), diagnosis=diagnosis, hypotheses=(hypothesis,), evidence_ids=hypothesis.evidence_ids, final_state=terminal)
-        return {"records": records, "result": WorkflowResult(final_state=final_state, reasons=(reason,), evidence_ids=hypothesis.evidence_ids, hypothesis=hypothesis, report=report)}
+        hypothesis = Hypothesis(
+            hypothesis_id=f"{incident.scenario_id.lower()}-deferred",
+            statement=diagnosis,
+            confidence=confidence,
+            evidence_ids=tuple(record.evidence_id for record in records),
+        )
+        report = IncidentReport(
+            incident=incident.model_copy(update={"state": terminal}),
+            diagnosis=diagnosis,
+            hypotheses=(hypothesis,),
+            evidence_ids=hypothesis.evidence_ids,
+            final_state=terminal,
+        )
+        return {
+            "records": records,
+            "result": WorkflowResult(
+                final_state=final_state,
+                reasons=(reason,),
+                evidence_ids=hypothesis.evidence_ids,
+                hypothesis=hypothesis,
+                report=report,
+            ),
+        }
+
     graph = StateGraph(WorkflowState)
     graph.add_node("collect", collect)
     graph.add_edge(START, "collect")
@@ -181,20 +269,43 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         """Map only the three supported fixed identities to telemetry names."""
         incident = state.get("incident")
         scenario_id = getattr(incident, "scenario_id", None)
-        if scenario_id not in {"D1", "D2", "D3", "D5", "D8", "R01", "R02", "R03", "R04", "R06", "R07", "R08", "R09", "R12"}:
+        if scenario_id not in {
+            "D1",
+            "D2",
+            "D3",
+            "D5",
+            "D8",
+            "R01",
+            "R02",
+            "R03",
+            "R04",
+            "R06",
+            "R07",
+            "R08",
+            "R09",
+            "R12",
+        }:
             raise ValueError("unsupported checkpoint scenario")
         return f"{scenario_id.lower()}.{phase}"
 
     def ingest(state: WorkflowState) -> WorkflowState:
         incident, context, caller = state["incident"], state["context"], state["caller"]
         if incident.thread_id != context.thread_id:
-            return {"result": WorkflowResult(final_state="blocked", reasons=("thread_context_mismatch",))}
+            return {
+                "result": WorkflowResult(
+                    final_state="blocked", reasons=("thread_context_mismatch",)
+                )
+            }
         if incident.incident_id != context.incident_id:
             return {
-                "result": WorkflowResult(final_state="blocked", reasons=("incident_context_mismatch",))
+                "result": WorkflowResult(
+                    final_state="blocked", reasons=("incident_context_mismatch",)
+                )
             }
         if caller.actor != context.actor:
-            return {"result": WorkflowResult(final_state="blocked", reasons=("caller_actor_mismatch",))}
+            return {
+                "result": WorkflowResult(final_state="blocked", reasons=("caller_actor_mismatch",))
+            }
         return {}
 
     def collect(state: WorkflowState) -> WorkflowState:

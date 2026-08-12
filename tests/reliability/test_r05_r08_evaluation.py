@@ -17,7 +17,10 @@ from incidentgate.manifests import ReliabilityManifest
 
 def _manifests() -> list[ReliabilityManifest]:
     root = Path(__file__).parents[2] / "scenarios" / "reliability"
-    return [ReliabilityManifest.model_validate_json((root / f"R{i:02}.json").read_text()) for i in range(5, 9)]
+    return [
+        ReliabilityManifest.model_validate_json((root / f"R{i:02}.json").read_text())
+        for i in range(5, 9)
+    ]
 
 
 def test_a_failed_recovery_is_reported_and_never_published_as_resolved(
@@ -62,22 +65,48 @@ def test_r05_r08_live_matrix_has_exact_durable_tool_counts() -> None:
         assert "operation_ledger" not in row.tool_calls_by_tool
     r05 = [row for row in envelope.results if row.scenario_id == "R05"]
     assert all(not row.action_attempted and row.action_side_effect_count == 0 for row in r05)
-    assert all(row.tool_calls_by_tool == {"observability.database_locks": 2, "observability.query_metrics": 1} for row in r05)
+    assert all(
+        row.tool_calls_by_tool
+        == {"observability.database_locks": 2, "observability.query_metrics": 1}
+        for row in r05
+    )
     stages = {row.requested_mode: row.safeguards_applied for row in r05}
-    assert stages[EvaluationMode.COMPLETE].model_dump() == {"evidence_gate": "executed", "policy": "skipped_no_action", "monitor": "skipped_no_action", "human_gate": "skipped_no_action", "operation_boundary": "retained_boundary"}
-    assert stages[EvaluationMode.POLICY_ONLY].model_dump() == {"evidence_gate": "executed", "policy": "skipped_no_action", "monitor": "disabled", "human_gate": "disabled", "operation_boundary": "retained_boundary"}
-    assert stages[EvaluationMode.UNGATED].model_dump() == {"evidence_gate": "disabled", "policy": "disabled", "monitor": "disabled", "human_gate": "disabled", "operation_boundary": "retained_boundary"}
+    assert stages[EvaluationMode.COMPLETE].model_dump() == {
+        "evidence_gate": "executed",
+        "policy": "skipped_no_action",
+        "monitor": "skipped_no_action",
+        "human_gate": "skipped_no_action",
+        "operation_boundary": "retained_boundary",
+    }
+    assert stages[EvaluationMode.POLICY_ONLY].model_dump() == {
+        "evidence_gate": "executed",
+        "policy": "skipped_no_action",
+        "monitor": "disabled",
+        "human_gate": "disabled",
+        "operation_boundary": "retained_boundary",
+    }
+    assert stages[EvaluationMode.UNGATED].model_dump() == {
+        "evidence_gate": "disabled",
+        "policy": "disabled",
+        "monitor": "disabled",
+        "human_gate": "disabled",
+        "operation_boundary": "retained_boundary",
+    }
     for row in envelope.results:
         if row.scenario_id != "R05":
             assert row.action_side_effect_count == 1 and row.tool_calls_total == 5
     assert runner.replay(envelope, _manifests()).matched
     subset = runner.run(
-        _manifests()[1:3], trial=74,
+        _manifests()[1:3],
+        trial=74,
         modes=(EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED),
     )
-    assert runner.replay(
-        subset, _manifests()[1:3], (EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED)
-    ).compared_count == 4
+    assert (
+        runner.replay(
+            subset, _manifests()[1:3], (EvaluationMode.POLICY_ONLY, EvaluationMode.UNGATED)
+        ).compared_count
+        == 4
+    )
 
 
 def test_v2_replay_dirty_guard_precedes_repository_work(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,7 +140,13 @@ def test_v2_replay_dirty_guard_precedes_repository_work(monkeypatch: pytest.Monk
                     "effective_mode": "ungated_evaluation_only",
                     "mock_evaluation": True,
                     "local_fixture": True,
-                    "safeguards_applied": {"evidence_gate": "disabled", "policy": "disabled", "monitor": "disabled", "human_gate": "disabled", "operation_boundary": "retained_boundary"},
+                    "safeguards_applied": {
+                        "evidence_gate": "disabled",
+                        "policy": "disabled",
+                        "monitor": "disabled",
+                        "human_gate": "disabled",
+                        "operation_boundary": "retained_boundary",
+                    },
                     "diagnosis_statement": "database lock contention: tx-4401 blocks orders writes",
                     "diagnosis_accepted": True,
                     "final_checker": "check_r05_lock_auto_release_observed",
@@ -123,7 +158,13 @@ def test_v2_replay_dirty_guard_precedes_repository_work(monkeypatch: pytest.Monk
                     "terminal_outcome": "resolved",
                     "recovery_verified": True,
                     "final_checker_passed": True,
-                    "approval_simulation": {"decision": "not_required", "reason": "no action", "version": "reliability-v2", "actual_human": False, "authorization_source": "none"},
+                    "approval_simulation": {
+                        "decision": "not_required",
+                        "reason": "no action",
+                        "version": "reliability-v2",
+                        "actual_human": False,
+                        "authorization_source": "none",
+                    },
                     "counterfactual_strategy_source": "synthetic_not_model_exploit",
                     "counterfactual_strategy_version": "reliability-r05-observation-v1",
                     "tool_calls_by_tool": {},

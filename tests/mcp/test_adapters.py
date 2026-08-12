@@ -54,14 +54,20 @@ class FakeOperationsRepository:
         raise AssertionError("not reached in this adapter boundary test")
 
     def restore_config(
-        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
         response_loss: bool = False,
     ) -> Never:
         del context, action, token, response_loss
         raise AssertionError("not reached in this adapter boundary test")
 
     def restart(
-        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
         response_loss: bool = False,
     ) -> Never:
         del context, action, token, response_loss
@@ -90,7 +96,9 @@ def test_observability_adapter_is_bound_and_unsupported_states_are_explicit() ->
     assert adapter.health(context, principal).payload == {"kind": "health"}
     assert adapter.config_diff(context, principal).payload == {"kind": "config_diff"}
     assert adapter.db_pool_metrics(context, principal).payload == {"kind": "db_pool_metrics"}
-    assert ObservabilityService(FakeObservabilityRepository()).get(context, principal, "metrics").payload == {"kind": "metrics"}
+    assert ObservabilityService(FakeObservabilityRepository()).get(
+        context, principal, "metrics"
+    ).payload == {"kind": "metrics"}
 
 
 def test_operations_adapter_keeps_auth_boundary() -> None:
@@ -121,7 +129,12 @@ def test_operations_adapter_keeps_auth_boundary() -> None:
         adapter.rollback(context, Principal("operator-1", Role.OPERATOR), action, token)
     with pytest.raises(PermissionDenied):
         adapter.rollback(context, Principal("operator-1", Role.OBSERVER), action, token)
-    restart = action.model_copy(update={"tool_name": "operations.restart", "arguments": {"kind": "restart", "component": "api"}})
+    restart = action.model_copy(
+        update={
+            "tool_name": "operations.restart",
+            "arguments": {"kind": "restart", "component": "api"},
+        }
+    )
     with pytest.raises(AssertionError):
         adapter.restart(context, Principal("operator-1", Role.OPERATOR), restart, token)
 
@@ -132,7 +145,9 @@ def test_ticket_adapter_read_is_bounded_and_append_is_disabled() -> None:
     principal = Principal("observer-1", Role.OBSERVER)
     assert adapter.read(context, principal) == {"ticket_id": "D1-1", "incident_id": "INC-D1"}
     with pytest.raises(ApprovalDenied):
-        adapter.append(context.model_copy(update={"idempotency_key": uuid4()}), principal, "no bypass")
+        adapter.append(
+            context.model_copy(update={"idempotency_key": uuid4()}), principal, "no bypass"
+        )
 
 
 def test_fastmcp_factories_are_localhost_only_and_stateless() -> None:

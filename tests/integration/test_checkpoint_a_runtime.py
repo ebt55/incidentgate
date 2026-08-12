@@ -72,12 +72,18 @@ class RecordingMonitor:
 
     def assess(self, action: CanonicalAction, evidence_digest: object) -> MonitorResult:
         self.calls += 1
-        return MonitorResult(verdict=self.verdict, suspicion_score=0.0 if self.verdict is MonitorVerdict.ALLOW else 1.0,
-                             rationale="configured_monitor", evaluated_action_hash=canonical_action_hash(action))
+        return MonitorResult(
+            verdict=self.verdict,
+            suspicion_score=0.0 if self.verdict is MonitorVerdict.ALLOW else 1.0,
+            rationale="configured_monitor",
+            evaluated_action_hash=canonical_action_hash(action),
+        )
 
 
 @pytest.mark.parametrize("scenario", ["D1", "D2", "D3"])
-def test_configured_monitor_factory_reconstructs_after_reopen(repository: LabRepository, scenario: str) -> None:
+def test_configured_monitor_factory_reconstructs_after_reopen(
+    repository: LabRepository, scenario: str
+) -> None:
     if scenario == "D1":
         repository.reset_d1()
         repository.inject_d1()
@@ -86,10 +92,12 @@ def test_configured_monitor_factory_reconstructs_after_reopen(repository: LabRep
         repository.inject_checkpoint(scenario)
     incident, caller, context = inputs(scenario)
     monitors: list[RecordingMonitor] = []
+
     def factory() -> RecordingMonitor:
         monitor = RecordingMonitor()
         monitors.append(monitor)
         return monitor
+
     with IncidentRuntime(repository.dsn, monitor_factory=factory) as first:
         pending = first.start(incident, caller, context)
         assert isinstance(pending, PendingApproval) and monitors[-1].calls == 1
@@ -105,13 +113,20 @@ def test_d3_configured_monitor_block_is_terminal_across_reopen(repository: LabRe
     repository.reset_checkpoint("D3")
     repository.inject_checkpoint("D3")
     incident, caller, context = inputs("D3")
-    with IncidentRuntime(repository.dsn, monitor_factory=lambda: RecordingMonitor(MonitorVerdict.BLOCK)) as first:
+    with IncidentRuntime(
+        repository.dsn, monitor_factory=lambda: RecordingMonitor(MonitorVerdict.BLOCK)
+    ) as first:
         status = first.start(incident, caller, context)
         assert not isinstance(status, PendingApproval) and status.result is not None
         assert status.result.final_state == "blocked"
-        assert [event.transition for event in first.timeline(incident.incident_id)] == ["policy", "monitor"]
+        assert [event.transition for event in first.timeline(incident.incident_id)] == [
+            "policy",
+            "monitor",
+        ]
     with (
-        IncidentRuntime(repository.dsn, monitor_factory=lambda: RecordingMonitor(MonitorVerdict.BLOCK)) as second,
+        IncidentRuntime(
+            repository.dsn, monitor_factory=lambda: RecordingMonitor(MonitorVerdict.BLOCK)
+        ) as second,
         pytest.raises(ValueError, match="no pending approval"),
     ):
         second.approve(incident.thread_id, Principal("approver-1", Role.APPROVER))
@@ -225,7 +240,10 @@ def test_checkpoint_trace_is_scenario_named_and_continues_after_reopen(
         spans = exporter.get_finished_spans()
         names = {span.name for span in spans}
         prefix = scenario.lower()
-        assert {f"{prefix}.{phase}" for phase in ("workflow", "policy", "monitor", "approval", "verification")} <= names
+        assert {
+            f"{prefix}.{phase}"
+            for phase in ("workflow", "policy", "monitor", "approval", "verification")
+        } <= names
         assert {"mcp.observability", "mcp.operations"} <= names
         assert len({span.context.trace_id for span in spans}) == 1
         forbidden = {"raw_log", "token", "traceparent", "approved_value", "config_value"}

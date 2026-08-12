@@ -62,7 +62,9 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
         for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL")
     )
     if any(langfuse) and not all(langfuse):
-        raise ValueError("Langfuse configuration must provide public key, secret key, and base URL together")
+        raise ValueError(
+            "Langfuse configuration must provide public key, secret key, and base URL together"
+        )
     try:
         bind_port = int(values.get("INCIDENTGATE_UI_PORT", "8090"))
     except ValueError as error:
@@ -107,7 +109,9 @@ def telemetry_config(settings: HostSettings) -> TelemetryConfig:
         settings.langfuse_base_url,
     )
     if any(values) and not all(values):
-        raise ValueError("Langfuse configuration must provide public key, secret key, and base URL together")
+        raise ValueError(
+            "Langfuse configuration must provide public key, secret key, and base URL together"
+        )
     return TelemetryConfig(
         service_name="incidentgate-ui",
         external=all(values),
@@ -136,12 +140,18 @@ class LabScenarioController:
         else:
             self._repository.reset_checkpoint(scenario_id)
             self._repository.inject_checkpoint(scenario_id)
-        return IncidentIdentity(incident_id=f"INC-{scenario_id}", scenario_id=scenario_id,
-                                thread_id=thread_id, correlation_id=correlation_id,
-                                state=IncidentState.OPEN)
+        return IncidentIdentity(
+            incident_id=f"INC-{scenario_id}",
+            scenario_id=scenario_id,
+            thread_id=thread_id,
+            correlation_id=correlation_id,
+            state=IncidentState.OPEN,
+        )
 
 
-RuntimeBuilder = Callable[[HostSettings, TelemetryConfig], Callable[[], AbstractContextManager[Any]]]
+RuntimeBuilder = Callable[
+    [HostSettings, TelemetryConfig], Callable[[], AbstractContextManager[Any]]
+]
 
 
 def build_runtime_factory(
@@ -163,7 +173,9 @@ def build_runtime_factory(
             monitor_factory = lambda: FixtureMonitor(MonitorVerdict.ALLOW)
         else:
             raise ValueError("unknown advisory monitor provider")
-        with IncidentRuntime(settings.database_url, telemetry_config=config, monitor_factory=monitor_factory) as runtime:
+        with IncidentRuntime(
+            settings.database_url, telemetry_config=config, monitor_factory=monitor_factory
+        ) as runtime:
             yield runtime
 
     return factory
@@ -179,7 +191,9 @@ def create_host_app(
     """Build the local UI and initialize only non-destructive checkpoint baseline state."""
     configured = settings or settings_from_env(env)
     repository = repository_factory(configured.database_url)
-    app = create_ui_app(runtime_builder(configured, telemetry_config(configured)), LabScenarioController(repository))
+    app = create_ui_app(
+        runtime_builder(configured, telemetry_config(configured)), LabScenarioController(repository)
+    )
 
     @app.on_event("startup")
     def initialize_host() -> None:

@@ -121,7 +121,8 @@ def _provider_schema() -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class CompletionRequest:
-    """Everything a transport needs; the cache keys on (model, prompt_sha256), the API uses the rest."""
+    """Everything a transport needs; the cache keys on (model, prompt_sha256),
+    the API uses the rest."""
 
     model: str
     system: str
@@ -160,8 +161,10 @@ class PricingSnapshot:
     def cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         if model not in self.input_usd_per_token or model not in self.output_usd_per_token:
             raise KeyError(model)
-        return (input_tokens * self.input_usd_per_token[model]
-                + output_tokens * self.output_usd_per_token[model])
+        return (
+            input_tokens * self.input_usd_per_token[model]
+            + output_tokens * self.output_usd_per_token[model]
+        )
 
     def prices(self, model: str) -> bool:
         """Whether this snapshot can price the model, asked before a call is turned into cost."""
@@ -289,7 +292,9 @@ class ModelAgentProposer:
             raise ValueError("temperature must be within [0, 1]")
         if temperature is not None and not model_accepts_sampling(model):
             raise ValueError("this model rejects sampling params; construct with temperature=None")
-        if steering_prompt is not None and (not steering_prompt.strip() or len(steering_prompt) > 4000):
+        if steering_prompt is not None and (
+            not steering_prompt.strip() or len(steering_prompt) > 4000
+        ):
             raise ValueError("steering prompt must be non-empty and bounded")
         self._client = client
         self._model = model
@@ -304,7 +309,10 @@ class ModelAgentProposer:
         self.last_invocation: ModelInvocationRecord | None = None
 
     def __repr__(self) -> str:
-        return f"ModelAgentProposer(model={self._model!r}, steered={self._steering_prompt is not None})"
+        return (
+            f"ModelAgentProposer(model={self._model!r}, "
+            f"steered={self._steering_prompt is not None})"
+        )
 
     def propose(
         self,
@@ -365,15 +373,18 @@ class ModelAgentProposer:
             raise ProposalError("proposal_missing_required_evidence")
         digest: list[dict[str, Any]] = []
         for record in sorted(citable, key=lambda item: item.evidence_id):
-            if (not self._EVIDENCE_ID.fullmatch(record.evidence_id)
-                    or not self._TOOL_NAME.fullmatch(record.tool_name)):
+            if not self._EVIDENCE_ID.fullmatch(record.evidence_id) or not self._TOOL_NAME.fullmatch(
+                record.tool_name
+            ):
                 raise ProposalError("proposal_evidence_unrenderable")
-            digest.append({
-                "evidence_id": record.evidence_id,
-                "tool_name": record.tool_name,
-                "observed_at": record.observed_at.isoformat(),
-                "payload": self._payload_projection(record.payload),
-            })
+            digest.append(
+                {
+                    "evidence_id": record.evidence_id,
+                    "tool_name": record.tool_name,
+                    "observed_at": record.observed_at.isoformat(),
+                    "payload": self._payload_projection(record.payload),
+                }
+            )
         user_content = json.dumps(
             {"evidence_digest": digest}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         )

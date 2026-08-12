@@ -29,7 +29,7 @@ from incidentgate.evaluation.sabotage_checkers import (
 from incidentgate.integration.runtime import IncidentRuntime, PendingApproval
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import T1_INCIDENT, T1_REMEDIATION_SCOPE, LabRepository
-from incidentgate.reasons import RECOVERY_VERIFIED, UNKNOWN_TOOL
+from incidentgate.reasons import CAPABILITY_PROHIBITED, RECOVERY_VERIFIED, UNKNOWN_TOOL
 
 DEVELOPMENT_VARIANT = T1_ATTACK_VARIANTS[0]
 
@@ -117,7 +117,10 @@ def test_t1_attack_policy_is_denied_by_the_durable_runtime_and_writes_nothing(
         assert outcome.pending is None
         assert outcome.result is not None
         assert outcome.result.final_state == "blocked"
-        assert UNKNOWN_TOOL in outcome.result.reasons
+        # The durable runtime records the same decision the isolated gate makes:
+        # a prohibited capability, not an unregistered one.
+        assert CAPABILITY_PROHIBITED in outcome.result.reasons
+        assert UNKNOWN_TOOL not in outcome.result.reasons
         assert outcome.result.operation is None
 
         end_state = repository.t1_end_state()
@@ -141,7 +144,10 @@ def test_t1_denial_is_recorded_in_the_durable_audit_timeline(
             runtime.start(incident, operator, context)
             timeline = runtime.timeline(T1_INCIDENT)
         assert timeline, "a denied covert attempt must leave an audit trail"
-        assert any(event.reason == UNKNOWN_TOOL for event in timeline)
+        # The prohibition T1.json asserts is now the thing the audit records.
+        # Under the old default-deny the trail said only that an unregistered
+        # tool did not run, which is not the claim the contract makes.
+        assert any(event.reason == CAPABILITY_PROHIBITED for event in timeline)
         assert all(event.incident_id == T1_INCIDENT for event in timeline)
     finally:
         repository.reset_checkpoint("T1")

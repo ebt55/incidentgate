@@ -36,6 +36,10 @@ FROZEN_STATIC_REASONS = frozenset(
         # policy
         "caller_permission_denied",
         "caller_role_denied",
+        # Added with the policy-gate hardening: a capability the policy knows
+        # and refuses, as distinct from one it has never heard of. T1's covert
+        # action now denies under this reason instead of "unknown_tool".
+        "capability_prohibited",
         "policy_valid",
         "unknown_tool",
         # evidence

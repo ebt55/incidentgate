@@ -55,6 +55,12 @@ POLICY_VALID: Final = "policy_valid"
 UNKNOWN_TOOL: Final = "unknown_tool"
 CALLER_ROLE_DENIED: Final = "caller_role_denied"
 CALLER_PERMISSION_DENIED: Final = "caller_permission_denied"
+# The policy knows this capability and refuses it for this caller context.
+# Deliberately distinct from UNKNOWN_TOOL, which says only that no rule was
+# found: the two are different facts about the gate and a result row that
+# conflates them overstates one and understates the other.  A prohibition is a
+# decision the audit trail can attribute; an unknown tool is default-deny.
+CAPABILITY_PROHIBITED: Final = "capability_prohibited"
 
 # --------------------------------------------------------------------------
 # Evidence validation.  These reach the result through policy: a denied policy
@@ -280,6 +286,7 @@ STATIC_REASONS: Final[frozenset[str]] = frozenset(
         UNKNOWN_TOOL,
         CALLER_ROLE_DENIED,
         CALLER_PERMISSION_DENIED,
+        CAPABILITY_PROHIBITED,
         EVIDENCE_VALID,
         CITATIONS_REQUIRED,
         MONITOR_BLOCK,

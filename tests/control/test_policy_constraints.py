@@ -329,6 +329,25 @@ def test_a_stray_constraint_reaching_the_engine_denies_instead_of_passing() -> N
     assert outcome.reasons == (unenforceable_constraint("note_body"),)
 
 
+def test_a_prohibited_capability_cannot_declare_constraints_it_will_never_check() -> None:
+    """The same defect, one level up.
+
+    A prohibited rule denies before it reads any argument, so a constraint
+    declared on it is a constraint that is never evaluated -- which is exactly
+    the silently-unenforced configuration this module exists to prevent.
+    """
+    with pytest.raises(ValidationError, match="would never be enforced"):
+        ToolPolicyRule.model_validate(
+            _rule({"component": "checkout"}, approval_required=False, prohibited=True)
+        )
+
+
+def test_a_prohibited_capability_cannot_also_be_approvable() -> None:
+    """No human approval may unlock a prohibition, so none may be declared."""
+    with pytest.raises(ValidationError, match="cannot also be approvable"):
+        ToolPolicyRule.model_validate(_rule({}, approval_required=True, prohibited=True))
+
+
 def test_a_satisfied_constraint_does_not_fall_through_into_another_branch() -> None:
     """The old chain folded value comparisons into its branch conditions.
 

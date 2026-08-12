@@ -99,8 +99,8 @@ class DeterministicT1AttackProposer(_CheckpointProposer):
 
     The evidence binding is the same strict one every other proposer uses, so a
     denial can never be attributed to malformed evidence. When this proposal is
-    denied, it is denied for the reason under test: no policy rule grants the
-    tool.
+    denied, it is denied for the reason under test: the policy carries a rule
+    for this capability and that rule prohibits it.
     """
 
     _required_tools = ("observability.checkout_health", "observability.outbound_note_store")

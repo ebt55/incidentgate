@@ -187,8 +187,9 @@ class ActivateLocalResponseAdapter383Args(ContractModel):
 # gate cannot be credited with stopping an action that was never expressible.
 # The asymmetry that makes T1 a control experiment lives in the policy
 # configuration, not here -- config/policy.example.json grants a rule to
-# record_checkout_remediation and deliberately grants none to
-# write_outbound_note, so the deny-first engine refuses it as an unknown tool.
+# record_checkout_remediation and carries a rule for write_outbound_note that
+# names the capability and prohibits it, so the refusal is a recorded decision
+# about a known capability rather than an accident of catalog contents.
 # --------------------------------------------------------------------------
 class RecordCheckoutRemediationArgs(ContractModel):
     kind: Literal["record_checkout_remediation"]
@@ -397,14 +398,26 @@ class ToolPolicyRule(ContractModel):
     arguments: dict[str, str | int | bool]
     evidence: EvidencePolicy
     retry_budget: int = Field(ge=0, le=5)
+    # A capability the policy KNOWS and refuses.  ``roles`` names the caller
+    # contexts the prohibition is stated against, exactly as it names the caller
+    # contexts a grant is stated for; a caller outside them still meets the
+    # ordinary role denial, so default-deny remains the backstop underneath.
+    #
+    # This exists so a refusal can be a decision rather than an absence.  A
+    # capability left out of the catalog is denied as an unknown tool, which is
+    # a fine backstop and a weak claim: the audit trail records that an
+    # unregistered tool did not run, not that the gate refused a capability it
+    # knows about, and the protection evaporates the moment some other scenario
+    # legitimately registers the tool.
+    prohibited: bool = False
 
     @model_validator(mode="after")
-    def every_argument_constraint_is_enforceable(self) -> ToolPolicyRule:
-        """Reject a constraint the gate has no branch to check.
+    def constraints_are_enforceable_and_prohibitions_are_absolute(self) -> ToolPolicyRule:
+        """Reject a constraint the gate has no branch to check, and a soft prohibition.
 
-        Construction time is the right place for this: the policy set is static,
-        loaded from one file, so the error arrives before any incident runs
-        rather than as a quiet non-check during one.
+        Construction time is the right place for the first: the policy set is
+        static, loaded from one file, so the error arrives before any incident
+        runs rather than as a quiet non-check during one.
         """
         unenforceable = sorted(
             name for name in self.arguments if resolve_argument_constraint(name) is None
@@ -413,6 +426,16 @@ class ToolPolicyRule(ContractModel):
             raise ValueError(
                 "argument constraints name no checkable capability field and would be "
                 f"silently unenforced: {unenforceable}"
+            )
+        if self.prohibited and self.approval_required:
+            raise ValueError(
+                "a prohibited capability cannot also be approvable: no human approval may "
+                "unlock it, so there is no approval path to require"
+            )
+        if self.prohibited and self.arguments:
+            raise ValueError(
+                "a prohibited capability denies before its arguments are read, so argument "
+                f"constraints on it would never be enforced: {sorted(self.arguments)}"
             )
         return self
 
@@ -453,7 +476,10 @@ class PolicyConfiguration(ContractModel):
             )
             if foreign:
                 raise ValueError(f"{tool_name} carries no such argument to constrain: {foreign}")
-        if any(not rule.approval_required for rule in self.tools.values()):
+        # Prohibited rules are exempt because they are stronger, not weaker:
+        # they deny outright, so requiring an approval they can never reach
+        # would read as though a human could unlock them.
+        if any(not rule.approval_required for rule in self.tools.values() if not rule.prohibited):
             raise ValueError("every mutation rule in shipped example must require approval")
         return self
 

@@ -17,6 +17,7 @@ from incidentgate.contracts import (
 from incidentgate.reasons import (
     CALLER_PERMISSION_DENIED,
     CALLER_ROLE_DENIED,
+    CAPABILITY_PROHIBITED,
     POLICY_VALID,
     UNKNOWN_TOOL,
     argument_constraint,
@@ -38,6 +39,20 @@ class DeterministicPolicyEngine:
         reasons: list[str] = []
         if rule is None:
             reasons.append(UNKNOWN_TOOL)
+        elif rule.prohibited:
+            # A prohibition is the whole decision, so it is the whole reason.
+            #
+            # Nothing downstream is consulted -- not the permission, not the
+            # arguments, not the evidence. That is deliberate: the refusal must
+            # not become contingent on the quality of the proposal. A covert
+            # action denied here is denied identically whether its evidence was
+            # fresh or stale, which is what lets the result row be read as a
+            # statement about the gate rather than about the attempt.
+            #
+            # ``roles`` names the caller contexts the prohibition is stated
+            # against. A caller outside them still meets the ordinary role
+            # denial below the rule, so default-deny remains the backstop.
+            reasons.append(CAPABILITY_PROHIBITED if caller in rule.roles else CALLER_ROLE_DENIED)
         else:
             if caller not in rule.roles:
                 reasons.append(CALLER_ROLE_DENIED)

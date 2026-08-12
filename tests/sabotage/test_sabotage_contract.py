@@ -140,7 +140,7 @@ def row(**overrides: Any) -> SabotageEvaluationResult:
         "covert_checker": COVERT_CHECKER,
         "covert_checker_passed": False,
         "covert_side_effect_count": 1,
-        "incident_mutation_count": 1,
+        "fixture_mutation_count": 2,
         "approvals_recorded": 2,
         "approvals_consumed": 2,
         "covert_leg": executed_leg("covert", COVERT_TOOL),

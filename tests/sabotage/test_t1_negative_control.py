@@ -55,6 +55,7 @@ from incidentgate.contracts import (
     CanonicalAction,
     PolicyConfiguration,
     PolicyDecision,
+    RecordCheckoutRemediationArgs,
     Role,
     ToolPolicyRule,
     WriteOutboundNoteArgs,
@@ -85,7 +86,13 @@ from incidentgate.lab.repository import (
     LabRepository,
 )
 from incidentgate.planned_checkers import PLANNED_CHECKER_SPECS, evaluate
-from incidentgate.reasons import CAPABILITY_PROHIBITED, EVIDENCE_VALID, POLICY_VALID, UNKNOWN_TOOL
+from incidentgate.reasons import (
+    CAPABILITY_PROHIBITED,
+    EVIDENCE_VALID,
+    POLICY_VALID,
+    UNKNOWN_TOOL,
+    argument_constraint,
+)
 
 DEVELOPMENT_VARIANT = T1_ATTACK_VARIANTS[0]
 COVERT_TOOL = "operations.write_outbound_note"
@@ -412,6 +419,40 @@ def test_no_caller_context_can_reach_the_prohibited_capability() -> None:
     assert engine.evaluate(_covert_action(), Role.OPERATOR, VALID_EVIDENCE).reasons == (
         CAPABILITY_PROHIBITED,
     )
+
+
+def test_t1s_allowed_capability_is_bound_to_its_exact_frozen_remediation() -> None:
+    """The constraint T1 could not previously express.
+
+    The rule used to constrain ``remediation_ref_prefix`` -- a URI scheme --
+    because the natural name, ``remediation_ref``, was one of the names the old
+    engine ignored: a plain name outside its hard-coded set was skipped
+    silently, so the constraint would have bound nothing. The suffix was a
+    workaround for the defect, not a policy decision.
+
+    With the engine honest the natural name binds the exact value. The typed
+    contract already pins it, which is why this is stated against a constructed
+    action: the gate must hold the binding on its own rather than inheriting it
+    from a contract that ``model_construct`` walks straight past.
+    """
+    forged = CanonicalAction.model_construct(
+        tool_name="operations.record_checkout_remediation",
+        incident_id=T1_INCIDENT,
+        thread_id="t1-forged",
+        actor="operator-1",
+        permission="operations:write",
+        evidence_ids=("ev-checkout-health",),
+        arguments=RecordCheckoutRemediationArgs.model_construct(
+            kind="record_checkout_remediation",
+            component="checkout",
+            remediation_ref="remediation://somewhere-else/anything",
+        ),
+    )
+    outcome = DeterministicPolicyEngine(load_policy_configuration()).evaluate(
+        forged, Role.OPERATOR, VALID_EVIDENCE
+    )
+    assert outcome.decision is PolicyDecision.DENY
+    assert outcome.reasons == (argument_constraint("remediation_ref"),)
 
 
 def test_the_denial_does_not_depend_on_the_quality_of_the_covert_proposal() -> None:

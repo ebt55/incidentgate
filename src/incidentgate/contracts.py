@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal, get_args
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -296,6 +297,98 @@ class EvidencePolicy(ContractModel):
     max_age_seconds: int = Field(gt=0, le=3600)
 
 
+# --------------------------------------------------------------------------
+# The argument-constraint vocabulary.
+#
+# A ToolPolicyRule constrains a capability by naming one of that capability's
+# typed argument fields.  The name carries the check: a ``_pattern`` suffix is a
+# regex over the field, a ``_prefix`` suffix is a literal prefix, ``max_bytes``
+# is the frozen cleanup cap, and a bare field name is an equality binding.
+#
+# This lives here, beside the capability contracts it resolves against, for the
+# same reason the terminal-reason vocabulary lives in ``reasons``: it is a fact
+# about the shipped policy file, and the engine that enforces it must not also
+# be the only thing that defines it.
+#
+# The engine used to hold this whole vocabulary as a hard-coded name set inside
+# an if/elif chain with no ``else``.  A constraint whose name matched no branch
+# was never checked at all -- silently.  A policy author could believe a
+# capability was constrained while the gate ignored the constraint entirely,
+# which in a lab whose central claim is that the gate is deterministic and
+# enforced is the worst available failure mode: a green result that means
+# nothing.  It had already been hit once, during R09-R12, when two new plain
+# names had to be added to the hard-coded set to become enforceable at all.
+#
+# Resolution below has no silent fall-through.  A name either resolves to a
+# named check over a real capability field, or it is unenforceable -- and
+# unenforceable is a construction-time error here and a deny in the engine.
+# --------------------------------------------------------------------------
+class ArgumentConstraintKind(StrEnum):
+    """How a constraint name says its value must be checked."""
+
+    PATTERN = "pattern"
+    PREFIX = "prefix"
+    MAX_BYTES = "max_bytes"
+    EQUALITY = "equality"
+
+
+@dataclass(frozen=True)
+class ResolvedArgumentConstraint:
+    """A constraint name resolved to its check and the argument field it reads."""
+
+    name: str
+    kind: ArgumentConstraintKind
+    argument_key: str
+
+
+MAX_BYTES_CONSTRAINT: Final = "max_bytes"
+PATTERN_CONSTRAINT_SUFFIX: Final = "_pattern"
+PREFIX_CONSTRAINT_SUFFIX: Final = "_prefix"
+
+# The frozen policy names the restore-config value by its capability-neutral
+# name; the typed contract calls that field ``approved_value_ref``.  The alias
+# is declared here rather than buried in the engine so that the policy file and
+# the contract can be checked against each other.
+ARGUMENT_KEY_ALIASES: Final[dict[str, str]] = {"value_reference": "approved_value_ref"}
+
+
+def _capability_argument_fields() -> dict[str, frozenset[str]]:
+    """Map each capability's tool name to the field names of its typed arguments."""
+    fields: dict[str, frozenset[str]] = {}
+    for model in get_args(get_args(ActionArguments)[0]):
+        (kind,) = get_args(model.model_fields["kind"].annotation)
+        fields[f"operations.{kind}"] = frozenset(model.model_fields)
+    return fields
+
+
+CAPABILITY_ARGUMENT_FIELDS: Final[dict[str, frozenset[str]]] = _capability_argument_fields()
+
+ACTION_ARGUMENT_FIELDS: Final[frozenset[str]] = frozenset(
+    field for fields in CAPABILITY_ARGUMENT_FIELDS.values() for field in fields
+)
+
+
+def resolve_argument_constraint(name: str) -> ResolvedArgumentConstraint | None:
+    """Resolve a policy constraint name to the check the engine will perform.
+
+    Returns ``None`` when the name names no checkable capability field. That is
+    the fail-closed signal and the only one: there is no path through this
+    function that accepts a name without also saying how it will be checked.
+    """
+    if name == MAX_BYTES_CONSTRAINT:
+        kind, key = ArgumentConstraintKind.MAX_BYTES, MAX_BYTES_CONSTRAINT
+    elif name.endswith(PATTERN_CONSTRAINT_SUFFIX):
+        kind, key = ArgumentConstraintKind.PATTERN, name.removesuffix(PATTERN_CONSTRAINT_SUFFIX)
+    elif name.endswith(PREFIX_CONSTRAINT_SUFFIX):
+        kind, key = ArgumentConstraintKind.PREFIX, name.removesuffix(PREFIX_CONSTRAINT_SUFFIX)
+    else:
+        kind, key = ArgumentConstraintKind.EQUALITY, name
+    key = ARGUMENT_KEY_ALIASES.get(key, key)
+    if key not in ACTION_ARGUMENT_FIELDS:
+        return None
+    return ResolvedArgumentConstraint(name=name, kind=kind, argument_key=key)
+
+
 class ToolPolicyRule(ContractModel):
     roles: tuple[Role, ...] = Field(min_length=1)
     permission: str = Field(min_length=1)
@@ -304,6 +397,24 @@ class ToolPolicyRule(ContractModel):
     arguments: dict[str, str | int | bool]
     evidence: EvidencePolicy
     retry_budget: int = Field(ge=0, le=5)
+
+    @model_validator(mode="after")
+    def every_argument_constraint_is_enforceable(self) -> ToolPolicyRule:
+        """Reject a constraint the gate has no branch to check.
+
+        Construction time is the right place for this: the policy set is static,
+        loaded from one file, so the error arrives before any incident runs
+        rather than as a quiet non-check during one.
+        """
+        unenforceable = sorted(
+            name for name in self.arguments if resolve_argument_constraint(name) is None
+        )
+        if unenforceable:
+            raise ValueError(
+                "argument constraints name no checkable capability field and would be "
+                f"silently unenforced: {unenforceable}"
+            )
+        return self
 
 
 class PolicyConfiguration(ContractModel):
@@ -326,6 +437,22 @@ class PolicyConfiguration(ContractModel):
         for name, mode in self.modes.items():
             if name != "complete" and not mode.evaluation_only:
                 raise ValueError("non-default modes must be evaluation-only")
+        # A constraint may be enforceable in the abstract and still constrain
+        # nothing: ``routing`` is a real field, but not one ``operations.restart``
+        # has.  Bound each rule's constraints to its own capability contract so a
+        # policy author cannot constrain an argument the capability never carries.
+        for tool_name, rule in self.tools.items():
+            capability_fields = CAPABILITY_ARGUMENT_FIELDS.get(tool_name)
+            if capability_fields is None:
+                continue
+            foreign = sorted(
+                name
+                for name in rule.arguments
+                if (resolved := resolve_argument_constraint(name)) is not None
+                and resolved.argument_key not in capability_fields
+            )
+            if foreign:
+                raise ValueError(f"{tool_name} carries no such argument to constrain: {foreign}")
         if any(not rule.approval_required for rule in self.tools.values()):
             raise ValueError("every mutation rule in shipped example must require approval")
         return self

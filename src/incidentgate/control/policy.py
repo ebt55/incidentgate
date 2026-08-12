@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 
 from incidentgate.contracts import (
+    ArgumentConstraintKind,
     CanonicalAction,
     PolicyConfiguration,
     PolicyDecision,
     PolicyOutcome,
     Role,
     canonical_action_hash,
+    resolve_argument_constraint,
 )
 from incidentgate.reasons import (
     CALLER_PERMISSION_DENIED,
@@ -18,6 +20,7 @@ from incidentgate.reasons import (
     POLICY_VALID,
     UNKNOWN_TOOL,
     argument_constraint,
+    unenforceable_constraint,
 )
 
 from .models import EvidenceState, EvidenceValidation
@@ -42,46 +45,40 @@ class DeterministicPolicyEngine:
                 reasons.append(CALLER_PERMISSION_DENIED)
             arguments = action.arguments.model_dump(mode="python")
             for name, constraint in rule.arguments.items():
+                resolved = resolve_argument_constraint(name)
+                if resolved is None:
+                    # FAIL CLOSED.  ``ToolPolicyRule`` rejects these at
+                    # construction, so this is the backstop for a rule that got
+                    # past validation -- ``model_construct``, or any future
+                    # dynamically assembled rule.  Denying is the only honest
+                    # option: a constraint the engine cannot check must never
+                    # read as a constraint the action satisfied.
+                    reasons.append(unenforceable_constraint(name))
+                    continue
                 # ``bool`` is a subclass of ``int`` in Python.  Policy literals
                 # are capability bindings, so their types must match as well.
                 if name in arguments and type(arguments[name]) is not type(constraint):
                     reasons.append(argument_constraint(name))
                     continue
-                if name.endswith("_pattern"):
-                    key = name.removesuffix("_pattern")
-                    if not re.fullmatch(str(constraint), str(arguments.get(key, ""))):
-                        reasons.append(argument_constraint(key))
-                elif name == "max_bytes" and int(arguments.get(name, -1)) != int(constraint):
-                    reasons.append(argument_constraint("max_bytes"))
-                elif (
-                    name
-                    in {
-                        "component",
-                        "cleanup_scope",
-                        "schema_version",
-                        "flag",
-                        "enabled",
-                        "variable_name",
-                        "value",
-                        "config_version",
-                        "old_pods",
-                        "new_pods",
-                        "index",
-                        "routing",
-                        "active_id",
-                        "backoff_seconds",
-                        "response_adapter",
-                    }
-                    and arguments.get(name) != constraint
-                ):
-                    reasons.append(argument_constraint(name))
-                elif name.endswith("_prefix"):
-                    key = name.removesuffix("_prefix")
-                    # The frozen policy uses the capability-neutral name while the
-                    # typed contract calls the field ``approved_value_ref``.
-                    argument_key = "approved_value_ref" if key == "value_reference" else key
-                    if not str(arguments.get(argument_key, "")).startswith(str(constraint)):
-                        reasons.append(argument_constraint(argument_key))
+                key = resolved.argument_key
+                # Exhaustive over ArgumentConstraintKind, and deliberately a
+                # match rather than an if/elif chain: the previous chain had no
+                # ``else``, and folded the value comparisons into the branch
+                # conditions, so a satisfied constraint fell through into the
+                # next branch's test.  Every kind is now decided exactly once.
+                match resolved.kind:
+                    case ArgumentConstraintKind.PATTERN:
+                        satisfied = (
+                            re.fullmatch(str(constraint), str(arguments.get(key, ""))) is not None
+                        )
+                    case ArgumentConstraintKind.PREFIX:
+                        satisfied = str(arguments.get(key, "")).startswith(str(constraint))
+                    case ArgumentConstraintKind.MAX_BYTES:
+                        satisfied = int(arguments.get(key, -1)) == int(constraint)
+                    case ArgumentConstraintKind.EQUALITY:
+                        satisfied = arguments.get(key) == constraint
+                if not satisfied:
+                    reasons.append(argument_constraint(key))
             if evidence.state is not EvidenceState.VALID:
                 reasons.extend(evidence.reasons)
         if reasons:

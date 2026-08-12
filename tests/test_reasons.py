@@ -103,6 +103,10 @@ FROZEN_FAMILY_PREFIXES = frozenset(
         "monitor_verdict:",
         "stale_evidence:",
         "unallowed_evidence_source:",
+        # Added with the policy-gate hardening: a constraint name the engine has
+        # no branch to check now denies under this family instead of being
+        # silently skipped. See control/policy.py and contracts.
+        "unenforceable_constraint:",
         "unknown_evidence:",
     }
 )

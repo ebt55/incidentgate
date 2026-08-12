@@ -189,6 +189,7 @@ AUDIT_REQUEST_EXPIRED: Final = "request_expired"
 APPROVAL_INVALID_PREFIX: Final = "approval_invalid:"
 MONITOR_VERDICT_PREFIX: Final = "monitor_verdict:"
 ARGUMENT_CONSTRAINT_PREFIX: Final = "argument_constraint:"
+UNENFORCEABLE_CONSTRAINT_PREFIX: Final = "unenforceable_constraint:"
 UNKNOWN_EVIDENCE_PREFIX: Final = "unknown_evidence:"
 CROSS_CONTEXT_EVIDENCE_PREFIX: Final = "cross_context_evidence:"
 CORRELATION_CONTEXT_MISMATCH_PREFIX: Final = "correlation_context_mismatch:"
@@ -217,6 +218,20 @@ def monitor_verdict(verdict: object) -> str:
 def argument_constraint(argument_name: str) -> str:
     """Name the frozen capability argument whose binding the action violated."""
     return f"{ARGUMENT_CONSTRAINT_PREFIX}{argument_name}"
+
+
+def unenforceable_constraint(constraint_name: str) -> str:
+    """Name a policy constraint the gate has no branch to check.
+
+    This is a deny reason about the *policy*, not about the action -- which is
+    why it is not an ``argument_constraint``. It says the configuration asked
+    for a check the engine cannot perform, so the engine refused rather than
+    proceeding as though the constraint had been satisfied. Reaching it means a
+    rule was built past ``ToolPolicyRule`` validation (``model_construct``, or
+    some future dynamically assembled rule); the deny is the backstop under the
+    construction-time rejection, not a substitute for it.
+    """
+    return f"{UNENFORCEABLE_CONSTRAINT_PREFIX}{constraint_name}"
 
 
 def unknown_evidence(evidence_id: str) -> str:
@@ -323,6 +338,7 @@ REASON_FAMILY_PREFIXES: Final[frozenset[str]] = frozenset(
         STALE_EVIDENCE_PREFIX,
         UNALLOWED_EVIDENCE_SOURCE_PREFIX,
         EMBEDDED_INSTRUCTION_DATA_PREFIX,
+        UNENFORCEABLE_CONSTRAINT_PREFIX,
     }
 )
 

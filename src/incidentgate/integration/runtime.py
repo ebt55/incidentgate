@@ -166,6 +166,12 @@ class IncidentRuntime:
         telemetry_config: TelemetryConfig | None = None,
         monitor: AdvisoryMonitor | None = None,
         monitor_factory: Callable[[], AdvisoryMonitor] | None = None,
+        # The proposer seam. Left unset, every scenario gets its deterministic
+        # proposer exactly as before. Supplied, the factory decides what proposes
+        # the action -- which is how a model output reaches the gate chain at all.
+        # A factory rather than an instance because the proposer is built per
+        # incident, matching how the monitor is built.
+        proposer_factory: Callable[[], ProposalGenerator] | None = None,
         collection_crash_after_attempt: int | None = None,
     ) -> None:
         if telemetry is not None and telemetry_config is not None:
@@ -211,6 +217,7 @@ class IncidentRuntime:
         self._response_loss_once = response_loss_once
         self._monitor = monitor
         self._monitor_factory = monitor_factory
+        self._proposer_factory = proposer_factory
         self._collection_crash_after_attempt = collection_crash_after_attempt
         self._graph: Any | None = None
 
@@ -316,6 +323,10 @@ class IncidentRuntime:
             proposer = DeterministicR12Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
+        if self._proposer_factory is not None:
+            # Deliberately after the scenario check: selecting a model-backed
+            # proposer does not make an unsupported scenario supported.
+            proposer = self._proposer_factory()
         dependencies = WorkflowDependencies(
             collector=LabEvidenceCollector(observability, caller, context, scenario_id=scenario_id),
             proposer=proposer,

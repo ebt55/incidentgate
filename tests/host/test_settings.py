@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Self
 
 import pytest
 from fastapi.testclient import TestClient
 
+from incidentgate.control.model_proposal import ModelAgentProposer
 from incidentgate.host.app import (
     HostSettings,
+    build_proposer_factory,
     build_runtime_factory,
     settings_from_env,
     telemetry_config,
@@ -33,6 +36,79 @@ class RecordingRepository:
 
     def inject_d1(self) -> None:
         self.calls.append("inject")
+
+
+OPUS = "claude-opus-5"
+CACHE_DIR = str(Path(__file__).resolve().parents[1] / "fixtures" / "model_cache")
+
+
+def _model_env(**overrides: str) -> dict[str, str]:
+    values = {
+        "DATABASE_URL": "postgresql://example",
+        "PROPOSAL_PROVIDER": "model",
+        "PROPOSAL_MODEL": OPUS,
+        "PROPOSAL_CACHE_DIR": CACHE_DIR,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_the_default_is_deterministic_with_no_model_configuration_present() -> None:
+    """The seam must be opt-in: an unconfigured host behaves exactly as before."""
+    settings = settings_from_env({"DATABASE_URL": "postgresql://example"})
+    assert settings.proposal_provider == "deterministic"
+    assert settings.proposal_model is None and settings.proposal_cache_dir is None
+    assert build_proposer_factory(settings) is None
+
+
+def test_unknown_proposal_provider_fails_at_construction() -> None:
+    with pytest.raises(ValueError, match="PROPOSAL_PROVIDER must be deterministic or model"):
+        settings_from_env({"DATABASE_URL": "postgresql://example", "PROPOSAL_PROVIDER": "magic"})
+    with pytest.raises(ValueError, match="PROPOSAL_PROVIDER must be deterministic or model"):
+        HostSettings(database_url="postgresql://example", proposal_provider="magic")
+
+
+def test_model_provider_without_a_model_fails_loud() -> None:
+    with pytest.raises(ValueError, match="model proposals require PROPOSAL_MODEL"):
+        settings_from_env({"DATABASE_URL": "postgresql://example", "PROPOSAL_PROVIDER": "model"})
+
+
+def test_unknown_proposal_model_fails_loud_without_echoing_the_value() -> None:
+    """A mis-set PROPOSAL_MODEL could hold a credential, so it must not appear in the error."""
+    secret = "sk-ant-not-a-model-id"
+    with pytest.raises(ValueError) as raised:
+        settings_from_env(_model_env(PROPOSAL_MODEL=secret))
+    assert "capability table" in str(raised.value)
+    assert secret not in str(raised.value)
+
+
+def test_model_provider_without_a_cache_directory_fails_loud() -> None:
+    """Host-selectable model proposals are replay-only; there is no pricing snapshot."""
+    env = _model_env()
+    del env["PROPOSAL_CACHE_DIR"]
+    with pytest.raises(ValueError, match="PROPOSAL_CACHE_DIR"):
+        settings_from_env(env)
+
+
+def test_model_provider_builds_a_replay_only_proposer() -> None:
+    settings = settings_from_env(_model_env())
+    factory = build_proposer_factory(settings)
+    assert factory is not None
+    proposer = factory()
+    assert isinstance(proposer, ModelAgentProposer)
+    # Selecting the model path must not put a network client anywhere in the seam.
+    assert "CacheBackedCompletionClient" in repr(proposer._client)
+
+
+def test_settings_never_echo_secrets_in_their_repr() -> None:
+    settings = HostSettings(
+        database_url="postgresql://example",
+        anthropic_api_key="sk-ant-secret",
+        anthropic_model=MONITOR_MODEL,
+        langfuse_secret_key="langfuse-secret",
+    )
+    rendered = repr(settings)
+    assert "sk-ant-secret" not in rendered and "langfuse-secret" not in rendered
 
 
 def test_partial_langfuse_settings_are_rejected() -> None:

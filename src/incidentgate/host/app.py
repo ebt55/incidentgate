@@ -6,12 +6,21 @@ import os
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 
 from incidentgate.contracts import IncidentIdentity, IncidentState, MonitorVerdict
-from incidentgate.control import AnthropicAdvisoryMonitor, FixtureMonitor, is_known_model
+from incidentgate.control import (
+    AnthropicAdvisoryMonitor,
+    FixtureMonitor,
+    is_known_model,
+    model_accepts_sampling,
+)
+from incidentgate.control.model_proposal import ModelAgentProposer
+from incidentgate.control.ports import ProposalGenerator
+from incidentgate.control.response_cache import CacheBackedCompletionClient, ResponseCache
 from incidentgate.integration import IncidentRuntime
 from incidentgate.lab.repository import LabRepository
 from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
@@ -33,10 +42,32 @@ class HostSettings:
     anthropic_api_key: str | None = field(default=None, repr=False)
     anthropic_model: str | None = None
     anthropic_timeout_seconds: float = 10.0
+    proposal_provider: str = "deterministic"
+    proposal_model: str | None = None
+    proposal_cache_dir: str | None = None
 
     def __post_init__(self) -> None:
         if self.monitor_provider not in {"fixture", "anthropic"}:
             raise ValueError("ADVISORY_MONITOR_PROVIDER must be fixture or anthropic")
+        if self.proposal_provider not in {"deterministic", "model"}:
+            raise ValueError("PROPOSAL_PROVIDER must be deterministic or model")
+        if self.proposal_provider == "model" and not self.proposal_model:
+            raise ValueError("model proposals require PROPOSAL_MODEL")
+        if self.proposal_model is not None and not is_known_model(self.proposal_model):
+            # Same reasoning as ANTHROPIC_MODEL below: the proposer is built per
+            # incident, so its own guard would first fire mid-incident. The value is
+            # not echoed, because a mis-set PROPOSAL_MODEL could hold a credential.
+            raise ValueError("PROPOSAL_MODEL is not in the model capability table")
+        if self.proposal_provider == "model" and not self.proposal_cache_dir:
+            # Host-selectable model proposals are replay-only, deliberately. A live
+            # provider call must record its cost against a named pricing snapshot,
+            # and this host has no price list to name. Rather than invent prices or
+            # record a call whose cost is silently absent, the host refuses. The
+            # live client stays available to callers that supply their own snapshot.
+            raise ValueError(
+                "model proposals require PROPOSAL_CACHE_DIR; the host has no pricing "
+                "snapshot with which to record a live provider call honestly"
+            )
         if bool(self.anthropic_api_key) != bool(self.anthropic_model):
             raise ValueError("Anthropic configuration must provide API key and model together")
         if self.anthropic_model is not None and not is_known_model(self.anthropic_model):
@@ -80,6 +111,11 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
     if bool(api_key) != bool(model):
         # Credentials do not activate external behavior, but partial configuration is still invalid.
         raise ValueError("Anthropic configuration must provide API key and model together")
+    proposal_provider = values.get("PROPOSAL_PROVIDER", "deterministic").lower()
+    if proposal_provider not in {"deterministic", "model"}:
+        raise ValueError("PROPOSAL_PROVIDER must be deterministic or model")
+    proposal_model = values.get("PROPOSAL_MODEL") or None
+    proposal_cache_dir = values.get("PROPOSAL_CACHE_DIR") or None
     try:
         anthropic_timeout = float(values.get("ANTHROPIC_TIMEOUT_SECONDS", "10"))
     except ValueError as error:
@@ -98,6 +134,9 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
         anthropic_api_key=api_key,
         anthropic_model=model,
         anthropic_timeout_seconds=anthropic_timeout,
+        proposal_provider=proposal_provider,
+        proposal_model=proposal_model,
+        proposal_cache_dir=proposal_cache_dir,
     )
 
 
@@ -151,6 +190,29 @@ RuntimeBuilder = Callable[
 ]
 
 
+def build_proposer_factory(settings: HostSettings) -> Callable[[], ProposalGenerator] | None:
+    """Return the proposer seam for this configuration, or None for the default.
+
+    None means every scenario keeps its deterministic proposer, which is what the
+    default configuration and every existing deployment get. The model path is
+    replay-only by construction: it is wired to the response cache and never holds
+    a network client, so selecting it cannot start making provider calls.
+    """
+    if settings.proposal_provider != "model":
+        return None
+    model, cache_dir = settings.proposal_model, settings.proposal_cache_dir
+    # Both are guaranteed by HostSettings.__post_init__; asserting keeps the types
+    # honest without duplicating the error messages.
+    assert model is not None and cache_dir is not None
+    client = CacheBackedCompletionClient(ResponseCache(Path(cache_dir)))
+    temperature = 0.0 if model_accepts_sampling(model) else None
+
+    def factory() -> ProposalGenerator:
+        return ModelAgentProposer(client=client, model=model, temperature=temperature)
+
+    return factory
+
+
 def build_runtime_factory(
     settings: HostSettings, config: TelemetryConfig
 ) -> Callable[[], AbstractContextManager[IncidentRuntime]]:
@@ -171,7 +233,10 @@ def build_runtime_factory(
         else:
             raise ValueError("unknown advisory monitor provider")
         with IncidentRuntime(
-            settings.database_url, telemetry_config=config, monitor_factory=monitor_factory
+            settings.database_url,
+            telemetry_config=config,
+            monitor_factory=monitor_factory,
+            proposer_factory=build_proposer_factory(settings),
         ) as runtime:
             yield runtime
 

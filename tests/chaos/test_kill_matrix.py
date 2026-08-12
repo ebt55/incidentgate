@@ -24,10 +24,12 @@ rather than shrinking one:
   three are the pseudo-boundaries, one per durable commit window:
   ``approval:interrupt``, ``approval_token:committed``, ``operation:committed``.
 
-That is 3 golden drives and 12 executed cells, which keeps this module near
-three quarters of a minute. Widening it further belongs in the published table,
-not in CI: the point of the command is that the expensive full matrix does not
-have to run on every push.
+That is 3 golden drives and 12 executed cells, which keeps this module to about
+a minute of its own - module setup measured 62.8s and 57.3s across two local
+cold-database full-suite runs on 2026-08-12, against roughly 25 minutes for the
+full table. Widening it further belongs in the published table, not in CI: the
+point of the command is that the expensive full matrix does not have to run on
+every push.
 
 Known unresolved flake (observed 2026-08-12).
 ``test_every_executed_cell_reaches_the_golden_end_state`` failed once during a

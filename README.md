@@ -72,11 +72,11 @@ Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
 
-That run takes roughly twenty minutes, because every cell is real processes
-against real Postgres. **CI therefore runs a documented subset, not the table
-above**: one scenario per tier (D1, S1, R01) × five boundaries covering every
-boundary class = 12 executed cells in about three quarters of a minute. The
-subset samples both dimensions rather than shrinking one, and
+That run takes about 25 minutes, because every cell is real processes against
+real Postgres. **CI therefore runs a documented subset, not the table above**:
+one scenario per tier (D1, S1, R01) × five boundaries covering every boundary
+class = 12 executed cells instead of 324, in about a minute. The subset samples
+both dimensions rather than shrinking one, and
 `tests/chaos/test_kill_matrix.py` records why each member is in it. The full
 22-scenario matrix stays a command whose output is committed, so the expensive
 version does not have to run on every push.
@@ -98,7 +98,8 @@ Two honest findings from that run, neither of which is a durability failure:
   of that same binding. The only key an orphan can derive is the one the
   recovered operation already occupies.
   `tests/chaos/test_orphaned_approvals.py` drives a real killed cell and then
-  fails to spend what it left behind, four ways.
+  fails to spend what it left behind three ways, and checks that a denied
+  attempt does not burn the token either.
 - `runtime.status().pending` is not a real interrupt check; it reports a pending
   approval whenever a policy and action exist without a result, even mid-execute.
 

@@ -463,9 +463,12 @@ def test_monitor_defer_requires_explicit_human_reason() -> None:
     assert completed["result"].reasons == ("defer_reason_required",)
     assert monitor.calls == 1 and tokens.calls == executor.calls == 0
     assert completed["result"].report.final_state is IncidentState.BLOCKED
+    # The pre-approval audit used to persist the bare StrEnum repr "defer",
+    # which stood alone in the vocabulary as the only unprefixed enum value and
+    # read as a second spelling of monitor_block. It now names its own axis.
     assert [event.reason for event in audit.events] == [
         "policy_valid",
-        "defer",
+        "monitor_verdict:defer",
         "defer_reason_required",
     ]
 
@@ -520,9 +523,33 @@ def test_approver_mismatch_is_audited_and_reported() -> None:
     assert completed["result"].reasons == ("approval_invalid:approver_mismatch",)
     assert completed["result"].report.final_state is IncidentState.BLOCKED
     assert monitor.calls == 1 and tokens.calls == executor.calls == verifier.calls == 0
-    assert (
-        audit.events[-1].transition == "approval" and audit.events[-1].reason == "approver_mismatch"
+    assert audit.events[-1].transition == "approval"
+    # The audit position now reports the same string as the result position; it
+    # used to say a bare "approver_mismatch" for the identical event.
+    assert audit.events[-1].reason == "approval_invalid:approver_mismatch"
+
+
+def test_presenting_approver_mismatch_is_caught_before_the_token_validator() -> None:
+    """The workflow check and the validator check are different facts.
+
+    The validator compares the token against the durable approval record and
+    never receives the principal presenting it. This case is a token that is
+    entirely valid on its own terms, offered by somebody else. If the workflow
+    check were removed as redundant, this approval would succeed.
+    """
+    graph, _, tokens, executor, verifier, _ = system()
+    paused, config = invoke(graph, initial_state())
+    token = approved_token(
+        paused["__interrupt__"][0].value["action_hash"], approver="other-approver"
     )
+    completed = resume(
+        graph, config, {"decision": "approve", "approver": "approver-1", "token": token}
+    )
+    assert completed["result"].reasons == ("approval_invalid:approver_mismatch",)
+    # The validator was never consulted, so its own approver_mismatch cannot be
+    # what produced this: the two checks are not interchangeable.
+    assert tokens.calls == 0
+    assert executor.calls == 0 and verifier.calls == 0
 
 
 @pytest.mark.parametrize(
@@ -552,7 +579,7 @@ def test_invalid_token_binding_or_expiry_is_terminal(
     assert completed["result"].reasons == (f"approval_invalid:{reason}",)
     assert completed["result"].report.final_state is IncidentState.BLOCKED
     assert monitor.calls == tokens.calls == 1 and executor.calls == verifier.calls == 0
-    assert audit.events[-1].reason == f"invalid:{reason}"
+    assert audit.events[-1].reason == f"approval_invalid:{reason}"
 
 
 def test_token_one_time_use_replay_is_rejected() -> None:
@@ -576,7 +603,9 @@ def test_token_one_time_use_replay_is_rejected() -> None:
     )
     assert completed["result"].reasons == ("approval_invalid:one_time_use_replayed",)
     assert monitor.calls == 1 and replay_executor.calls == verifier.calls == 0
-    assert executor.calls == 1 and audit.events[-1].reason == "invalid:one_time_use_replayed"
+    assert (
+        executor.calls == 1 and audit.events[-1].reason == "approval_invalid:one_time_use_replayed"
+    )
 
 
 @pytest.mark.parametrize(

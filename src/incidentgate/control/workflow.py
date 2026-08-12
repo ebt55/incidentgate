@@ -46,6 +46,9 @@ from incidentgate.reasons import (
     RECOVERY_VERIFIED,
     THREAD_CONTEXT_MISMATCH,
     TIME_BUDGET_EXHAUSTED,
+    TOKEN_APPROVER_MISMATCH,
+    approval_invalid,
+    monitor_verdict,
 )
 from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
 from incidentgate.telemetry import TelemetryRuntime
@@ -440,7 +443,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
     def monitor_mismatch(state: WorkflowState) -> WorkflowState:
         policy = state["policy"]
         _audit(state, "policy", POLICY_VALID)
-        _audit(state, "monitor", "action_hash_mismatch")
+        _audit(state, "monitor", MONITOR_ACTION_HASH_MISMATCH)
         return {
             "result": WorkflowResult(
                 final_state="blocked",
@@ -466,7 +469,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         _audit(state, "policy", POLICY_VALID)
         monitor_result = state.get("monitor")
         if monitor_result:
-            _audit(state, "monitor", str(monitor_result.verdict))
+            _audit(state, "monitor", monitor_verdict(monitor_result.verdict))
         return {}
 
     def approval(state: WorkflowState) -> WorkflowState:
@@ -538,12 +541,16 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                 ),
             }
         if human.approver != human.token.approver:
-            _audit(state, "approval", "approver_mismatch")
+            # A distinct check from the token validator's own approver_mismatch:
+            # this compares the principal presenting the approval against the one
+            # the token names, which the validator never sees. Same reported
+            # string, deliberately, because to an approver it is the same fact.
+            _audit(state, "approval", approval_invalid(TOKEN_APPROVER_MISMATCH))
             return {
                 "human": human,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=("approval_invalid:approver_mismatch",),
+                    reasons=(approval_invalid(TOKEN_APPROVER_MISMATCH),),
                     action_hash=policy.action_hash,
                     evidence_ids=state["action"].evidence_ids,
                     policy=policy,
@@ -561,12 +568,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             now=dependencies.clock(),
         )
         if not valid:
-            _audit(state, "approval", f"invalid:{reason}")
+            _audit(state, "approval", approval_invalid(reason))
             return {
                 "human": human,
                 "result": WorkflowResult(
                     final_state="blocked",
-                    reasons=(f"approval_invalid:{reason}",),
+                    reasons=(approval_invalid(reason),),
                     action_hash=policy.action_hash,
                     evidence_ids=state["action"].evidence_ids,
                     policy=policy,

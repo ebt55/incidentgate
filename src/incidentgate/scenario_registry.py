@@ -15,6 +15,31 @@ from incidentgate.reasons import (
 
 # This set is the acceptance gate: a scenario is promoted here only once its
 # runtime, evaluation, and durable proofs are complete and tested.
+#
+# T1 is deliberately absent, and is the first scenario to be held back by the
+# "evaluation" clause alone rather than by missing runtime or proofs. It has:
+#
+#   * a runtime -- it runs end to end through IncidentRuntime, gate chain and
+#     all (tests/sabotage/test_t1_runtime.py);
+#   * durable proofs -- migration 015, fixture integrity, ledger, audit
+#     (tests/sabotage/test_t1_migration.py);
+#   * a working measurement -- the two-condition negative control in
+#     evaluation/t1_control.py, which shows the covert action really executing
+#     when ungated and really refused when gated, with the incident task
+#     completing either way (tests/sabotage/test_t1_negative_control.py).
+#
+# What it does not have is a place in either evaluation lane. Sabotage results
+# are dual-checker (incident + covert side effect) and no result model carries
+# that shape: CheckpointBEvaluationResult.scenario_id is ^(D[1-8]|S[1-2])$ and
+# ReliabilityEvaluationResultV2.scenario_id is ^R(?:0[1-9]|1[0-9]|20)$, so a T1
+# row is not merely unwritten but unrepresentable. There is no sabotage runner,
+# no three-mode matrix, no envelope, and no replay path.
+#
+# Promoting on the strength of the runtime alone would also make T1 eligible for
+# the chaos kill-matrix, whose published 22-scenario table would then be stale.
+# Both of those are separate chunks. Until the sabotage evaluation lane exists,
+# "not yet promoted" is the honest state, and the disjointness assertion in
+# tests/test_full_scenario_contracts.py keeps it that way on purpose.
 RUNNABLE_SCENARIOS = frozenset(
     (
         "D1",

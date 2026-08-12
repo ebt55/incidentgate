@@ -1,6 +1,16 @@
 """Chaos kill-matrix orchestrator.
 
-    uv run python -m incidentgate.chaos.matrix --out artifacts/chaos/
+Publish the full table over all runnable scenarios (the committed artifact)::
+
+    uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
+
+That command writes ``kill-matrix.json`` and ``kill-matrix.md`` into
+``artifacts/chaos-matrix/``, which is committed on purpose.  Transient
+exploratory runs belong in ``artifacts/chaos/``, which stays git-ignored; pass
+``--out artifacts/chaos/`` for those.  The run takes tens of minutes because
+every cell is real processes against real Postgres, so it is a command rather
+than a test.  Start it from a cold database, because the published table is a
+durability claim about a known starting state.
 
 For every scenario the orchestrator first drives a golden no-kill run with real
 worker subprocesses and records both the durable end state and every boundary
@@ -8,7 +18,11 @@ those processes crossed.  The boundary set is therefore derived, never listed:
 new scenarios inherit coverage.  Each matrix cell then resets the fixtures,
 drives fresh worker processes until one is killed hard at that boundary,
 recovers with further fresh processes, and diffs the durable end state against
-the golden capture.  Generated artifacts are not committed.
+the golden capture.  A boundary that no scenario path reaches is recorded as
+``n/a`` with the reason it does not apply, never dropped from the table.
+
+The CI suite deliberately runs a small documented subset of this matrix rather
+than all of it; see ``tests/chaos/test_kill_matrix.py`` for that choice.
 """
 
 from __future__ import annotations
@@ -42,8 +56,21 @@ from incidentgate.chaos.worker import (
     REPORT_PREFIX,
 )
 from incidentgate.lab.repository import LabRepository
+from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
 
-SCENARIOS: tuple[str, ...] = ("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "S1", "S2")
+_TIER_ORDER = {"D": 0, "S": 1, "R": 2}
+
+
+def _tier_rank(scenario: str) -> tuple[int, str]:
+    """Order the published table by tier - checkpoint, sabotage, reliability."""
+    return _TIER_ORDER.get(scenario[:1], len(_TIER_ORDER)), scenario
+
+
+#: Derived from the acceptance gate rather than restated, so promoting a
+#: scenario to runnable enrolls it in the matrix instead of silently leaving a
+#: gap the published table would not show. This tuple was a hand-written ten
+#: while the registry already listed twenty-two.
+SCENARIOS: tuple[str, ...] = tuple(sorted(RUNNABLE_SCENARIOS, key=_tier_rank))
 PHASE_ORDER: tuple[str, ...] = (PHASE_START, PHASE_APPROVE, PHASE_RETRY, PHASE_DONE)
 PSEUDO_NODES = frozenset(boundary.split(":", 1)[0] for boundary in PSEUDO_BOUNDARIES)
 
@@ -56,6 +83,41 @@ STATUS_OK = "ok"
 STATUS_FAIL = "fail"
 STATUS_NA = "n/a"
 STATUS_ERROR = "harness-error"
+
+#: Committed home of the published table. Separate from the git-ignored
+#: ``artifacts/chaos/`` so transient runs cannot accidentally become the
+#: published claim, and so publishing needs no ``git add -f``.
+PUBLISHED_ARTIFACT_DIR = "artifacts/chaos-matrix"
+REPRODUCTION_COMMAND = f"uv run python -m incidentgate.chaos.matrix --out {PUBLISHED_ARTIFACT_DIR}/"
+
+
+def git_revision() -> dict[str, Any]:
+    """Record the exact tree the published table was measured from.
+
+    A table generated from a dirty tree is not reproducible from its revision
+    alone, so the dirty flag is published next to the sha rather than hidden.
+    """
+
+    def _git(*arguments: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", *arguments],
+                capture_output=True,
+                text=True,
+                cwd=Path(__file__).resolve().parent,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return completed.stdout.strip() if completed.returncode == 0 else None
+
+    revision = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain")
+    return {
+        "revision": revision,
+        "dirty": None if status is None else bool(status),
+    }
 
 
 @dataclass(frozen=True)
@@ -84,6 +146,7 @@ class DriveResult:
     boundaries: list[str] = field(default_factory=list)
     phases: list[str] = field(default_factory=list)
     graph_nodes: list[str] = field(default_factory=list)
+    orphan_samples: list[dict[str, int]] = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -172,6 +235,9 @@ def drive(
         result.runs.append(run)
         if run.killed:
             result.killed_at_step = step
+            # Sampled before any recovery process opens new backends, so the
+            # states counted here belong to the process that just died hard.
+            result.orphan_samples.append(sample_chaos_backend_states(dsn))
             armed_at, armed_phase = None, None
             continue
         if run.returncode != 0 or run.report is None:
@@ -216,6 +282,40 @@ def purge_thread(dsn: str, thread_id: str) -> None:
                 connection.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
             except psycopg.Error:
                 connection.rollback()
+
+
+def sample_chaos_backend_states(dsn: str) -> dict[str, int]:
+    """Count this harness's surviving backends by ``pg_stat_activity.state``.
+
+    Called immediately after a killed worker has been reaped by the parent, so
+    any backend still listed here outlived the process that opened it.  This is
+    the measurement behind the reaper's docstring: it answers empirically which
+    states orphans actually occupy rather than assuming ``idle``.  The sampling
+    connection excludes itself; a backend with a NULL state reports ``unknown``.
+    """
+    with psycopg.connect(chaos_dsn(dsn), autocommit=True) as connection:
+        rows = connection.execute(
+            "SELECT coalesce(state, 'unknown') AS state, count(*) AS total "
+            "FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND application_name = %s GROUP BY 1",
+            (CHAOS_APPLICATION_NAME,),
+        ).fetchall()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def merge_state_counts(samples: Sequence[dict[str, int]]) -> dict[str, int]:
+    """Sum backend-state samples, keeping the peak seen for each state.
+
+    Peak rather than total: samples are taken at different instants, so adding
+    them would count one long-lived backend once per sample.  The peak answers
+    the question the reaper cares about - how many orphans coexisted at worst.
+    """
+    peaks: dict[str, int] = {}
+    for sample in samples:
+        for state, count in sample.items():
+            peaks[state] = max(peaks.get(state, 0), count)
+    return dict(sorted(peaks.items()))
 
 
 def reap_idle_backends(dsn: str, *, idle_seconds: float = REAP_IDLE_SECONDS) -> None:
@@ -296,6 +396,7 @@ def run_cell(
         "surviving_worker_phases": list(result.phases),
         "killed": result.killed_at_step is not None,
         "kill_exit_code": KILL_EXIT_CODE if result.killed_at_step is not None else None,
+        "orphan_backend_states": merge_state_counts(result.orphan_samples),
         "recovery_processes": max(len(exit_codes) - ((result.killed_at_step or 0) + 1), 0),
         "resume_outcome": {
             "terminal": result.terminal,
@@ -400,8 +501,13 @@ def run_matrix(
     reap_idle_backends(dsn)
     return {
         "generated_by": "incidentgate.chaos.matrix",
+        "reproduction_command": REPRODUCTION_COMMAND,
+        "git": git_revision(),
         "scenarios": list(scenarios),
         "boundaries": rows,
+        "orphan_backend_states": merge_state_counts(
+            [cell["orphan_backend_states"] for cell in cells if "orphan_backend_states" in cell]
+        ),
         "comparison_spec": enddiff.spec_rows(),
         "at_least_rationale": enddiff.AT_LEAST_RATIONALE,
         "golden": golden_report,
@@ -499,13 +605,61 @@ def render_markdown(report: dict[str, Any]) -> str:
         "asserts the exit code before it attempts recovery with new processes."
     )
     lines.append("")
+    lines.extend(_render_provenance(report))
     lines.extend(_render_legend())
     lines.extend(_render_table(scenarios, rows, index))
     lines.extend(_render_failures(report))
     lines.extend(_render_observations(report, index))
+    lines.extend(_render_orphans(report))
     lines.extend(_render_coverage(report))
     lines.extend(_render_spec(report))
     return "\n".join(lines) + "\n"
+
+
+def _render_provenance(report: dict[str, Any]) -> list[str]:
+    git = report.get("git", {})
+    revision = git.get("revision") or "unknown"
+    dirty = git.get("dirty")
+    suffix = " (dirty tree)" if dirty else ""
+    return [
+        "## Provenance",
+        "",
+        f"- generated by: `{report['generated_by']}`",
+        f"- git revision: `{revision}`{suffix}",
+        f"- reproduce with: `{report['reproduction_command']}`",
+        "",
+    ]
+
+
+def _render_orphans(report: dict[str, Any]) -> list[str]:
+    """Publish what a hard-killed worker actually leaves behind in Postgres."""
+    states = report.get("orphan_backend_states", {})
+    lines = ["## Orphaned backends after a hard kill", ""]
+    if not states:
+        lines.extend(
+            [
+                (
+                    "Sampled immediately after every `os._exit(137)`, before any recovery "
+                    "process opened a connection: **no** backend carrying this harness's "
+                    "`application_name` survived the process that opened it. The operating "
+                    "system closes the sockets as the process dies and Postgres tears the "
+                    "backends down with them, so the reaper is belt-and-suspenders here."
+                ),
+                "",
+            ]
+        )
+        return lines
+    lines.append(
+        "Peak count of this harness's backends by `pg_stat_activity.state`, sampled "
+        "immediately after each kill and before any recovery process connected:"
+    )
+    lines.append("")
+    lines.append("| Backend state | Peak observed |")
+    lines.append("| --- | --- |")
+    for state, count in states.items():
+        lines.append(f"| `{state}` | {count} |")
+    lines.append("")
+    return lines
 
 
 def _render_legend() -> list[str]:

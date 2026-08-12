@@ -32,6 +32,20 @@ RULE_AT_LEAST = "at-least-golden"
 #: Payload keys whose value is a wall-clock instant recorded inside evidence.
 TIMESTAMP_PAYLOAD_KEYS = frozenset({"checked_at"})
 
+#: The R tier is uniform by construction: migrations 011-013 give every R
+#: scenario exactly one ``r<nn>_fixture_state`` table keyed by ``scenario_id``.
+#: Generating those rows keeps a new R scenario from needing an edit here, and
+#: keeps the checkpoint tier's genuinely irregular table names explicit below.
+#: No ``generation`` column exists on the R tables, so ``fixture_generation``
+#: reads 0 for that tier - captured identically on both sides of every diff.
+_RELIABILITY_FIXTURE_QUERIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    f"R{number:02d}": (
+        f"SELECT * FROM r{number:02d}_fixture_state WHERE scenario_id='R{number:02d}'",
+        (),
+    )
+    for number in range(1, 13)
+}
+
 _FIXTURE_QUERIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "D1": ("SELECT * FROM target_state WHERE component='api'", ()),
     "D2": ("SELECT * FROM scenario_target_state WHERE scenario_id='D2' AND component='api'", ()),
@@ -43,6 +57,7 @@ _FIXTURE_QUERIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "D6": ("SELECT * FROM no_action_fixture_state WHERE scenario_id='D6'", ()),
     "S1": ("SELECT * FROM no_action_fixture_state WHERE scenario_id='S1'", ()),
     "S2": ("SELECT * FROM no_action_fixture_state WHERE scenario_id='S2'", ()),
+    **_RELIABILITY_FIXTURE_QUERIES,
 }
 
 

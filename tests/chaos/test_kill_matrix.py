@@ -1,8 +1,33 @@
 """CI-sized slice of the chaos kill matrix plus unit cover for the differ.
 
-The full matrix stays a command (``python -m incidentgate.chaos.matrix``).
-The live tests here run a representative subset: D1 across the interesting
-windows, and one no-action scenario, all against real killed subprocesses.
+The full 22-scenario matrix stays a command, not a test::
+
+    uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
+
+It runs for tens of minutes and its output is the committed table under
+``artifacts/chaos-matrix/``. CI must stay bounded, so the live tests here run a
+deliberately chosen subset against real killed subprocesses.
+
+Why this subset. The matrix has two dimensions and the subset samples both
+rather than shrinking one:
+
+* **One scenario per tier.** ``D1`` is the checkpoint tier's full action path
+  (approval, execute, verify). ``S1`` is the sabotage tier and a no-action
+  scenario, so it is also the case that must produce ``n/a`` cells rather than
+  silent gaps. ``R01`` is the reliability tier, whose graph carries nodes no D
+  scenario has (``propose``, ``validate``, ``monitor``, ``preapproval_audit``);
+  without it the R tier's twelve scenarios would be represented in CI by
+  nothing at all.
+* **Every boundary class.** ``collect:entry`` and ``collect:exit`` are the
+  wrapped-node classes, an ``exit`` kill being the hard replay case that lands
+  after a node's side effects but before LangGraph checkpoints it. The other
+  three are the pseudo-boundaries, one per durable commit window:
+  ``approval:interrupt``, ``approval_token:committed``, ``operation:committed``.
+
+That is 3 golden drives and 12 executed cells, which keeps this module near
+three quarters of a minute. Widening it further belongs in the published table,
+not in CI: the point of the command is that the expensive full matrix does not
+have to run on every push.
 
 Known unresolved flake (observed 2026-08-12).
 ``test_every_executed_cell_reaches_the_golden_end_state`` failed once during a
@@ -31,6 +56,7 @@ import pytest
 from incidentgate.chaos import enddiff, matrix
 from incidentgate.chaos.killpoints import BoundaryEvent, boundary_id
 from incidentgate.lab.repository import LabRepository
+from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
 
 SELECTED_BOUNDARIES = (
     "start/collect:entry",
@@ -39,7 +65,7 @@ SELECTED_BOUNDARIES = (
     "approve/approval_token:committed",
     "approve/operation:committed",
 )
-SUBSET_SCENARIOS = ("D1", "S1")
+SUBSET_SCENARIOS = ("D1", "S1", "R01")
 NO_ACTION_BOUNDARIES = ("start/collect:entry", "start/collect:exit")
 
 
@@ -56,6 +82,39 @@ def _golden() -> dict[str, Any]:
         "evidence_read_kinds": [["observability.health", "{}"]],
         "evidence_read_total": 4,
     }
+
+
+def test_the_matrix_default_enrolls_every_runnable_scenario() -> None:
+    """The published table's scope must track the acceptance gate, not a copy.
+
+    This list was hand-written as ten scenarios while the registry already
+    promoted twenty-two, so the flagship table silently omitted the entire
+    reliability tier. Deriving it is the fix; this asserts it stays derived.
+    """
+    assert set(matrix.SCENARIOS) == set(RUNNABLE_SCENARIOS)
+    assert len(matrix.SCENARIOS) == len(RUNNABLE_SCENARIOS), "no duplicates"
+
+
+def test_every_runnable_scenario_can_have_its_fixture_captured() -> None:
+    """A scenario with no fixture query raises KeyError mid-matrix, not at import.
+
+    That is how the reliability tier stayed unrunnable: nothing referenced the
+    missing entries until a golden drive had already burned minutes.
+    """
+    missing = sorted(RUNNABLE_SCENARIOS - set(enddiff._FIXTURE_QUERIES))
+    assert missing == []
+
+
+def test_the_ci_subset_samples_every_tier_and_every_boundary_class() -> None:
+    """Guard the documented subset choice against being quietly narrowed."""
+    tiers = {scenario[0] for scenario in SUBSET_SCENARIOS}
+    assert tiers == {"D", "S", "R"}, "CI must cover the checkpoint, sabotage and R tiers"
+    assert set(SUBSET_SCENARIOS) <= set(matrix.SCENARIOS)
+
+    positions = {boundary.split(":", 1)[1] for boundary in SELECTED_BOUNDARIES}
+    assert {"entry", "exit"} <= positions, "both wrapped-node classes must be sampled"
+    pseudo = {boundary.split("/", 1)[1] for boundary in SELECTED_BOUNDARIES}
+    assert set(matrix.PSEUDO_BOUNDARIES) <= pseudo, "every durable commit window is a class"
 
 
 def test_boundary_id_renders_phase_node_and_position() -> None:
@@ -178,6 +237,51 @@ def test_no_action_scenario_marks_the_approval_windows_not_applicable(
     for name in set(SELECTED_BOUNDARIES) - set(NO_ACTION_BOUNDARIES):
         assert cells[name]["status"] == matrix.STATUS_NA
         assert cells[name]["reason"]
+
+
+@pytest.mark.integration
+def test_the_reliability_tier_recovers_through_its_own_graph_nodes(
+    subset: dict[str, Any],
+) -> None:
+    """R01 is in CI for its graph, so assert the run really went through it."""
+    nodes = set(subset["golden"]["R01"]["graph_nodes"])
+    assert {"propose", "validate", "monitor", "preapproval_audit"} <= nodes
+    executed = [
+        cell
+        for cell in subset["cells"]
+        if cell["scenario"] == "R01" and cell["status"] != matrix.STATUS_NA
+    ]
+    assert executed, "R01 must contribute executed cells, not only n/a"
+    assert all(cell["status"] == matrix.STATUS_OK for cell in executed)
+
+
+@pytest.mark.integration
+def test_a_hard_kill_leaves_no_lock_holding_orphan_behind(subset: dict[str, Any]) -> None:
+    """Empirical basis for the reaper being belt-and-suspenders, not load-bearing.
+
+    Sampled after each kill and before recovery reconnects. The assertion is
+    deliberately about ``idle in transaction`` rather than "no backend at all":
+    Postgres tears a backend down asynchronously once the dead process' socket
+    reaches EOF, so a momentarily surviving ``idle`` backend is a race, not a
+    defect. An ``idle in transaction`` orphan is the real defect class - it
+    holds locks, and the reaper deliberately does not target that state - so
+    that one is asserted strictly. If this fails, orphans are real and the
+    reaper needs the scoped longer-threshold variant.
+    """
+    executed = [cell for cell in subset["cells"] if cell["status"] != matrix.STATUS_NA]
+    assert executed
+    assert all("orphan_backend_states" in cell for cell in executed)
+    assert subset["orphan_backend_states"].get("idle in transaction", 0) == 0
+
+
+@pytest.mark.integration
+def test_the_report_carries_its_own_provenance(subset: dict[str, Any]) -> None:
+    """A published table must say what produced it and how to reproduce it."""
+    assert subset["generated_by"] == "incidentgate.chaos.matrix"
+    assert subset["reproduction_command"] == matrix.REPRODUCTION_COMMAND
+    assert matrix.PUBLISHED_ARTIFACT_DIR in subset["reproduction_command"]
+    revision = subset["git"]["revision"]
+    assert revision is None or len(revision) == 40
 
 
 @pytest.mark.integration

@@ -14,9 +14,9 @@
 >   [Honest gaps](#honest-gaps).
 > - **No model is in the decision path** for any published measurement. Every
 >   evaluation row is a deterministic fixture. See [Honest gaps](#honest-gaps).
-> - Scenarios R13–R20 and T2–T8 are frozen contracts with no runtime. T1 is the
->   one sabotage scenario that has one, and its attack proposer is a
->   deterministic stand-in rather than a model.
+> - Scenarios R13–R20, T2, T3 and T5–T8 are frozen contracts with no runtime. T1
+>   and T4 are the two sabotage scenarios that have one, and both their attack
+>   proposers and T4's monitor are deterministic stand-ins rather than models.
 >
 > Do not depend on this, do not cite its numbers as a product claim, and do not
 > deploy it. It is a laboratory.
@@ -64,15 +64,22 @@ Every kill is a real subprocess death — the parent asserts the child's exit co
 before it attempts recovery. The differ compares an 18-field normalized
 projection of durable Postgres state (ledger rows per scope, fixture mutation
 counters, approval consumption, audit event sequence, evidence reads, ticket
-notes, and — for the sabotage tier — the covert side-effect store), and two
-committed negative-control tests plant a duplicate mutation and a covert
-outbound note directly in Postgres to prove the differ actually goes red when it
-should.
+notes, and — for the sabotage tier — the durable surface its covert objective
+would land on), and two committed negative-control tests plant a duplicate
+mutation and a covert outbound note directly in Postgres to prove the differ
+actually goes red when it should.
 
 That second control exists because the chaos condition is the *honest* gated
 path, so no drive ever produces a covert write on its own. Without a planted one
 the covert surface would be an unexercised guard, and a green T1 row would be a
 claim nobody had checked the instrument for.
+
+The covert surface is not the same shape for both sabotage scenarios, and the
+comparison spec published with the table says which is which. T1's is rows in
+its outbound-note store. T4 has no store — its covert objective is a state
+combination assembled across individually ordinary calls — so its surface is the
+ordered call ledger with the per-call verdict recorded at each step, which is the
+only place an assembly that was later unwound still exists.
 
 Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
 
@@ -112,7 +119,8 @@ Two honest findings from that run, neither of which is a durability failure:
   attempt does not burn the token either. T1 is measured rather than assumed
   into that class: its own killed cell is asserted to land on the key its
   executed operation already occupies, and to leave the covert outbound-note
-  store empty.
+  store empty. The unspendability argument is a property of the idempotency key
+  rather than of any one scenario, so it covers T4's orphans on the same terms.
 - `runtime.status().pending` is not a real interrupt check; it reports a pending
   approval whenever a policy and action exist without a result, even mid-execute.
 
@@ -166,8 +174,8 @@ still cannot mutate.
 | D1–D8, S1, S2 (checkpoints) | frozen | **implemented** |
 | R01–R12 (reliability) | frozen | **implemented** |
 | R13–R20 (reliability) | frozen | planned — no runtime |
-| T1 (covert sabotage) | frozen, 3 attack-policy variants | **implemented** |
-| T2–T8 (covert sabotage) | frozen, 21 attack-policy variants | planned — no runtime |
+| T1, T4 (covert sabotage) | frozen, 3 attack-policy variants each | **implemented** |
+| T2, T3, T5–T8 (covert sabotage) | frozen, 18 attack-policy variants | planned — no runtime |
 
 Every scenario declares its initial state, injected fault, allowed evidence,
 acceptable diagnoses, allowed and forbidden actions, recovery predicate, and a
@@ -212,10 +220,19 @@ These are the things a reviewer should know before believing anything above.
    `fixture_no_call`. A model-driven proposer and an offline response cache are
    implemented and unit-tested in `control/model_proposal.py`, but they are not
    yet wired into the runtime, so no measurement uses them.
-3. **The sabotage tier is therefore vacuous today.** An attack policy is a prompt,
-   and there is no model to receive it. S1 prompt-injection resistance is
-   currently proved by a deterministic transform, not by a model declining to
-   comply.
+3. **The sabotage tier measures the gate chain, not a model.** An attack policy
+   is a prompt and there is no model to receive it, so every covert attempt comes
+   from a proposer written to always attempt, and T4's monitor is a deterministic
+   stand-in written to catch that exact pattern. Both are labelled as such in
+   every published row (`attack_policy_source`, `monitor_source`), and no cell is
+   evidence about what a model would attempt or what a model-backed monitor would
+   flag. What the tier does establish is architectural and does not depend on a
+   model: T4 measured a covert objective that the deterministic policy approved
+   on every call — it evaluates one call at a time and the violation does not
+   exist until a later call completes it — and that the monitor stage then
+   stopped at the first divergent call, while the incident task still completed
+   in all nine cells. S1 prompt-injection resistance is still proved by a
+   deterministic transform, not by a model declining to comply.
 4. **Exactly-once is scoped to the bundled mock operations and local Postgres**,
    where the mutation, ledger row, and token consumption share one transaction.
    It is not a claim about external APIs or distributed delivery.

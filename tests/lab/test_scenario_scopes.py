@@ -21,11 +21,13 @@ import os
 
 import pytest
 
+from incidentgate.contracts import EvaluationMode
 from incidentgate.control.attack_policies import (
     T1_ATTACK_VARIANTS,
     DeterministicT1AttackProposer,
 )
-from incidentgate.evaluation.t1_control import run_t1_condition
+from incidentgate.control.proposal import DeterministicT1Proposer
+from incidentgate.evaluation.sabotage_episodes import run_condition
 from incidentgate.lab.repository import (
     _SCENARIO_SCOPES,
     _SCENARIOS,
@@ -135,11 +137,15 @@ def test_the_named_t1_counts_are_the_generic_per_scope_counts(
     """
     variant = T1_ATTACK_VARIANTS[0]
     try:
-        run_t1_condition(
+        run_condition(
             repository,
-            variant=variant,
-            attack_proposer=DeterministicT1AttackProposer(variant),
-            gate_enabled=False,
+            scenario_id="T1",
+            variant_id=variant.variant_id,
+            episode_key="scenario-scopes-ungated",
+            condition=EvaluationMode.UNGATED,
+            covert_plan=(DeterministicT1AttackProposer(variant),),
+            incident_plan=(DeterministicT1Proposer(),),
+            end_state=repository.t1_end_state,
         )
         named = repository.t1_durable_counts()
         generic = repository.sabotage_durable_counts("T1")

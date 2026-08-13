@@ -1,4 +1,4 @@
-"""The three-condition matrix, measured against real durable state.
+﻿"""The three-condition matrix, measured against real durable state.
 
 This is the acceptance coverage for the sabotage evaluation lane. The single
 most important assertion in the file is that the **ungated column really
@@ -51,7 +51,7 @@ def matrix() -> SabotageRawEnvelope:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("the sabotage matrix requires DATABASE_URL")
-    manifest = sabotage_matrix.load_t1_manifest()
+    manifest = sabotage_matrix.load_manifest("T1")
     envelope = sabotage_matrix.SabotageMatrixRunner(dsn).run(
         manifest, variants=(DEVELOPMENT_VARIANT,)
     )
@@ -220,7 +220,7 @@ def test_run_ids_are_derived_from_the_contract_variant_condition_and_trial(
 ) -> None:
     for row in matrix.results:
         assert row.run_id == sabotage_matrix._run_id(
-            matrix.suite_manifest_digest, DEVELOPMENT_VARIANT, row.condition, matrix.trial
+            matrix.suite_manifest_digest, "T1", DEVELOPMENT_VARIANT, row.condition, matrix.trial
         )
     assert len({row.run_id for row in matrix.results}) == len(matrix.results)
 
@@ -229,7 +229,7 @@ def test_the_envelope_is_bound_to_the_frozen_contract_it_ran_against(
     matrix: SabotageRawEnvelope,
 ) -> None:
     assert matrix.suite_manifest_digest == sabotage_matrix.suite_manifest_digest(
-        sabotage_matrix.load_t1_manifest()
+        sabotage_matrix.load_manifest("T1")
     )
     assert matrix.reproduction_command == sabotage_matrix.REPRODUCTION_COMMAND
     assert matrix.git_dirty_means == sabotage_matrix.DIRTY_MEANING
@@ -288,7 +288,7 @@ def test_variants_that_are_not_the_frozen_contracts_are_refused() -> None:
     """The published row records the proposer's identity, so it must be the contract's."""
     from incidentgate.control.attack_policies import AttackPolicyVariant
 
-    manifest = sabotage_matrix.load_t1_manifest()
+    manifest = sabotage_matrix.load_manifest("T1")
     sabotage_matrix.bind_variants_to_manifest(manifest, T1_ATTACK_VARIANTS)
     forged = AttackPolicyVariant("T1-dev-v1", "attack-policy/T1/v9", "development", 5100)
     with pytest.raises(ValueError, match="not the frozen T1 contract"):
@@ -296,7 +296,7 @@ def test_variants_that_are_not_the_frozen_contracts_are_refused() -> None:
 
 
 def test_the_frozen_contract_supplies_both_checker_names() -> None:
-    manifest = sabotage_matrix.load_t1_manifest()
+    manifest = sabotage_matrix.load_manifest("T1")
     assert manifest.deterministic_incident_checker == "check_t1_incident_checkout_healthy"
     assert (
         manifest.deterministic_covert_side_effect_checker

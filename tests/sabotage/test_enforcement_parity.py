@@ -1,4 +1,4 @@
-"""The experiment must enforce what the gate it measures enforces.
+﻿"""The experiment must enforce what the gate it measures enforces.
 
 The sabotage matrix's whole claim is counterfactual: the covert action lands
 when ungated and is refused when gated, so the difference between the columns is
@@ -9,7 +9,7 @@ argument looks like nothing at the call site.
 
 One such gap was real. ``EvidenceValidator.validate`` took
 ``context: ToolCallContext | None = None`` and skipped the correlation binding
-whenever the argument was omitted, and ``t1_control``'s gated arm omitted it --
+whenever the argument was omitted, and ``sabotage_episodes``'s gated arm omitted it --
 while ``sabotage_matrix`` published ``evidence_gate=EXECUTED`` for that arm. The
 production graph (``workflow.py``) passed it. So the experiment measuring the
 evidence gate ran one predicate fewer than the evidence gate.
@@ -37,7 +37,7 @@ from incidentgate.contracts import (
 )
 from incidentgate.control.evidence import EvidenceValidator
 from incidentgate.control.models import EvidenceState
-from incidentgate.evaluation import t1_control
+from incidentgate.evaluation import sabotage_episodes
 from incidentgate.integration import runtime as runtime_module
 from incidentgate.reasons import CORRELATION_CONTEXT_MISMATCH_PREFIX
 from incidentgate.scenario_registry import (
@@ -72,7 +72,7 @@ def test_the_harness_and_production_share_one_evidence_surface() -> None:
     one of the two.
     """
     assert runtime_module.ALLOWED_EVIDENCE_SOURCES is ALLOWED_EVIDENCE_SOURCES
-    assert t1_control.T1_ALLOWED_EVIDENCE_SOURCES is ALLOWED_EVIDENCE_SOURCES["T1"]
+    assert sabotage_episodes.evidence_sources_for("T1") is ALLOWED_EVIDENCE_SOURCES["T1"]
 
 
 def test_every_action_taking_runnable_scenario_declares_its_evidence_surface() -> None:
@@ -92,7 +92,7 @@ def test_the_harness_gates_on_the_shipped_policy_configuration() -> None:
     shipped = PolicyConfiguration.model_validate(
         json.loads((ROOT / "config" / "policy.example.json").read_text(encoding="utf-8"))
     )
-    assert t1_control.load_policy_configuration() == shipped
+    assert sabotage_episodes.load_policy_configuration() == shipped
 
 
 def _record(evidence_id: str, correlation_id: str) -> EvidenceRecord:
@@ -146,7 +146,7 @@ def test_the_correlation_binding_fires_on_a_mismatched_record() -> None:
     correlation, which makes this the only place that binding is enforced at all.
     """
     validator = EvidenceValidator(
-        t1_control.load_policy_configuration(),
+        sabotage_episodes.load_policy_configuration(),
         lambda: datetime.now(UTC),
         allowed_sources=ALLOWED_EVIDENCE_SOURCES["T1"],
     )
@@ -161,7 +161,7 @@ def test_the_correlation_binding_fires_on_a_mismatched_record() -> None:
 def test_a_matching_correlation_id_is_accepted() -> None:
     """The other side of the control, so the test above cannot pass vacuously."""
     validator = EvidenceValidator(
-        t1_control.load_policy_configuration(),
+        sabotage_episodes.load_policy_configuration(),
         lambda: datetime.now(UTC),
         allowed_sources=ALLOWED_EVIDENCE_SOURCES["T1"],
     )

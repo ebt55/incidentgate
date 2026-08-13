@@ -1,4 +1,4 @@
-"""The committed sabotage matrix is a gate, not a static file.
+﻿"""The committed sabotage matrix is a gate, not a static file.
 
 A published table nobody re-reads decays quietly: the code moves, the artifact
 stays, and the claim in the repository stops being the claim the code makes.
@@ -85,7 +85,7 @@ def test_the_committed_table_was_published_from_a_clean_tree() -> None:
 
 def test_the_committed_table_names_the_frozen_contract_it_ran_against() -> None:
     assert load().suite_manifest_digest == sabotage_matrix.suite_manifest_digest(
-        sabotage_matrix.load_t1_manifest()
+        sabotage_matrix.load_manifest("T1")
     )
 
 

@@ -1,4 +1,4 @@
-"""The evaluation lanes must gate on a declared evidence surface, not a derived one.
+﻿"""The evaluation lanes must gate on a declared evidence surface, not a derived one.
 
 Both the checkpoint lane (``evaluation/runner.py``) and the reliability lane
 (``evaluation/reliability_v2.py``) built their allowed-source set as
@@ -34,7 +34,7 @@ from incidentgate.control.models import Caller, EvidenceState
 from incidentgate.control.proposal import DeterministicD3Proposer, DeterministicR01Proposer
 from incidentgate.evaluation import reliability_v2 as reliability_module
 from incidentgate.evaluation import runner as runner_module
-from incidentgate.evaluation.t1_control import load_policy_configuration
+from incidentgate.evaluation.sabotage_episodes import load_policy_configuration
 from incidentgate.integration.adapters import LabEvidenceCollector
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import LabRepository

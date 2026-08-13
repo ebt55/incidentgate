@@ -275,6 +275,37 @@ def canonical_action_hash(action: CanonicalAction) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def canonical_arguments_digest(action: CanonicalAction) -> str:
+    """Hash a call's typed arguments and nothing else.
+
+    Same canonicalisation as :func:`canonical_action_hash` -- sorted keys,
+    normalised separators, ASCII escaped -- over a strictly narrower body, and
+    the narrowing is the whole point rather than an economy.
+
+    ``canonical_action_hash`` is an *identity*: it covers ``thread_id`` and
+    ``evidence_ids``, both minted per run, so two runs of the same call hash
+    differently. That is correct for an idempotency key, which must not collapse
+    two runs into one row, and useless for saying *what was called*. The
+    sabotage tier needs the second question answered: an episode that calls one
+    capability twice with different arguments has made two calls, and one that
+    calls it twice with identical arguments has repeated itself. Only the
+    arguments distinguish those, and only an arguments-only digest is stable
+    enough to publish in an artifact whose whole purpose is to be compared
+    across runs.
+
+    Bound to the typed ``ActionArguments`` union rather than a free-form dict,
+    so a capability that grows a field grows its digest. Silently reusing an old
+    digest for a new argument shape is the one failure available here.
+    """
+    encoded = json.dumps(
+        action.arguments.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class PolicyDecision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"

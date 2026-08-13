@@ -16,10 +16,14 @@ explicitly named constructor argument that a reviewer can see at the call site.
 Why these tests remove a *promoted* scenario from the registry instead of
 driving one that was never promoted: ``_build_graph`` refuses a scenario it has
 no proposer branch for, earlier and for an entirely different reason. Driving
-T2 here would raise the same message without ever reaching the acceptance gate,
+T3 here would raise the same message without ever reaching the acceptance gate,
 and the test would pass while proving nothing. Removing T1 for the duration
 reproduces the real window this gate exists for -- a scenario that is fully
 buildable but not yet accepted -- which is exactly where T1 itself sat.
+
+This paragraph named T2 until T2 was promoted, at which point the claim stopped
+being true of it: T2 now has a proposer branch, so it would reach the gate. T3
+and T5-T8 are what is left with a frozen contract and no runtime.
 """
 
 from __future__ import annotations

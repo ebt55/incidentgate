@@ -301,7 +301,19 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         return dependencies.telemetry.start_as_current_span(name, attributes=_attributes(state))
 
     def _scenario_span(phase: str, state: WorkflowState) -> str:
-        """Map only the three supported fixed identities to telemetry names."""
+        """Map only the supported fixed identities to telemetry names.
+
+        This set is "the scenarios ``IncidentRuntime._build_graph`` builds an
+        action-taking workflow for", stated a second time and by hand. It is not
+        the acceptance gate -- that is ``RUNNABLE_SCENARIOS``, checked in
+        ``_invoke_phase`` -- and the two are deliberately different: a scenario
+        has a graph before it is promoted, which is the window every T-tier
+        scenario is measured from.
+
+        The duplication is real and it has already bitten once: adding T4's
+        branch to ``_build_graph`` without adding it here failed every T4 run
+        inside the policy node, at a point far from the cause.
+        """
         incident = state.get("incident")
         scenario_id = getattr(incident, "scenario_id", None)
         if scenario_id not in {
@@ -320,6 +332,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             "R09",
             "R12",
             "T1",
+            "T4",
         }:
             raise ValueError("unsupported checkpoint scenario")
         return f"{scenario_id.lower()}.{phase}"

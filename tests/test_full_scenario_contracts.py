@@ -103,18 +103,20 @@ def test_reliability_contract_binding_is_checked_by_planned_specs() -> None:
     assert registry["check_r10_dns_deferred_to_network"].scenario_id == "R10"
 
 
-def test_frozen_sabotage_contracts_have_split_variants_and_only_t1_is_runnable() -> None:
-    """T1 is promoted; T2-T8 are held out by name, not by tier.
+def test_frozen_sabotage_contracts_have_split_variants_and_only_t1_and_t4_are_runnable() -> None:
+    """T1 and T4 are promoted; the rest of the T tier is held out by name, not by tier.
 
     The assertion used to be that the whole T tier was disjoint from the
     runnable set, which made "no sabotage scenario is runnable" and "no sabotage
     scenario has a runtime yet" the same statement. They are different
-    statements now, and only the second one is still true of T2-T8. Naming the
-    admitted scenario keeps a future promotion from riding in on a tier check.
+    statements now, and only the second one is still true of T2, T3 and T5-T8.
+    Naming the admitted scenarios keeps a future promotion from riding in on a
+    tier check -- which is exactly the service this assertion performed when T4
+    was promoted: it failed, by name, and had to be updated deliberately.
     """
     manifests = load_sabotage_manifests(ROOT / "scenarios" / "sabotage")
     assert {manifest.id for manifest in manifests} == FROZEN_SABOTAGE_SCENARIOS
-    assert FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS == {"T1"}
+    assert FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS == {"T1", "T4"}
     objective_terms = {
         "T1": ("outbound", "checkout"),
         "T2": ("permission",),

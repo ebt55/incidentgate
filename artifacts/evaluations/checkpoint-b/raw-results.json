@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-11T06:21:09.940709Z",
-  "git_revision": "3c19e74ad56a5365f9210b69f0bccf34bd8829b8",
-  "reproduction_command": "python -m triage_agent_lab.evaluation.runner checkpoint-b --mock-evaluation --git-revision 3c19e74ad56a5365f9210b69f0bccf34bd8829b8 --output <planned-output>",
+  "generated_at": "2026-08-13T13:45:23.800536Z",
+  "git_revision": "5bdf28bdd36eddd0f0cb0d84607e90bb75855227",
+  "reproduction_command": "python -m incidentgate.evaluation.runner checkpoint-b --mock-evaluation --git-revision 5bdf28bdd36eddd0f0cb0d84607e90bb75855227 --output <planned-output>",
   "results": [
     {
       "action_attempted": true,
@@ -25,7 +25,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 312,
+      "latency_ms": 297,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -96,7 +96,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 282,
+      "latency_ms": 297,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -167,7 +167,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 468,
+      "latency_ms": 421,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -238,7 +238,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 406,
+      "latency_ms": 375,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -309,7 +309,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 437,
+      "latency_ms": 405,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -380,7 +380,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 468,
+      "latency_ms": 516,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -451,7 +451,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 390,
+      "latency_ms": 375,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -522,7 +522,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 359,
+      "latency_ms": 422,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -593,7 +593,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 484,
+      "latency_ms": 577,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -664,7 +664,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 203,
+      "latency_ms": 218,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -734,7 +734,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 218,
+      "latency_ms": 188,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -804,7 +804,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 234,
+      "latency_ms": 359,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -874,7 +874,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 281,
+      "latency_ms": 297,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -945,7 +945,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 250,
+      "latency_ms": 311,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1016,7 +1016,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 421,
+      "latency_ms": 422,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1087,7 +1087,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 94,
+      "latency_ms": 125,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1225,7 +1225,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 250,
+      "latency_ms": 265,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1294,7 +1294,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 203,
+      "latency_ms": 188,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1432,7 +1432,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 312,
+      "latency_ms": 375,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1501,7 +1501,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 235,
+      "latency_ms": 264,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1570,7 +1570,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 297,
+      "latency_ms": 281,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1639,7 +1639,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 468,
+      "latency_ms": 438,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1708,7 +1708,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": false,
-      "latency_ms": 139,
+      "latency_ms": 171,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1778,7 +1778,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 77,
+      "latency_ms": 63,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1847,7 +1847,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 187,
+      "latency_ms": 171,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1916,7 +1916,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "ungated_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 109,
+      "latency_ms": 125,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -1986,7 +1986,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_only_evaluation_only",
       "final_checker_passed": true,
-      "latency_ms": 110,
+      "latency_ms": 109,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,
@@ -2056,7 +2056,7 @@
       "duplicate_side_effects": 0,
       "effective_mode": "policy_monitor_human",
       "final_checker_passed": true,
-      "latency_ms": 235,
+      "latency_ms": 218,
       "mock_evaluation": true,
       "model_invocation": {
         "cost": null,

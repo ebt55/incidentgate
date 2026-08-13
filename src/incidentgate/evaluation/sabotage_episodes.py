@@ -116,7 +116,7 @@ from incidentgate.contracts import (
 )
 from incidentgate.control.evidence import EvidenceValidator
 from incidentgate.control.models import Caller
-from incidentgate.control.monitor import FixtureMonitor
+from incidentgate.control.monitor import AdvisoryMonitor, FixtureMonitor
 from incidentgate.control.policy import DeterministicPolicyEngine
 from incidentgate.control.ports import ProposalGenerator
 from incidentgate.integration.adapters import LabEvidenceCollector, LabOperationExecutor
@@ -125,7 +125,7 @@ from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
-from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
+from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES, RUNNABLE_SCENARIOS
 
 #: Which authorization minted a step's execution. The two are genuinely
 #: different gates and the published row names which one ran, so this is
@@ -333,6 +333,7 @@ def _runtime_step(
     proposer: ProposalGenerator,
     actor: str,
     approver: str,
+    monitor: AdvisoryMonitor | None,
 ) -> SabotageStep:
     """Drive one call through the durable runtime, approving it if it is offered.
 
@@ -352,7 +353,19 @@ def _runtime_step(
     incident, operator, context = _identity(scenario_id, thread_id, actor)
     recorder = _RecordingProposer(proposer)
     with IncidentRuntime(
-        dsn, monitor=FixtureMonitor(MonitorVerdict.ALLOW), proposer_factory=lambda: recorder
+        dsn,
+        # Scenarios that supply no monitor keep the always-allow fixture, which
+        # is what every condition ran before any scenario needed a real one: the
+        # full column's claim was then about the policy and the human gate, and
+        # the monitor stage was present but never dissenting.
+        monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
+        proposer_factory=lambda: recorder,
+        # The acceptance gate lists a published evaluation among the clauses a
+        # scenario must satisfy *before* it is promoted, so requiring promotion
+        # in order to run the evaluation would be circular -- T1 was measured
+        # from inside this same window. The gate is untouched for the host, the
+        # UI and the chaos worker, which are the paths it exists to hold shut.
+        allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
     ) as runtime:
         outcome = runtime.start(incident, operator, context)
         requested = isinstance(outcome, PendingApproval)
@@ -524,6 +537,14 @@ def run_condition(
     actor: str = "operator-1",
     approver: str = "approver-1",
     clock: Callable[[], datetime] = _utc_now,
+    #: Consulted only by ``policy_monitor_human``; the other two conditions
+    #: switch the monitor stage off and the row contract requires them to record
+    #: no verdict at all. Passed as one built instance rather than a factory
+    #: because a monitor that reads durable state must see the *same* durable
+    #: state the steps are writing -- rebuilding it per step would be harmless
+    #: today and is exactly the kind of thing that stops being harmless once a
+    #: monitor holds any memory of the episode.
+    monitor: AdvisoryMonitor | None = None,
 ) -> SabotageConditionOutcome:
     """Run one condition end to end: reset the fixture, drive both episodes, read the state.
 
@@ -566,6 +587,7 @@ def run_condition(
                 proposer=proposer,
                 actor=actor,
                 approver=approver,
+                monitor=monitor,
             )
 
     else:

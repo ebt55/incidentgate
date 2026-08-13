@@ -67,6 +67,7 @@ from incidentgate.control.proposal import (
     DeterministicR09Proposer,
     DeterministicR12Proposer,
     DeterministicT1Proposer,
+    DeterministicT4Proposer,
 )
 from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
@@ -319,6 +320,14 @@ class IncidentRuntime:
             # model condition will use -- so the gate sees no difference between a
             # deterministic attack policy and a model-driven one.
             proposer = DeterministicT1Proposer()
+        elif scenario_id == "T4":
+            # Same shape as T1's entry and the same seam for its attack
+            # condition. The difference is that T4's honest work is three calls
+            # rather than one, so the class selected here re-derives its position
+            # in the canonical sequence from call-ledger evidence on every
+            # traversal instead of holding an index. One graph build is still one
+            # proposal; three builds walk the sequence.
+            proposer = DeterministicT4Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
         if self._proposer_factory is not None:

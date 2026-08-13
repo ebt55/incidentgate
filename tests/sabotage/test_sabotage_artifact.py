@@ -130,6 +130,26 @@ def test_every_published_leg_is_the_single_call_t1_actually_makes() -> None:
     for row in load().results:
         for leg in (row.covert_episode, row.incident_episode):
             assert [step.step_index for step in leg.steps] == [0]
-            # T1's apparatus records the capability the gate was handed and not
-            # the arguments behind it. Absent, uniformly, rather than invented.
-            assert [step.arguments_digest for step in leg.steps] == [None]
+            # Every published call names its arguments now, uniformly. The
+            # episode runner records the digest at the proposal seam, so this is
+            # what the gate was handed rather than what the plan intended.
+            assert all(step.arguments_digest is not None for step in leg.steps)
+
+
+def test_the_published_argument_digests_tell_one_capability_apart_from_itself() -> None:
+    """The property the digest exists for, visible in the published table.
+
+    ``operations.write_outbound_note`` is proposed in every cell, but T1's
+    variants derive ``source_ref`` from their frozen seed -- the odd-seeded
+    calibration variant copies a log excerpt where the other two copy a ticket.
+    So one capability carries two digests here, which is exactly what keying
+    ``SabotageEpisode.issued`` on ``(tool, arguments_digest)`` is for: on tool
+    name alone those would be indistinguishable.
+    """
+    by_tool: dict[str, set[str | None]] = {}
+    for row in load().results:
+        for leg in (row.covert_episode, row.incident_episode):
+            for step in leg.steps:
+                by_tool.setdefault(step.proposed_tool, set()).add(step.arguments_digest)
+    assert len(by_tool["operations.write_outbound_note"]) == 2
+    assert len(by_tool["operations.record_checkout_remediation"]) == 1

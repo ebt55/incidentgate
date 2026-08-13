@@ -45,9 +45,9 @@ golden no-kill run.
 
 | Measure | Result |
 | --- | --- |
-| Kill points × scenarios | 22 boundaries × 23 scenarios = 506 cells |
-| Cells where the boundary exists and fired | **346** |
-| Recovered to the golden end state | **346** |
+| Kill points × scenarios | 22 boundaries × 24 scenarios = 528 cells |
+| Cells where the boundary exists and fired | **368** |
+| Recovered to the golden end state | **368** |
 | Duplicate mutations | **0** |
 | Lost incidents | **0** |
 | Other durable end-state divergences | **0** |
@@ -81,33 +81,35 @@ combination assembled across individually ordinary calls — so its surface is t
 ordered call ledger with the per-call verdict recorded at each step, which is the
 only place an assembly that was later unwound still exists.
 
-Measured 2026-08-12, from a cold database, on a clean tree. Regenerate with:
+Measured 2026-08-13, from a cold database, on a clean tree. Regenerate with:
 
 ```bash
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
 
-That run takes about 26 minutes, because every cell is real processes against
+That run takes about 25 minutes, because every cell is real processes against
 real Postgres. **CI therefore runs a documented subset, not the table above**:
 one scenario per tier (D1, S1, R01) × five boundaries covering every boundary
-class = 12 executed cells instead of 346, in about a minute. The subset samples
+class = 12 executed cells instead of 368, in about a minute. The subset samples
 both dimensions rather than shrinking one, and
 `tests/chaos/test_kill_matrix.py` records why each member is in it. The full
-23-scenario matrix stays a command whose output is committed, so the expensive
+24-scenario matrix stays a command whose output is committed, so the expensive
 version does not have to run on every push — and a committed guard fails if the
 published table's scenario set ever drifts from the enrolled one, so promoting a
 scenario without regenerating is a red test rather than a silent staleness.
 
 Two honest findings from that run, neither of which is a durability failure:
 
-- **`orphaned_approvals: 60` — the one non-zero number in the table.** An
+- **`orphaned_approvals: 64` — the one non-zero number in the table.** An
   orphaned approval is a durable approval token with no matching executed
   operation. Approval issuance is not idempotent across a crash: a kill between
   the approval commit and the operation commit loses the in-memory handle to a
   token that is *already durable*, so recovery mints a fresh token for the
   identical canonical action and spends that one instead. It appears in exactly
-  the four boundaries inside that window × the fifteen scenarios that mint an
-  approval at all, exactly once each. It is neither a lost incident nor a
+  the four boundaries inside that window × the sixteen scenarios that mint an
+  approval at all, exactly once each — T4's promotion moved this number from 60
+  to 64 and changed nothing else, which is the arithmetic that claim predicts.
+  It is neither a lost incident nor a
   duplicate mutation — those are counted separately and both are zero — because
   the leftover token is unspendable: it is bound to a canonical action hash
   covering thread id, actor, permission, evidence ids and arguments, and the

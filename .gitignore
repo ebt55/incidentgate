@@ -37,6 +37,12 @@ artifacts/chaos/
 # not project documentation, and they record local paths and scheduling context.
 IMMEDIATE-PROJECT-OPSPILOT.md
 PROJECT-HANDOFF.md
+# The handoff's companions: design decisions measured against the private spec,
+# findings, the MCP position, and decisions awaiting the owner. They quote the
+# spec and carry local planning context, so they stay working documents. Much of
+# their content belongs in public docs eventually -- the route for that is the
+# packaging chunk lifting it into docs/, not un-ignoring these.
+NOTES-*.md
 # Exactly one historical working-notes audit, not the docs/audits/ directory:
 # honest audit documents are content this project should publish, so a future
 # docs/audits/*.md must be committable without editing this file.

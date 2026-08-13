@@ -3,9 +3,16 @@
 The committed fixture under ``tests/fixtures/model_cache`` lets an opus proposer (which cannot
 use temperature) reproduce a bit-identical action with no network. Its filename is the cache
 key, which is a hash over the canonical prompt *including the proposer schema fingerprint*, so
-any change to the prompt or to ``_ProposerOutput`` re-keys it. To regenerate it, run
-``record_committed_fixture()`` at the bottom of this module: it rewrites the committed directory
-in place from a canned output and needs no network and no API key.
+any change to the prompt, to the citation-label scheme, or to ``_ProposerOutput`` re-keys it. To
+regenerate it, run ``record_committed_fixture()`` at the bottom of this module: it rewrites the
+committed directory in place from a canned output and needs no network and no API key.
+
+The synthetic evidence in this module carries readable ids (``ev-health`` and friends) purely so
+the assertions read well. They are no longer part of the key: the prompt cites evidence by
+positional label, so what this fixture is really keyed to is the D1 *shape* -- three records, in
+collection order, with those payloads. A lab-collected D1 incident produces that same shape and
+therefore this same key, which is what
+``tests/integration/test_model_backed_incident.py`` relies on.
 """
 
 from __future__ import annotations
@@ -107,7 +114,9 @@ def model_output() -> str:
             "confidence": 0.9,
             "tool_name": "operations.rollback",
             "arguments": {"kind": "rollback", "component": "api", "target_revision": "v1"},
-            "evidence_ids": ["ev-health", "ev-diff", "ev-logs"],
+            # Citation labels in the order records() supplies them, which is the order the
+            # D1 collector reads: health, deployment_diff, logs.
+            "citations": ["e0", "e1", "e2"],
         }
     )
 
@@ -251,15 +260,13 @@ def test_committed_fixture_key_matches_the_current_prompt_and_schema() -> None:
     A cache miss surfaces downstream only as ``proposal_model_unavailable``, so without this
     check a schema change that silently invalidates the fixture is very hard to diagnose.
 
-    Worth knowing before planning anything around this fixture: it is keyed to the SYNTHETIC
-    evidence in this module -- ids ``ev-health``/``ev-diff``/``ev-logs`` at a frozen
-    ``observed_at`` -- and no lab-collected incident can ever hit it. The key hashes the
-    evidence digest, which carries ``evidence_id`` and ``observed_at``, while lab collection
-    mints ``uuid4()`` ids with a live ``observed_at``, so a real incident computes a different
-    key every run. Re-keying per run does not help either: the captured output cites those
-    three ids verbatim and the proposer rejects citations outside the run's citable set. See
-    tests/integration/test_model_backed_incident.py, which drives a replayed proposal through
-    the real gate chain by pinning only the four digest fields.
+    What re-keys this fixture is now exactly three things: ``_ProposerOutput``'s schema, the
+    prompt serialization, and the citation-label scheme. What does *not* re-key it is the
+    thing that used to: the evidence ids and ``observed_at`` this module happens to use. The
+    prompt cites by position, so any three records read in D1's collection order with these
+    payloads compute this key -- including the ``uuid4()``-identified ones a real lab
+    collection mints, which is why ``tests/integration/test_model_backed_incident.py`` can now
+    drive this fixture from a genuinely collected incident.
     """
     committed = {path.stem for path in (COMMITTED_CACHE / OPUS).glob("*.json")}
     assert committed_fixture_key() in committed, (

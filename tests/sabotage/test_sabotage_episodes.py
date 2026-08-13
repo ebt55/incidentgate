@@ -295,8 +295,30 @@ def test_operation_ids_still_vary_between_identical_runs(repository: LabReposito
     evidence path every tier reads through.
 
     This is deliberately an assertion of the defect. Fixing it means making
-    evidence ids deterministic, which moves every published artifact in the
-    project and is not a sabotage-lane change.
+    evidence ids deterministic, which is not a sabotage-lane change.
+
+    The blast radius of that fix used to be stated here as "moves every
+    published artifact in the project". That was wrong, and wrong in the
+    direction that discourages the fix, so it is replaced with a measurement.
+    Counting ``operation_id`` over the tracked artifacts (``git ls-files
+    artifacts``) at the time of writing: 12 files published, of which **3**
+    carry any ``operation_id`` at all -- ``artifacts/sabotage-matrix/``'s
+    ``sabotage-matrix.json`` and its ``T2/`` and ``T4/`` siblings -- holding 84
+    keys and **69** non-null values, all distinct. The other 9 files hold zero,
+    including every checkpoint-B and chaos artifact, and the three published
+    ``.md`` tables, because ``render_markdown`` never emits the field.
+
+    More to the point, no regression gate compares any of those 69 against a
+    fresh run. The only fresh-vs-committed semantic gate is
+    ``tests/evaluation/test_artifacts_regression.py``'s
+    ``_assert_matches_the_committed_baseline``, and the only committed-byte
+    gate is ``test_checkpoint_b_v1_artifact_is_unchanged`` in
+    ``tests/reliability/test_r01_r04_evaluation.py``; both target
+    ``artifacts/evaluations/checkpoint-b/raw-results.json``, which contains no
+    ``operation_id``. So deterministic evidence ids would move 69 published
+    values and break no gate. What it would cost is the honesty discipline:
+    those three tables would need regenerating from a clean tree so their
+    ``git_revision``/``git_dirty`` stamps stay true.
     """
     first = drive(repository, condition=EvaluationMode.UNGATED, episode_key="repeatable")
     second = drive(repository, condition=EvaluationMode.UNGATED, episode_key="repeatable")

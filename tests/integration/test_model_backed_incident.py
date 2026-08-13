@@ -1,37 +1,42 @@
-"""A real captured model output driving the real gate chain, offline.
+"""A real captured model output driving the real gate chain, on real collected evidence.
 
-WHAT IS REAL HERE. Everything downstream of evidence collection. The proposal is
-a genuine Anthropic model output, captured once and committed under
-tests/fixtures/model_cache, replayed with no network. From there the production
-components run unmodified against Postgres: the deterministic policy engine
-evaluates the model's chosen action, the advisory monitor verdicts it, the graph
-interrupts for a human, the lab approval service issues a real durable token, the
-token validator binds it, the lab operations executor performs the mutation and
-records it in the operation ledger under a graph-derived idempotency key, and the
-lab recovery verifier re-reads fresh evidence to confirm recovery. The checkpoint
-is the runtime's own durable PostgresSaver, so the interrupt and resume are the
-production ones, not an in-memory stand-in.
+WHAT IS REAL HERE. All of it. The incident's evidence is collected by the production
+``LabEvidenceCollector`` through the authenticated observability boundary, so the
+evidence ids are the lab's own ``uuid4()`` values and the rows are the rows the lab
+wrote. The proposal is a genuine Anthropic model output, captured once and committed
+under tests/fixtures/model_cache, replayed with no network. From there the production
+components run unmodified against Postgres: the deterministic policy engine evaluates
+the model's chosen action, the advisory monitor verdicts it, the graph interrupts for a
+human, the lab approval service issues a real durable token, the token validator binds
+it, the lab operations executor performs the mutation and records it in the operation
+ledger under a graph-derived idempotency key, and the lab recovery verifier re-reads
+fresh evidence to confirm recovery. The checkpoint is the runtime's own durable
+PostgresSaver, so the interrupt and resume are the production ones, not an in-memory
+stand-in.
 
-WHAT IS SUBSTITUTED, AND WHY IT CANNOT BE AVOIDED. The evidence SOURCE only. The
-response cache is keyed on sha256 of the canonical prompt, and the prompt's user
-content is the evidence digest: each record's evidence_id, tool_name, observed_at
-and payload (control/model_proposal.py, _build_request). Lab collection generates
-evidence_id=str(uuid4()) with a live observed_at, so a lab-collected incident
-produces a different prompt on every run and can never match a committed fixture.
+WHAT IS SUBSTITUTED. Nothing. This module used to carry a ``FixtureEvidenceCollector``
+and hand-seeded ``evidence_records`` rows, honestly labelled as the one substituted
+component, because the prompt digest rendered each record's ``evidence_id`` and
+``observed_at`` and sorted by ``evidence_id``. Lab collection mints both per run, so a
+lab-collected incident computed a different cache key every time and could never match a
+committed fixture -- and re-keying per run was no escape either, since the captured
+output cited specific ids and the proposer rejects any citation outside the run's citable
+set. That check is the safety property, so the substitution was the honest option.
 
-Re-keying a fixture per run would not help either: the captured output cites
-ev-health, ev-diff and ev-logs verbatim, and the proposer rejects any citation
-outside the run's citable set (proposal_uncited_evidence). That check is the
-safety property that stops a steering prompt inventing evidence, so making this
-test pass by loosening it would destroy the thing being demonstrated.
+The proposer now cites evidence by positional label (``e0``, ``e1``, ...) and drops
+``observed_at``, so the prompt describes what was observed rather than where it is
+stored. Two collections of the same incident therefore hash to the same prompt, the
+substitution has no reason to exist, and it is gone: this test inserts no evidence row of
+its own and pins nothing to the fixture's values. What the fixture is keyed to now is
+D1's evidence *shape* -- three records, in ``_kinds["D1"]`` collection order, with the
+payloads the lab actually serves -- which a real collection reproduces by construction.
 
-The substitution is therefore as narrow as the keying allows. The incident,
-thread, correlation id and actor are all real; only the four digest fields are
-pinned to the fixture's values. No gate is substituted, stubbed or relaxed.
-
-Deterministic evidence under replay -- which would let a lab-collected incident
-match a committed fixture -- is deferred to the three-condition evaluation's
-replay strategy.
+Two things this deliberately does NOT claim. Evidence ids are still non-deterministic;
+they are simply no longer part of the prompt, which is a weaker and sufficient property.
+And prompt stability is a per-scenario fact rather than a consequence of the digest
+shape, because the digest still carries payload content: see
+tests/integration/test_prompt_stability.py, which measures it for every runnable scenario
+and records the one that fails.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from langgraph.types import Command
@@ -56,6 +61,7 @@ from incidentgate.contracts import (
     Role,
     ToolCallContext,
     canonical_action_hash,
+    canonical_arguments_digest,
 )
 from incidentgate.control import (
     DeterministicPolicyEngine,
@@ -64,12 +70,18 @@ from incidentgate.control import (
     WorkflowDependencies,
     build_workflow_graph,
 )
-from incidentgate.control.model_proposal import ModelAgentProposer
+from incidentgate.control.model_proposal import (
+    CompletionRequest,
+    CompletionResult,
+    ModelAgentProposer,
+)
 from incidentgate.control.models import Caller
+from incidentgate.control.proposal import ProposalError
 from incidentgate.control.response_cache import CacheBackedCompletionClient, ResponseCache
 from incidentgate.integration import IncidentRuntime
 from incidentgate.integration.adapters import (
     LabAuditEmitter,
+    LabEvidenceCollector,
     LabOperationExecutor,
     LabRecoveryVerifier,
     LabTokenValidator,
@@ -84,12 +96,6 @@ OPUS = "claude-opus-5"
 COMMITTED_CACHE = Path(__file__).resolve().parents[1] / "fixtures" / "model_cache"
 CONFIG = Path(__file__).resolve().parents[2] / "config" / "policy.example.json"
 
-# The fixture's evidence was captured at this instant. The digest carries
-# observed_at, so it cannot move without re-keying the cache; the graph clock is
-# therefore pinned just after it, inside the evidence freshness window.
-OBSERVED = datetime(2026, 1, 1, tzinfo=UTC)
-FROZEN_NOW = OBSERVED + timedelta(seconds=60)
-
 D1_SOURCES = ALLOWED_EVIDENCE_SOURCES["D1"]
 
 
@@ -100,108 +106,16 @@ def _dsn() -> str:
     return dsn
 
 
-# (evidence_id, source kind, payload). tool_name is "observability.<kind>", which is
-# also how the lab derives it when re-validating a citation at execution time.
-FIXTURE_EVIDENCE = (
-    ("ev-health", "health", {"component": "api", "revision": "v2", "status": 500}),
-    (
-        "ev-diff",
-        "deployment_diff",
-        {"component": "api", "from_revision": "v1", "to_revision": "v2"},
-    ),
-    ("ev-logs", "logs", {"component": "api", "lines": 42}),
-)
-
-
-def _fixture_evidence(
-    incident: IncidentIdentity, context: ToolCallContext, expires_at: datetime
-) -> tuple[EvidenceRecord, ...]:
-    """The committed fixture's evidence digest, bound to a real incident identity.
-
-    Only evidence_id, tool_name, observed_at and payload are part of the cache key,
-    so binding these to this run's incident/thread/correlation, and giving them a
-    real-future expiry, leaves the prompt hash untouched.
-    """
-    return tuple(
-        EvidenceRecord(
-            evidence_id=evidence_id,
-            incident_id=incident.incident_id,
-            thread_id=incident.thread_id,
-            correlation_id=incident.correlation_id,
-            tool_name=f"observability.{kind}",
-            actor=context.actor,
-            permission="observability:read",
-            observed_at=OBSERVED,
-            expires_at=expires_at,
-            payload=payload,
-        )
-        for evidence_id, kind, payload in FIXTURE_EVIDENCE
-    )
-
-
-def _seed_durable_evidence(
-    repository: LabRepository,
-    incident: IncidentIdentity,
-    context: ToolCallContext,
-    expires_at: datetime,
-) -> None:
-    """Make the fixture's citations real rows, because the executor re-checks them.
-
-    The lab re-validates every cited evidence_id against evidence_records joined to
-    immutable_evidence_source at execution time, using its own real clock. That is
-    a durability gate worth keeping, so the citations are seeded rather than the
-    gate relaxed.
-    """
-    with repository._connect() as connection, connection.cursor() as cursor:
-        cursor.execute(
-            "DELETE FROM evidence_records WHERE evidence_id = ANY(%s)",
-            ([evidence_id for evidence_id, _, _ in FIXTURE_EVIDENCE],),
-        )
-        for evidence_id, kind, payload in FIXTURE_EVIDENCE:
-            source_id = uuid4()
-            cursor.execute(
-                "INSERT INTO immutable_evidence_source "
-                "(source_id, incident_id, kind, payload, observed_at) VALUES (%s, %s, %s, %s, %s)",
-                (source_id, incident.incident_id, kind, json.dumps(payload), OBSERVED),
-            )
-            cursor.execute(
-                "INSERT INTO evidence_records (evidence_id, incident_id, thread_id, "
-                "correlation_id, tool_name, actor, permission, source_id, observed_at, "
-                "expires_at, payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    evidence_id,
-                    incident.incident_id,
-                    incident.thread_id,
-                    incident.correlation_id,
-                    f"observability.{kind}",
-                    context.actor,
-                    "observability:read",
-                    source_id,
-                    OBSERVED,
-                    expires_at,
-                    json.dumps(payload),
-                ),
-            )
-
-
-class FixtureEvidenceCollector:
-    """Supplies the committed fixture's evidence. The only substituted component."""
-
-    def __init__(self, records: tuple[EvidenceRecord, ...]) -> None:
-        self._records = records
-
-    def collect(self, incident: IncidentIdentity) -> tuple[EvidenceRecord, ...]:
-        return self._records
-
-
-def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
-    dsn = _dsn()
+def _fresh_d1(dsn: str) -> LabRepository:
+    """A D1 repository with the contract's fault injected and nothing else touched."""
     repository = LabRepository(dsn)
     repository.migrate()
     repository.reset_d1()
     repository.inject_d1()
+    return repository
 
-    thread_id = f"model-seam-{uuid4().hex[:12]}"
+
+def _inputs(thread_id: str) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     incident = IncidentIdentity(
         incident_id="INC-D1",
         scenario_id="D1",
@@ -217,31 +131,61 @@ def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
         actor=caller.actor,
         permission="operations:write",
     )
+    return incident, caller, context
 
-    def clock() -> datetime:
-        return FROZEN_NOW
 
-    # The graph runs on a clock pinned next to the fixture's observed_at, because the
-    # digest carries observed_at and the evidence must not read as stale in process.
-    # The lab's own durability checks use the real clock and are not injectable, so
-    # anything they compare against real time -- the approval expiry and the evidence
-    # expiry -- is given a real-future value. Neither is part of the prompt hash.
-    real_horizon = datetime.now(UTC) + timedelta(hours=1)
-    _seed_durable_evidence(repository, incident, context, real_horizon)
+def _collector(
+    repository: LabRepository, caller: Caller, context: ToolCallContext
+) -> LabEvidenceCollector:
+    """The production collector, constructed exactly as the runtime constructs it."""
+    return LabEvidenceCollector(
+        ObservabilityService(repository), caller, context, scenario_id="D1"
+    )
 
-    config = PolicyConfiguration.model_validate(json.loads(CONFIG.read_text(encoding="utf-8")))
-    observability = ObservabilityService(repository)
-    proposer = ModelAgentProposer(
-        client=CacheBackedCompletionClient(ResponseCache(COMMITTED_CACHE)),
+
+class _WatchingClient:
+    """Passes through to the real cache-backed client, remembering the key it looked up."""
+
+    def __init__(self, inner: CacheBackedCompletionClient) -> None:
+        self._inner = inner
+        self.requests: list[CompletionRequest] = []
+
+    def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.requests.append(request)
+        return self._inner.complete(request)
+
+
+def _replaying_proposer(client: object | None = None) -> ModelAgentProposer:
+    return ModelAgentProposer(
+        client=client or CacheBackedCompletionClient(ResponseCache(COMMITTED_CACHE)),  # type: ignore[arg-type]
         model=OPUS,
         temperature=None,
     )
+
+
+def test_a_lab_collected_incident_passes_the_whole_gate_chain_on_a_replayed_proposal() -> None:
+    dsn = _dsn()
+    repository = _fresh_d1(dsn)
+
+    thread_id = f"model-seam-{uuid4().hex[:12]}"
+    incident, caller, context = _inputs(thread_id)
+    now = datetime.now(UTC)
+
+    def clock() -> datetime:
+        return datetime.now(UTC)
+
+    config = PolicyConfiguration.model_validate(json.loads(CONFIG.read_text(encoding="utf-8")))
+    observability = ObservabilityService(repository)
+    proposer = _replaying_proposer()
 
     # The runtime owns the durable checkpointer and its strict serde allowlist;
     # borrowing it keeps the interrupt/resume path the production one.
     with IncidentRuntime(dsn, clock=clock) as runtime:
         dependencies = WorkflowDependencies(
-            collector=FixtureEvidenceCollector(_fixture_evidence(incident, context, real_horizon)),
+            # The production collector, reading the lab's own rows. No evidence is inserted
+            # by this test, and no clock is pinned: the collected evidence is genuinely
+            # fresh, so the validator's freshness window is satisfied rather than arranged.
+            collector=_collector(repository, caller, context),
             proposer=proposer,
             evidence_validator=EvidenceValidator(config, clock, allowed_sources=D1_SOURCES),
             policy=DeterministicPolicyEngine(config),
@@ -260,7 +204,9 @@ def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
             {"incident": incident, "caller": caller, "context": context}, run_config
         )
 
-        # 1. The proposal came from the model path, replayed, with no network.
+        # 1. The proposal came from the model path, replayed, with no network. A hit at all
+        #    is the headline result: this prompt was built from evidence collected seconds
+        #    ago, and it still matched a fixture committed to git.
         assert proposer.last_invocation is not None
         invocation = proposer.last_invocation
         assert invocation.invocation_kind == "cache_replay"
@@ -278,8 +224,17 @@ def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
         assert action.tool_name == "operations.rollback"
         assert action.arguments.component == "api"
         assert action.arguments.target_revision == "v1"
-        # The citations are the model's, and they are the evidence we actually hold.
-        assert set(action.evidence_ids) == {"ev-health", "ev-diff", "ev-logs"}
+
+        # The citations are the model's, decoded to the evidence this run actually
+        # collected. Nothing here is a value this module chose: the ids are the lab's,
+        # minted at collection time, which is what makes them uuid4-shaped.
+        collected = state["records"]
+        assert len(collected) == 3
+        assert set(action.evidence_ids) == {record.evidence_id for record in collected}
+        for evidence_id in action.evidence_ids:
+            assert UUID(evidence_id).version == 4, (
+                f"{evidence_id} is not a lab-minted id; this test must not seed evidence"
+            )
 
         # 3. The real policy engine evaluated the model's action.
         assert state["policy"].decision is PolicyDecision.REQUIRE_APPROVAL
@@ -294,8 +249,8 @@ def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
         request = ApprovalRequest(
             action_hash=action_hash,
             actor=action.actor,
-            requested_at=FROZEN_NOW,
-            expires_at=real_horizon,
+            requested_at=now,
+            expires_at=now + timedelta(hours=1),
             one_time_use_id=uuid4(),
         )
         token = ApprovalService(
@@ -332,37 +287,76 @@ def test_a_replayed_model_proposal_passes_the_whole_gate_chain() -> None:
         assert expected in transitions, f"{expected} missing from {transitions}"
 
 
-def test_the_replayed_proposal_is_bit_identical_across_runs() -> None:
-    """Determinism comes from the committed capture, not from sampling parameters."""
-    _dsn()
-    incident = IncidentIdentity(
-        incident_id="INC-D1",
-        scenario_id="D1",
-        thread_id="determinism-thread",
-        correlation_id="corr-determinism-thread",
-        state=IncidentState.OPEN,
-    )
-    context = ToolCallContext(
-        incident_id=incident.incident_id,
-        thread_id=incident.thread_id,
-        correlation_id=incident.correlation_id,
-        actor="operator-1",
-        permission="operations:write",
-    )
-    caller = Caller(actor="operator-1", role=Role.OPERATOR)
-    records = _fixture_evidence(incident, context, datetime.now(UTC) + timedelta(hours=1))
+def test_the_committed_fixture_is_keyed_to_real_lab_evidence() -> None:
+    """Name the drift, rather than letting it surface as ``proposal_model_unavailable``.
 
-    # The semantic hash, not the object: every proposal mints a fresh action_id, and
-    # it is deliberately outside the hash that policy and the approval token bind to.
-    hashes = set()
+    The committed fixture is recorded offline, from payloads transcribed by hand into
+    tests/control/test_response_cache.py, so that ``record_committed_fixture()`` needs no
+    Postgres. The cost of transcribing is that nothing in that module can notice when the
+    lab starts serving a different payload -- and it did not match to begin with: the
+    synthetic logs record carried an invented ``{"component", "lines"}`` payload where the
+    lab serves ``{"level", "message"}``. Removing storage identity from the prompt was
+    necessary for a lab-collected incident to hit the fixture, and this is the check that
+    it is also sufficient.
+    """
+    dsn = _dsn()
+    repository = _fresh_d1(dsn)
+    incident, caller, context = _inputs(f"fixture-key-{uuid4().hex[:12]}")
+    records: tuple[EvidenceRecord, ...] = _collector(repository, caller, context).collect(incident)
+
+    watcher = _WatchingClient(CacheBackedCompletionClient(ResponseCache(COMMITTED_CACHE)))
+    proposer = _replaying_proposer(watcher)
+    try:
+        proposer.propose(incident, caller, context, records)
+    except ProposalError:
+        pass  # asserted below, with the key that actually missed
+    assert watcher.requests, "no prompt was built, so there is nothing to compare"
+
+    committed = {path.stem for path in (COMMITTED_CACHE / OPUS).glob("*.json")}
+    assert watcher.requests[0].prompt_sha256 in committed, (
+        f"a lab-collected D1 computes {watcher.requests[0].prompt_sha256} but the committed "
+        f"opus fixture is keyed {sorted(committed)}. The lab's D1 evidence and the "
+        "transcribed records() in tests/control/test_response_cache.py have diverged: "
+        "re-transcribe the payloads the lab now serves, then regenerate with "
+        f"record_committed_fixture(). Collected: "
+        f"{[(r.tool_name, sorted(r.payload)) for r in records]}"
+    )
+    assert proposer.last_invocation is not None
+    assert proposer.last_invocation.invocation_kind == "cache_replay"
+
+
+def test_the_replay_is_deterministic_in_what_it_proposes_not_in_run_identity() -> None:
+    """Determinism comes from the committed capture, not from sampling parameters.
+
+    This module's predecessor asserted one ``canonical_action_hash`` across two replays,
+    which it could only do because it pinned the evidence ids. With real collection each
+    run mints its own, and that hash covers ``evidence_ids`` deliberately -- it is an
+    idempotency identity, and two runs must not collapse into one ledger row. So the claim
+    is split into the two facts that are actually true, rather than kept under a name that
+    would no longer describe either: what was *called* is identical, and what *run* called
+    it is not. ``canonical_arguments_digest`` exists for exactly that first question.
+    """
+    dsn = _dsn()
+    incident, caller, context = _inputs("determinism-thread")
+
+    identities, calls, proposals, citations = set(), set(), set(), set()
     for _ in range(2):
-        proposer = ModelAgentProposer(
-            client=CacheBackedCompletionClient(ResponseCache(COMMITTED_CACHE)),
-            model=OPUS,
-            temperature=None,
-        )
-        _, action = proposer.propose(incident, caller, context, records)
-        hashes.add(canonical_action_hash(action))
+        repository = _fresh_d1(dsn)
+        records = _collector(repository, caller, context).collect(incident)
+        proposer = _replaying_proposer()
+        hypothesis, action = proposer.propose(incident, caller, context, records)
+        identities.add(canonical_action_hash(action))
+        calls.add((action.tool_name, canonical_arguments_digest(action)))
+        proposals.add((hypothesis.hypothesis_id, hypothesis.statement, hypothesis.confidence))
+        citations.add(action.evidence_ids)
         assert proposer.last_invocation is not None
         assert proposer.last_invocation.invocation_kind == "cache_replay"
-    assert len(hashes) == 1
+
+    # The control: two genuinely separate collections, so the ids really did move. Without
+    # this the equalities below could be passing on one collection replayed twice.
+    assert len(citations) == 2, "both runs cited the same ids; this proves nothing about replay"
+    # What the replay determines: the same diagnosis, the same call, every time.
+    assert len(calls) == 1
+    assert len(proposals) == 1
+    # What it does not, and must not: run identity still moves with the evidence ids.
+    assert len(identities) == 2

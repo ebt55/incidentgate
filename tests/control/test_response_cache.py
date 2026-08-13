@@ -91,6 +91,19 @@ def _evidence(evidence_id: str, tool_name: str, payload: dict[str, Any]) -> Evid
 
 
 def records() -> tuple[EvidenceRecord, ...]:
+    """D1's real evidence shape: the lab's payloads, in the lab's collection order.
+
+    These payloads are transcribed from what ``LabEvidenceCollector`` actually serves for
+    D1, not invented, and the order is ``_kinds["D1"]``. That correspondence is what lets a
+    genuinely collected incident compute this module's key and replay the committed fixture;
+    it is not decoration. The ids are readable rather than ``uuid4()`` only because these
+    assertions read better that way -- ids are no longer part of the key at all.
+
+    Kept DB-free deliberately, so ``record_committed_fixture()`` still needs no network and
+    no Postgres. The cost of transcribing is that it can drift from the lab, so the drift is
+    made loud rather than trusted: ``test_the_committed_fixture_is_keyed_to_real_lab_evidence``
+    in tests/integration/test_model_backed_incident.py fails the moment these stop matching.
+    """
     return (
         _evidence(
             "ev-health",
@@ -102,7 +115,11 @@ def records() -> tuple[EvidenceRecord, ...]:
             "observability.deployment_diff",
             {"component": "api", "from_revision": "v1", "to_revision": "v2"},
         ),
-        _evidence("ev-logs", "observability.logs", {"component": "api", "lines": 42}),
+        _evidence(
+            "ev-logs",
+            "observability.logs",
+            {"level": "ERROR", "message": "api revision v2 returns 500"},
+        ),
     )
 
 
@@ -305,7 +322,10 @@ def test_strong_model_replays_committed_fixture_deterministically() -> None:
 
 def test_committed_cache_miss_fails_closed_in_proposer() -> None:
     """A proposer whose cache lacks this prompt must fail closed, never fabricate an action."""
-    # A different scenario/incident yields a different prompt hash than the committed fixture.
+    # What makes this a miss is the *evidence*: one record with one payload, where the
+    # committed key covers D1's three. Identity is what makes it not a miss -- the differing
+    # incident, correlation and evidence ids below never reach the prompt, which is the
+    # point of citing by position, so they cannot re-key anything.
     mismatched = IncidentIdentity(
         incident_id="INC-d1", scenario_id="D1", thread_id="thread-1", correlation_id="corr-XYZ"
     )

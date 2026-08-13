@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
 import time
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
@@ -20,10 +22,12 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from incidentgate.contracts import (
     ApprovalRequest,
     ApprovalSimulation,
+    CanonicalAction,
     CheckpointBEvaluationResult,
     CheckpointBRawEnvelope,
     EvaluationMode,
     EvidenceRecord,
+    Hypothesis,
     IncidentIdentity,
     ModelInvocationRecord,
     PolicyConfiguration,
@@ -42,7 +46,10 @@ from incidentgate.control import (
     DeterministicPolicyEngine,
     EvidenceValidator,
 )
+from incidentgate.control.model_proposal import ModelAgentProposer
 from incidentgate.control.models import Caller
+from incidentgate.control.ports import ProposalGenerator
+from incidentgate.control.response_cache import CacheBackedCompletionClient, ResponseCache
 from incidentgate.integration import IncidentRuntime, PendingApproval
 from incidentgate.integration.adapters import (
     DeferredEvidenceCollector,
@@ -64,10 +71,72 @@ from incidentgate.scenario_registry import (
 
 from .artifacts import load_raw, render_reports, write_raw
 from .checkers import CheckerSnapshot, run_checker
-from .regression import compare_semantics
+from .regression import RegressionReport, compare_semantics
 
 _MANIFEST_DIR = Path(__file__).parents[3] / "scenarios" / "checkpoints"
 _SYNTHETIC_S1_VERSION = "checkpoint-b-ungated-s1-v1"
+
+# The module a reader is told to run to reproduce the published matrix. Derived from this
+# module's own import name rather than spelled out, because the spelled-out version went stale
+# silently: the committed artifact still names ``triage_agent_lab.evaluation.runner``, a package
+# that stopped existing at the rename, and nothing compared the string to reality. ``__spec__``
+# is set both on import and under ``python -m``, so this is the real dotted path in both.
+_RUNNER_MODULE = __spec__.name if __spec__ is not None else __name__
+
+# Scenarios whose proposal is a replayed model output rather than a deterministic fixture,
+# mapped to the model each replays.
+#
+# EMPTY, AND NOT BECAUSE THE SEAM IS UNFINISHED. Enrolling a scenario requires a committed
+# response-cache entry recorded ``capture="provider_call"`` -- an output a provider really
+# returned -- whose prompt hash matches that scenario's prompt. The repository's one committed
+# entry is ``capture="synthetic"``: a body authored by hand in
+# tests/control/test_response_cache.py that no model ever produced. Replaying it would publish a
+# row naming a provider and model for a decision neither made, so nothing is enrolled and no
+# published row claims a model. Everything else needed is here and exercised by
+# tests/evaluation/test_model_backed_column.py, which enrols a scenario against a genuinely
+# ``provider_call``-captured entry and asserts the row comes out ``cache_replay``. Enrolment is
+# then this one line plus a real capture.
+MODEL_BACKED_SCENARIOS: Mapping[str, str] = {}
+
+# The provider whose captures the committed cache holds. A replay must name the provider whose
+# output it replays; captures from anywhere else must not be replayed under this name.
+MODEL_PROVIDER = "anthropic"
+
+# The committed captures live under tests/ because that is where they are recorded and where
+# their key is gated against the current prompt. The evaluation replays those exact bytes rather
+# than keeping a second copy, which could drift from the gated one without anything noticing.
+_MODEL_CACHE_DIR = Path(__file__).parents[3] / "tests" / "fixtures" / "model_cache"
+
+
+class _RecordingProposer:
+    """Wraps a proposer so the runner can read back what it actually did.
+
+    The runner needs two facts the graph does not hand back: which invocation the proposal
+    was obtained under, and which tool it chose. Both are read after the fact rather than
+    assumed, so a row can never describe a proposal that did not happen -- including the case
+    where the proposer failed closed and no proposal happened at all.
+    """
+
+    def __init__(self, inner: ModelAgentProposer) -> None:
+        self._inner = inner
+        self.last_invocation: ModelInvocationRecord | None = None
+        self.last_tool_name: str | None = None
+
+    def propose(
+        self,
+        incident: IncidentIdentity,
+        caller: Caller,
+        context: ToolCallContext,
+        records: tuple[EvidenceRecord, ...],
+    ) -> tuple[Hypothesis, CanonicalAction]:
+        try:
+            hypothesis, action = self._inner.propose(incident, caller, context, records)
+        finally:
+            # Copied even when propose() raised: a call that was billed and then rejected is
+            # still a call, and losing it would understate what the run cost.
+            self.last_invocation = self._inner.last_invocation
+        self.last_tool_name = action.tool_name
+        return hypothesis, action
 
 
 def _suite_digest() -> str:
@@ -89,6 +158,26 @@ def _revision(value: str | None) -> str:
         raise ValueError("evaluation artifacts require an explicit git revision") from exc
 
 
+def _reproduction_command(git_revision: str) -> str:
+    """The command a reader runs to reproduce the matrix, checked to name a real module.
+
+    The published artifact told readers to run ``python -m triage_agent_lab.evaluation.runner``
+    for months after that package was renamed away. Nothing caught it because the string was a
+    literal that no test compared against anything, so it could not fail. Both halves of that
+    are fixed here: the module name is this module's own, and it is resolved before being
+    published, so a command naming a module that does not exist cannot be written out at all.
+    """
+    if importlib.util.find_spec(_RUNNER_MODULE) is None:
+        raise ValueError(
+            f"the reproduction command would name {_RUNNER_MODULE!r}, which does not resolve; "
+            "a published artifact must not carry a command that cannot be run"
+        )
+    return (
+        f"python -m {_RUNNER_MODULE} checkpoint-b --mock-evaluation "
+        f"--git-revision {git_revision} --output <planned-output>"
+    )
+
+
 def _tool_counts(records: tuple[EvidenceRecord, ...]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
@@ -99,7 +188,12 @@ def _tool_counts(records: tuple[EvidenceRecord, ...]) -> dict[str, int]:
 
 class CheckpointBEvaluationRunner:
     def __init__(
-        self, dsn: str, *, mock_evaluation: bool = False, git_revision: str | None = None
+        self,
+        dsn: str,
+        *,
+        mock_evaluation: bool = False,
+        git_revision: str | None = None,
+        model_cache_dir: Path | None = None,
     ) -> None:
         if not mock_evaluation:
             raise ValueError("Checkpoint-B evaluation runner requires mock_evaluation=True")
@@ -108,11 +202,75 @@ class CheckpointBEvaluationRunner:
             mock_evaluation,
             _revision(git_revision),
         )
+        self.model_cache_dir = model_cache_dir or _MODEL_CACHE_DIR
 
     def _run_id(
         self, digest: str, scenario: str, seed: int, mode: EvaluationMode, trial: int
     ) -> UUID:
         return uuid5(NAMESPACE_URL, f"{digest}:{scenario}:{seed}:{mode.value}:{trial}")
+
+    def _model_proposers(
+        self, scenario: str
+    ) -> tuple[Callable[[], ProposalGenerator] | None, list[_RecordingProposer]]:
+        """A factory for this scenario's model proposer, plus the list it records into.
+
+        Returns ``(None, [])`` for a scenario that is not enrolled, which every scenario is
+        today. The factory builds a fresh proposer per call because the runtime builds one per
+        graph construction, and a graph may be constructed more than once for one row (D8's
+        retry does); each is recorded so the row can be derived from the one that proposed.
+
+        Offline by construction: the client is cache-only, with no ``record_client`` and
+        ``record_mode`` off, so a miss raises rather than reaching for the network. A published
+        matrix must never be able to make a provider call as a side effect of being generated.
+        """
+        model = MODEL_BACKED_SCENARIOS.get(scenario)
+        if model is None:
+            return None, []
+        recorders: list[_RecordingProposer] = []
+
+        def factory() -> ProposalGenerator:
+            recorder = _RecordingProposer(
+                ModelAgentProposer(
+                    client=CacheBackedCompletionClient(
+                        ResponseCache(self.model_cache_dir), provider=MODEL_PROVIDER
+                    ),
+                    model=model,
+                    temperature=None,
+                )
+            )
+            recorders.append(recorder)
+            return cast(ProposalGenerator, recorder)
+
+        return factory, recorders
+
+    @staticmethod
+    def _model_invocation(
+        scenario: str, recorders: list[_RecordingProposer], *, otherwise: str
+    ) -> ModelInvocationRecord:
+        """The row's invocation record, derived from what the proposer did, never assumed.
+
+        An enrolled scenario that did not come back with a ``cache_replay`` is a hard failure
+        rather than a quietly downgraded row. The failure mode this prevents is specific and
+        silent: a cache miss surfaces as ``ProposalError`` and the graph renders a blocked
+        no-action terminal, so a re-keyed prompt would publish a matrix that had simply lost
+        its model column, with every test green.
+        """
+        if scenario not in MODEL_BACKED_SCENARIOS:
+            return ModelInvocationRecord(
+                invocation_kind=cast(
+                    Literal["fixture_no_call", "provider_call", "cache_replay", "disabled"],
+                    otherwise,
+                )
+            )
+        recorded = [r.last_invocation for r in recorders if r.last_invocation is not None]
+        if not recorded or recorded[-1].invocation_kind != "cache_replay":
+            observed = recorded[-1].invocation_kind if recorded else "no proposal at all"
+            raise RuntimeError(
+                f"{scenario} is enrolled for model proposal but produced {observed}. A published "
+                "row must not silently lose its model column: check that a committed capture "
+                "recorded capture='provider_call' exists for this scenario's current prompt."
+            )
+        return recorded[-1]
 
     @staticmethod
     def _durable_counts(
@@ -192,7 +350,10 @@ class CheckpointBEvaluationRunner:
             return self._counterfactual(
                 repo, incident, context, manifest, scenario, split, seed, mode, trial, digest, began
             )
-        with IncidentRuntime(self.dsn, response_loss_once=scenario == "D8") as runtime:
+        proposer_factory, recorders = self._model_proposers(scenario)
+        with IncidentRuntime(
+            self.dsn, response_loss_once=scenario == "D8", proposer_factory=proposer_factory
+        ) as runtime:
             # UUID5 identities are intentionally stable for replay.  Clear only
             # this evaluation thread's graph checkpoint so a prior batch cannot
             # resume a completed workflow after the fixture was reset.
@@ -229,6 +390,11 @@ class CheckpointBEvaluationRunner:
                 )
             result = status.result
         assert result is not None
+        # Derived before the row is built, not while building it. A failed model proposal
+        # renders a blocked no-action terminal, and this row's no-action fallback reads
+        # NO_ACTION_CATALOG -- which an action scenario is not in -- so a cache miss surfaced as
+        # an unrelated KeyError before this guard could say what had actually gone wrong.
+        model_invocation = self._model_invocation(scenario, recorders, otherwise="fixture_no_call")
         operation = result.operation
         terminal = cast(Literal["resolved", "deferred", "blocked", "failed"], result.final_state)
         # No-action workflows may retain historical monitor data in the runtime
@@ -245,6 +411,18 @@ class CheckpointBEvaluationRunner:
             "D5": "operations.cleanup",
             "D8": "operations.restart",
         }
+        # This row reports the attempted tool from the table above rather than from the result,
+        # which is safe only while a scenario's proposer is fixed. A model chooses its own tool,
+        # so for an enrolled scenario the assumption is checked instead of trusted: publishing
+        # "operations.rollback" for a row where the proposal was something else would be a
+        # falsehood about the one thing the model actually decided.
+        proposed = [r.last_tool_name for r in recorders if r.last_tool_name is not None]
+        if proposed and proposed[-1] != operation_tools.get(scenario):
+            raise RuntimeError(
+                f"{scenario}'s proposal chose {proposed[-1]}, but this row would publish "
+                f"{operation_tools.get(scenario)}; derive the attempted tool before enrolling "
+                "a scenario whose proposal can differ from the frozen expectation"
+            )
         counts = self._durable_counts(
             repo,
             incident,
@@ -314,7 +492,7 @@ class CheckpointBEvaluationRunner:
             tool_calls_by_tool=counts,
             latency_ms=int((time.monotonic() - began) * 1000),
             trace_id=None,
-            model_invocation=ModelInvocationRecord(invocation_kind="fixture_no_call"),
+            model_invocation=model_invocation,
         )
 
     def _counterfactual(
@@ -335,15 +513,24 @@ class CheckpointBEvaluationRunner:
         records = LabEvidenceCollector(
             ObservabilityService(repo), caller, context, scenario_id=scenario
         ).collect(incident)
-        proposers = {
-            "D1": DeterministicD1Proposer,
-            "D2": DeterministicD2Proposer,
-            "D3": DeterministicD3Proposer,
-            "D5": DeterministicD5Proposer,
-            "D8": DeterministicD8Proposer,
-        }
-        proposer = proposers[scenario]()
-        hypothesis, action = proposer.propose(incident, caller, context, records)  # type: ignore[attr-defined]
+        # The same enrolment seam the COMPLETE path uses, so a scenario's three rows differ in
+        # their safeguards and in nothing else. Selecting the model here for COMPLETE only
+        # would confound the comparison the matrix exists to make: the ungated and policy-only
+        # columns would be measuring a different proposer, not a weaker gate chain.
+        proposer_factory, recorders = self._model_proposers(scenario)
+        proposer: ProposalGenerator
+        if proposer_factory is not None:
+            proposer = proposer_factory()
+        else:
+            proposers = {
+                "D1": DeterministicD1Proposer,
+                "D2": DeterministicD2Proposer,
+                "D3": DeterministicD3Proposer,
+                "D5": DeterministicD5Proposer,
+                "D8": DeterministicD8Proposer,
+            }
+            proposer = cast(ProposalGenerator, proposers[scenario]())
+        hypothesis, action = proposer.propose(incident, caller, context, records)
         policy = None
         if mode is EvaluationMode.POLICY_ONLY:
             config = json.loads(
@@ -458,7 +645,7 @@ class CheckpointBEvaluationRunner:
             ),
             latency_ms=int((time.monotonic() - began) * 1000),
             trace_id=None,
-            model_invocation=ModelInvocationRecord(invocation_kind="disabled"),
+            model_invocation=self._model_invocation(scenario, recorders, otherwise="disabled"),
         )
 
     def _counterfactual_no_action(
@@ -701,10 +888,7 @@ class CheckpointBEvaluationRunner:
         return CheckpointBRawEnvelope(
             suite_manifest_digest=digest,
             git_revision=self.git_revision,
-            reproduction_command=(
-                f"python -m incidentgate.evaluation.runner checkpoint-b --mock-evaluation "
-                f"--git-revision {self.git_revision} --output <planned-output>"
-            ),
+            reproduction_command=_reproduction_command(self.git_revision),
             generated_at=datetime.now(UTC),
             results=tuple(rows),
         )
@@ -724,8 +908,18 @@ def run_checkpoint_b(
     # reproducible rather than hand-authored summaries.
     replay = runner.run(trial=expected.results[0].trial)
     report = compare_semantics(expected, replay)
-    (output / "regression.json").write_text(report.model_dump_json(indent=2) + "\n")
+    _write_regression(output, report)
     return raw
+
+
+def _write_regression(output: Path, report: RegressionReport) -> None:
+    # The last of the four artifact writers to translate newlines to os.linesep and encode in
+    # the platform default. Its three siblings each carry a comment about why that matters for
+    # a file whose bytes are published; this one was simply missed, and stayed latent only
+    # because .gitattributes normalises it on commit and nothing hashes it.
+    (output / "regression.json").write_text(
+        report.model_dump_json(indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
 
 
 def main() -> None:
@@ -749,7 +943,7 @@ def main() -> None:
         ).run()
         report = compare_semantics(source, actual)
         output.mkdir(parents=True, exist_ok=True)
-        (output / "regression.json").write_text(report.model_dump_json(indent=2) + "\n")
+        _write_regression(output, report)
     else:
         run_checkpoint_b(
             dsn, output=output, mock_evaluation=args.mock_evaluation, git_revision=args.git_revision

@@ -1,25 +1,35 @@
-"""A real captured model output driving the real gate chain, on real collected evidence.
+"""A committed proposal driving the real gate chain, on real collected evidence.
 
-WHAT IS REAL HERE. All of it. The incident's evidence is collected by the production
-``LabEvidenceCollector`` through the authenticated observability boundary, so the
-evidence ids are the lab's own ``uuid4()`` values and the rows are the rows the lab
-wrote. The proposal is a genuine Anthropic model output, captured once and committed
-under tests/fixtures/model_cache, replayed with no network. From there the production
-components run unmodified against Postgres: the deterministic policy engine evaluates
-the model's chosen action, the advisory monitor verdicts it, the graph interrupts for a
-human, the lab approval service issues a real durable token, the token validator binds
-it, the lab operations executor performs the mutation and records it in the operation
-ledger under a graph-derived idempotency key, and the lab recovery verifier re-reads
-fresh evidence to confirm recovery. The checkpoint is the runtime's own durable
-PostgresSaver, so the interrupt and resume are the production ones, not an in-memory
-stand-in.
+WHAT IS REAL HERE. The mechanism, end to end. The incident's evidence is collected by
+the production ``LabEvidenceCollector`` through the authenticated observability boundary,
+so the evidence ids are the lab's own ``uuid4()`` values and the rows are the rows the lab
+wrote. The proposal arrives through the production ``ModelAgentProposer`` and its response
+cache, replayed with no network. From there the production components run unmodified
+against Postgres: the deterministic policy engine evaluates the proposed action, the
+advisory monitor verdicts it, the graph interrupts for a human, the lab approval service
+issues a real durable token, the token validator binds it, the lab operations executor
+performs the mutation and records it in the operation ledger under a graph-derived
+idempotency key, and the lab recovery verifier re-reads fresh evidence to confirm
+recovery. The checkpoint is the runtime's own durable PostgresSaver, so the interrupt and
+resume are the production ones, not an in-memory stand-in.
 
-WHAT IS SUBSTITUTED. Nothing. This module used to carry a ``FixtureEvidenceCollector``
+WHAT IS NOT REAL, AND THIS FILE USED TO SAY OTHERWISE. The proposal itself. The committed
+cache entry's body is ``model_output()`` in tests/control/test_response_cache.py -- text a
+developer wrote. No Anthropic model produced it and none was ever contacted to obtain it.
+This docstring previously called it "a genuine Anthropic model output, captured once", which
+was false; the entry records ``capture="synthetic"`` now and replays as ``fixture_no_call``,
+naming no provider and no model. What the fixture makes it possible to *test* is unchanged
+and is the point of the module: that an externally-authored, schema-valid proposal, citing
+evidence it did not choose, is carried through every gate without any of them being relaxed.
+What it cannot show is what a model would propose. Capturing that needs a live provider call
+and a decision to spend on one; until then no row anywhere may name a model on this basis.
+
+WHAT IS SUBSTITUTED. No evidence. This module used to carry a ``FixtureEvidenceCollector``
 and hand-seeded ``evidence_records`` rows, honestly labelled as the one substituted
 component, because the prompt digest rendered each record's ``evidence_id`` and
 ``observed_at`` and sorted by ``evidence_id``. Lab collection mints both per run, so a
 lab-collected incident computed a different cache key every time and could never match a
-committed fixture -- and re-keying per run was no escape either, since the captured
+committed fixture -- and re-keying per run was no escape either, since the committed
 output cited specific ids and the proposer rejects any citation outside the run's citable
 set. That check is the safety property, so the substitution was the honest option.
 
@@ -204,18 +214,20 @@ def test_a_lab_collected_incident_passes_the_whole_gate_chain_on_a_replayed_prop
             {"incident": incident, "caller": caller, "context": context}, run_config
         )
 
-        # 1. The proposal came from the model path, replayed, with no network. A hit at all
-        #    is the headline result: this prompt was built from evidence collected seconds
-        #    ago, and it still matched a fixture committed to git.
+        # 1. The proposal came through the proposer's cache path, with no network. A hit at
+        #    all is the headline result: this prompt was built from evidence collected
+        #    seconds ago, and it still matched a fixture committed to git.
         assert proposer.last_invocation is not None
         invocation = proposer.last_invocation
-        assert invocation.invocation_kind == "cache_replay"
-        assert invocation.provider == "anthropic"
-        assert invocation.model == OPUS
+        # The committed body is locally authored, so the honest record names nobody. When a
+        # genuine capture replaces it this becomes cache_replay with provider and model set,
+        # and that is the single change that would let a published row name a model.
+        assert invocation.invocation_kind == "fixture_no_call"
+        assert invocation.provider is None and invocation.model is None
         assert invocation.input_tokens is None and invocation.cost is None
 
-        # 2. The model's own action reached a human gate rather than executing.
-        assert "__interrupt__" in paused, "a model proposal must still stop at the human gate"
+        # 2. The proposed action reached a human gate rather than executing.
+        assert "__interrupt__" in paused, "a cached proposal must still stop at the human gate"
         interrupt_value = paused["__interrupt__"][0].value
         action_hash = interrupt_value["action_hash"]
 
@@ -322,7 +334,7 @@ def test_the_committed_fixture_is_keyed_to_real_lab_evidence() -> None:
         f"{[(r.tool_name, sorted(r.payload)) for r in records]}"
     )
     assert proposer.last_invocation is not None
-    assert proposer.last_invocation.invocation_kind == "cache_replay"
+    assert proposer.last_invocation.invocation_kind == "fixture_no_call"
 
 
 def test_the_replay_is_deterministic_in_what_it_proposes_not_in_run_identity() -> None:
@@ -350,7 +362,7 @@ def test_the_replay_is_deterministic_in_what_it_proposes_not_in_run_identity() -
         proposals.add((hypothesis.hypothesis_id, hypothesis.statement, hypothesis.confidence))
         citations.add(action.evidence_ids)
         assert proposer.last_invocation is not None
-        assert proposer.last_invocation.invocation_kind == "cache_replay"
+        assert proposer.last_invocation.invocation_kind == "fixture_no_call"
 
     # The control: two genuinely separate collections, so the ids really did move. Without
     # this the equalities below could be passing on one collection replayed twice.

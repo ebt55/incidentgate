@@ -7,6 +7,17 @@ any change to the prompt, to the citation-label scheme, or to ``_ProposerOutput`
 regenerate it, run ``record_committed_fixture()`` at the bottom of this module: it rewrites the
 committed directory in place from a canned output and needs no network and no API key.
 
+WHAT THE COMMITTED FIXTURE IS, STATED PLAINLY. Its body is ``model_output()`` below -- text
+written in this file by a developer. No Anthropic model has ever produced it, and none was ever
+contacted to obtain it. The entry therefore records ``capture="synthetic"`` and replays as
+``fixture_no_call``: it exercises the whole replay mechanism, and it makes no claim whatsoever
+about what a model would say. This was not visible before, because a cache entry recorded only
+``{model, prompt_sha256, raw_json}``, so a canned body and a real capture were byte-identical
+and the model *directory name* was the only thing attributing the output to anyone. That
+attribution was demonstrably not evidence: this same body sat under ``claude-opus-4-8`` until a
+commit renamed the folder to ``claude-opus-5``. Provenance is a recorded field now, derived from
+what the recording client actually did, so no future canned body can be published as a model's.
+
 The synthetic evidence in this module carries readable ids (``ev-health`` and friends) purely so
 the assertions read well. They are no longer part of the key: the prompt cites evidence by
 positional label, so what this fixture is really keyed to is the D1 *shape* -- three records, in
@@ -190,13 +201,56 @@ def _provider_invocation() -> ModelInvocationRecord:
 
 def test_cache_round_trips_same_key(tmp_path: Path) -> None:
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output())
-    assert cache.load(HAIKU, HASH_A) == model_output()
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
+    entry = cache.load(HAIKU, HASH_A)
+    assert entry.raw_json == model_output()
+    assert entry.capture == "provider_call"
     # A different prompt hash is a miss; a different model is a miss.
     with pytest.raises(ResponseCacheMiss):
         cache.load(HAIKU, HASH_B)
     with pytest.raises(ResponseCacheMiss):
         cache.load(OPUS, HASH_A)
+
+
+def test_an_entry_must_record_how_it_was_captured(tmp_path: Path) -> None:
+    """Provenance is required, never defaulted, and never inferred from the model directory."""
+    cache = ResponseCache(tmp_path)
+    with pytest.raises(ValueError, match="capture must be one of"):
+        cache.store(HAIKU, HASH_A, model_output(), capture="invented")  # type: ignore[arg-type]
+
+    # The pre-provenance shape: a body with no statement of where it came from. It is rejected
+    # rather than assumed, because assuming is the defect. Written by hand precisely because
+    # store() can no longer produce it.
+    path = tmp_path / HAIKU / f"{HASH_A}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"model": HAIKU, "prompt_sha256": HASH_A, "raw_json": model_output()}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="does not record how it was captured"):
+        cache.load(HAIKU, HASH_A)
+
+
+def test_a_synthetic_entry_replays_as_a_fixture_and_names_nobody(tmp_path: Path) -> None:
+    """The claim this whole field exists to prevent: a hand-written body sold as a model's.
+
+    A locally-authored body is a deterministic fixture no matter which model directory it
+    happens to sit in, so it must replay making no provider or model claim at all.
+    """
+    cache = ResponseCache(tmp_path)
+    cache.store(OPUS, HASH_A, model_output(), capture="synthetic")
+    result = CacheBackedCompletionClient(cache).complete(_request(OPUS, HASH_A))
+    assert result.raw_json == model_output()
+    assert result.invocation.invocation_kind == "fixture_no_call"
+    assert result.invocation.provider is None
+    assert result.invocation.model is None
+
+    # And the same bytes under a capture that really happened do name their model. The only
+    # difference between these two replays is the recorded provenance, which is the point.
+    cache.store(OPUS, HASH_B, model_output(), capture="provider_call")
+    replayed = CacheBackedCompletionClient(cache).complete(_request(OPUS, HASH_B))
+    assert replayed.invocation.invocation_kind == "cache_replay"
+    assert replayed.invocation.model == OPUS
 
 
 def test_cache_miss_is_explicit(tmp_path: Path) -> None:
@@ -210,7 +264,7 @@ def test_cache_miss_is_explicit(tmp_path: Path) -> None:
 def test_cache_hit_is_recorded_as_a_named_replay_not_a_fixture(tmp_path: Path) -> None:
     """A replay is a real model's output; it must not look like a deterministic fixture."""
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output())
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
     result = CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A))
     assert result.raw_json == model_output()
     assert result.invocation.invocation_kind == "cache_replay"
@@ -225,7 +279,7 @@ def test_cache_hit_is_recorded_as_a_named_replay_not_a_fixture(tmp_path: Path) -
 def test_a_replay_names_the_provider_the_caller_declared(tmp_path: Path) -> None:
     """Captures from another provider must not be replayed under Anthropic's name."""
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output())
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
     client = CacheBackedCompletionClient(cache, provider="some-other-provider")
     assert client.complete(_request(HAIKU, HASH_A)).invocation.provider == "some-other-provider"
     with pytest.raises(ValueError, match="must name the provider"):
@@ -250,6 +304,27 @@ def test_record_mode_populates_then_replays(tmp_path: Path) -> None:
     assert second.invocation.invocation_kind == "cache_replay"
     assert second.invocation.model == HAIKU
     assert upstream.calls == 1
+    # The provenance was derived from the upstream call, not asserted by this test.
+    assert cache.load(HAIKU, HASH_A).capture == "provider_call"
+
+
+def test_record_mode_cannot_launder_a_canned_body_into_a_capture(tmp_path: Path) -> None:
+    """Recording from a client that never called a provider stores ``synthetic``, not a capture.
+
+    This is the regression guard for how the committed fixture came to be attributed to a
+    model: a recorder wired to a canned body, whose stored entry then looked exactly like a
+    real capture to every consumer. The recorder cannot express that any more -- provenance
+    follows what the record client actually did.
+    """
+    cache = ResponseCache(tmp_path)
+    canned = FakeClient(model_output())  # a FakeClient defaults to fixture_no_call
+    recorder = CacheBackedCompletionClient(cache, record_client=canned, record_mode=True)
+    recorder.complete(_request(HAIKU, HASH_A))
+
+    assert cache.load(HAIKU, HASH_A).capture == "synthetic"
+    replayed = CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A))
+    assert replayed.invocation.invocation_kind == "fixture_no_call"
+    assert replayed.invocation.provider is None
 
 
 def test_record_mode_requires_client(tmp_path: Path) -> None:
@@ -311,8 +386,11 @@ def test_strong_model_replays_committed_fixture_deterministically() -> None:
     assert action.permission == "operations:write"
     assert hypothesis.hypothesis_id == "d1-bad-deploy"
     assert proposer.last_invocation is not None
-    assert proposer.last_invocation.invocation_kind == "cache_replay"
-    assert proposer.last_invocation.model == OPUS
+    # The committed body is this module's own canned text, so the honest record names no
+    # model. Asserting cache_replay here is what made the fixture read as a captured Opus
+    # output in every consumer that trusted this test.
+    assert proposer.last_invocation.invocation_kind == "fixture_no_call"
+    assert proposer.last_invocation.model is None
 
     # Replaying the same committed output must produce a bit-identical action semantic hash.
     again_hypothesis, again_action = proposer.propose(incident(), caller(), context(), records())
@@ -375,9 +453,24 @@ def record_committed_fixture() -> Path:
     needs no API key and no network. Entries under stale keys are removed so the committed
     directory holds exactly the one key the proposer computes today; re-running it when the
     key has not moved is a no-op.
+
+    The recording client below deliberately returns a ``fixture_no_call`` invocation, so the
+    stored entry records ``capture="synthetic"``. It previously returned a fabricated
+    ``provider_call`` invocation, and that single line is what made a hand-written body
+    indistinguishable from a captured one for every consumer downstream. Capturing a *real*
+    fixture is a different procedure and must stay one: point ``record_client`` at a real
+    ``AnthropicCompletionClient`` with a live key, which returns a genuine ``provider_call``
+    and so stores ``capture="provider_call"`` without anyone asserting it.
     """
     cache = ResponseCache(COMMITTED_CACHE)
-    upstream = FakeClient(model_output(), invocation=_provider_invocation())
+    upstream = FakeClient(model_output())
+    # Clear before recording, not only after. Recording is a cache *miss* path, so an entry
+    # already sitting under today's key is never rewritten -- and an entry written before
+    # provenance existed does not even load, it raises, which reaches the proposer as an
+    # opaque proposal_model_unavailable. Clearing first makes this genuinely idempotent and
+    # lets it migrate an older entry rather than fail on one.
+    for existing in (COMMITTED_CACHE / OPUS).glob("*.json"):
+        existing.unlink()
     proposer = ModelAgentProposer(
         client=CacheBackedCompletionClient(cache, record_client=upstream, record_mode=True),
         model=OPUS,

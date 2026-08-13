@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -14,13 +15,46 @@ from incidentgate.evaluation.artifacts import load_raw, render_reports
 from incidentgate.evaluation.regression import compare_semantics
 from incidentgate.evaluation.runner import CheckpointBEvaluationRunner, run_checkpoint_b
 
-COMMITTED_RAW = (
-    Path(__file__).resolve().parents[2]
-    / "artifacts"
-    / "evaluations"
-    / "checkpoint-b"
-    / "raw-results.json"
-)
+COMMITTED_DIR = Path(__file__).resolve().parents[2] / "artifacts" / "evaluations" / "checkpoint-b"
+COMMITTED_RAW = COMMITTED_DIR / "raw-results.json"
+
+
+def test_the_committed_csv_stamp_matches_the_file_it_stamps() -> None:
+    """A provenance stamp that does not match what it stamps is worse than no stamp.
+
+    ``preliminary.csv`` and ``preliminary.md`` each carry the sha256 of ``raw-results.json``,
+    and for the whole life of the published artifact they carried the wrong one: the digest of
+    the CRLF bytes the file had before ``.gitattributes`` pinned the tree to LF. The byte gate
+    in tests/reliability was updated when that was fixed; the derived artifacts were not, and
+    nothing noticed because the only assertion on the stamp re-renders into tmp_path and
+    compares the result with itself, which is true by construction whatever the committed files
+    say. This reads the committed bytes instead, which is the only way the two can disagree.
+    """
+    actual = hashlib.sha256(COMMITTED_RAW.read_bytes()).hexdigest()
+    csv_stamp = (COMMITTED_DIR / "preliminary.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert f"raw_sha256={actual}" in csv_stamp, (
+        f"preliminary.csv stamps a digest that is not raw-results.json's ({actual}); "
+        f"regenerate the artifacts. Stamp line: {csv_stamp}"
+    )
+    assert actual in (COMMITTED_DIR / "preliminary.md").read_text(encoding="utf-8"), (
+        f"preliminary.md does not carry raw-results.json's digest {actual}"
+    )
+
+
+def test_the_committed_reproduction_command_names_a_module_that_resolves() -> None:
+    """The published command must be runnable, which means naming a package that exists.
+
+    It named ``triage_agent_lab.evaluation.runner`` long after the rename to ``incidentgate``.
+    Nothing compared the field to anything, so nothing could fail; this compares it to the
+    import system.
+    """
+    command = load_raw(COMMITTED_RAW).reproduction_command
+    module = re.search(r"python -m ([\w.]+)", command)
+    assert module is not None, f"no module in reproduction command: {command}"
+    assert importlib.util.find_spec(module.group(1)) is not None, (
+        f"the committed artifact tells readers to run {module.group(1)!r}, which does not "
+        "resolve; regenerate the artifact"
+    )
 
 
 def _assert_matches_the_committed_baseline(fresh: object) -> None:
@@ -100,6 +134,7 @@ def test_checkpoint_b_artifacts_are_raw_bound_and_replayable(
         "mean_tool_calls",
         "p50_latency_ms",
         "p95_latency_ms",
+        "model_backed",
         "input_tokens",
         "output_tokens",
         "model_cost",

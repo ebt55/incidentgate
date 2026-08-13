@@ -774,6 +774,17 @@ class ModelInvocationRecord(ContractModel):
         reason a fixture does not. It must, however, name the provider and model whose output it
         replays: an anonymous replay would be indistinguishable from a fixture, which is the
         confusion this member was added to remove.
+
+        The converse is enforced here too, and was enforced nowhere before: a ``fixture_no_call``
+        or ``disabled`` record must name no provider and no model. Naming one is the only way
+        those two kinds can lie -- the kind already says no model output was involved, so a
+        provider beside it is a claim about a model that never ran. Two evaluation lanes each
+        carried a private guard implying this for themselves (``reliability_v2``'s "makes no
+        provider/model claim" and ``sabotage``'s misattribution check), but neither constrained
+        anything outside its own lane, and this record was constructible as
+        ``invocation_kind="fixture_no_call", provider="anthropic"`` everywhere else. Stating it
+        once, here, binds every lane at once and leaves those two guards saying the narrower
+        thing they are each actually about.
         """
         if self.invocation_kind != "provider_call":
             if any(
@@ -791,6 +802,12 @@ class ModelInvocationRecord(ContractModel):
                 )
             if self.invocation_kind == "cache_replay" and not (self.provider and self.model):
                 raise ValueError("a cache replay must name the provider and model it replays")
+            if self.invocation_kind in ("fixture_no_call", "disabled") and (
+                self.provider or self.model
+            ):
+                raise ValueError(
+                    "an invocation that consulted no model must not name a provider or model"
+                )
         elif (
             not self.provider
             or not self.model
@@ -1055,4 +1072,36 @@ class CheckpointBRawEnvelope(ContractModel):
             )
             if row.split != split or row.seed != seed or row.run_id != expected_run_id:
                 raise ValueError("evaluation row does not match frozen manifest identity")
+        self._cost_semantics_are_comparable()
         return self
+
+    def _cost_semantics_are_comparable(self) -> None:
+        """A live-billed row may not share a published matrix with a row of any other kind.
+
+        The hazard is specific: the renderer sums ``input_tokens``, ``output_tokens`` and
+        ``cost`` across a band of rows and prints one number per band. Only a ``provider_call``
+        can contribute to those sums -- ``ModelInvocationRecord`` forbids usage and cost on every
+        other kind -- so a band mixing one live row with rows that cannot carry cost renders a
+        partial sum in a cell that reads as the band total. That is the confounding a reviewer
+        named, and this is the whole of it.
+
+        Deliberately NOT the rule that was proposed, which was that every row in a published
+        matrix share one ``invocation_kind``. That rule is too strong in a way that is easy to
+        miss until it is written down: this matrix has always mixed ``fixture_no_call`` with
+        ``disabled``, so homogeneity would reject the artifact this repository already
+        publishes. It would also bar an honest partial model column -- ``cache_replay`` rows
+        beside fixture rows -- for no gain, because a replay contacts no provider and so adds
+        nothing to any sum it could distort. Mixing kinds is not the defect; mixing *cost
+        semantics* is, and only ``provider_call`` has any.
+
+        Stated over the envelope rather than per rendered band on purpose. Bands are the
+        renderer's choice and can change; the envelope is what gets published. A rule that
+        tracked the current banding would silently stop covering a renderer that re-banded.
+        """
+        kinds = {row.model_invocation.invocation_kind for row in self.results}
+        if "provider_call" in kinds and len(kinds) > 1:
+            raise ValueError(
+                "a published matrix must not mix provider_call rows with rows of any other "
+                "invocation kind: only provider_call carries usage and cost, so the summed "
+                f"cost columns would be a partial total. Found: {sorted(kinds)}"
+            )

@@ -10,9 +10,51 @@ from typing import cast
 
 from incidentgate.contracts import CheckpointBEvaluationResult, CheckpointBRawEnvelope
 
+#: Invocation kinds under which a model output really shaped the decision. ``cache_replay`` is
+#: one because it replays an output a provider genuinely returned; ``fixture_no_call`` and
+#: ``disabled`` are not, and the contract forbids either from naming a provider.
+_MODEL_BACKED_KINDS = frozenset(("cache_replay", "provider_call"))
+
 
 def load_raw(path: Path) -> CheckpointBRawEnvelope:
     return CheckpointBRawEnvelope.model_validate_json(path.read_bytes())
+
+
+def _model_backed(rows: list[CheckpointBEvaluationResult]) -> str:
+    """How many of these rows a model actually decided, as a rate over the rows themselves."""
+    backed = sum(row.model_invocation.invocation_kind in _MODEL_BACKED_KINDS for row in rows)
+    return f"{backed}/{len(rows)}"
+
+
+def _coverage_sentence(rows: tuple[CheckpointBEvaluationResult, ...]) -> str:
+    """State model coverage by counting rows, never by describing them.
+
+    Hand-written coverage prose is how this project's renderers have twice come close to
+    publishing a falsehood -- once by stating one scenario's outcome as its whole tier's. A
+    sentence assembled from the rows cannot drift from them: enrol a scenario and this changes
+    by itself; enrol none and it says so in as many words, which is the honest reading of a
+    matrix whose every proposal came from a fixture.
+    """
+    backed = [row for row in rows if row.model_invocation.invocation_kind in _MODEL_BACKED_KINDS]
+    total = len(rows)
+    if not backed:
+        return (
+            f"Model coverage: 0/{total} rows. No proposal in this matrix came from a model; "
+            "every row was decided by a deterministic fixture, and no row names a provider."
+        )
+    scenarios = sorted({row.scenario_id for row in backed})
+    attributions = sorted(
+        {
+            f"{row.model_invocation.provider}/{row.model_invocation.model} "
+            f"({row.model_invocation.invocation_kind})"
+            for row in backed
+        }
+    )
+    return (
+        f"Model coverage: {len(backed)}/{total} rows, in scenario(s) {', '.join(scenarios)}, "
+        f"were decided by {'; '.join(attributions)}. The other {total - len(backed)}/{total} "
+        "rows consulted no model and name no provider."
+    )
 
 
 def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
@@ -38,6 +80,7 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
         "mean_tool_calls",
         "p50_latency_ms",
         "p95_latency_ms",
+        "model_backed",
         "input_tokens",
         "output_tokens",
         "model_cost",
@@ -95,6 +138,7 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
                     "mean_tool_calls": sum(row.tool_calls_total for row in rows) / len(rows),
                     "p50_latency_ms": latencies[(len(latencies) - 1) // 2],
                     "p95_latency_ms": latencies[(95 * len(latencies) + 99) // 100 - 1],
+                    "model_backed": _model_backed(rows),
                     "input_tokens": csv_usage("input_tokens"),
                     "output_tokens": csv_usage("output_tokens"),
                     "model_cost": "N/A"
@@ -108,7 +152,9 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
         f"Raw SHA-256: `{digest}`",
         f"Git revision: `{raw.git_revision}`",
         "",
-        "0 eligible policy/monitor catch rows is N/A, not 0%.",
+        "An N/A cell means the column had no eligible rows, not a measured rate of 0%.",
+        "",
+        _coverage_sentence(raw.results),
         "",
         "| " + " | ".join(fields) + " |",
         "|" + "|".join(["---:"] * len(fields)) + "|",
@@ -153,6 +199,7 @@ def render_reports(raw_path: Path, output: Path) -> tuple[Path, Path]:
             sum(row.tool_calls_total for row in rows) / len(rows),
             latencies[(len(latencies) - 1) // 2],
             latencies[(95 * len(latencies) + 99) // 100 - 1],
+            _model_backed(rows),
             usage("input_tokens"),
             usage("output_tokens"),
             "N/A"

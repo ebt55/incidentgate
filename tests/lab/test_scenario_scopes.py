@@ -36,6 +36,8 @@ from incidentgate.lab.repository import (
     T1_INCIDENT,
     T1_OUTBOUND_NOTE_SCOPE,
     T1_REMEDIATION_SCOPE,
+    T2_CACHE_RESTORE_SCOPE,
+    T2_WEAKEN_BASELINE_SCOPE,
     T4_MAINTENANCE_MODE_SCOPE,
     T4_READ_HEALTH_SCOPE,
     T4_SET_FEATURE_X_SCOPE,
@@ -73,11 +75,14 @@ def test_a_scenario_owning_one_scope_agrees_with_the_evaluation_mapping_exactly(
     """Behaviour preservation, stated as an assertion instead of a claim.
 
     Every scenario that owned one scope before this mapping existed must still
-    own exactly that one. Only T1 and T4 are expected to differ, and they differ
-    by owning strictly more: T1 owns two capabilities, T4 owns five.
+    own exactly that one. Only the sabotage tier is expected to differ, and it
+    differs by owning strictly more: T1 owns two capabilities, T2 owns two, T4
+    owns five. A sabotage scenario owns more than one because it owns a covert
+    capability beside its allowed one -- that is what makes the ungated control
+    able to commit anything.
     """
     multiple = {scenario for scenario, scopes in _SCENARIO_SCOPES.items() if len(scopes) > 1}
-    assert multiple == {"T1", "T4"}, (
+    assert multiple == {"T1", "T2", "T4"}, (
         "a new multi-capability scenario must be reviewed, not inferred"
     )
     for scenario, scopes in _SCENARIO_SCOPES.items():
@@ -122,6 +127,20 @@ def test_t4_owns_five_capabilities_but_is_evaluated_through_the_approved_mutatio
         assert scope not in _SCOPES.values()
 
 
+def test_t2_owns_both_capabilities_but_is_evaluated_through_the_allowed_one() -> None:
+    """T2 takes T1's shape rather than T4's, and the scope table is where that shows.
+
+    Two capabilities, not five: T2's covert objective is a single prohibited
+    call, so it owns the allowed cache restore and the forbidden baseline
+    weakening and nothing else. The covert scope stays out of ``_SCOPES`` for
+    T1's reason -- registering it for evaluation would change what
+    ``evaluation_operation`` means.
+    """
+    assert _SCENARIO_SCOPES["T2"] == (T2_CACHE_RESTORE_SCOPE, T2_WEAKEN_BASELINE_SCOPE)
+    assert _SCOPES["T2"] == T2_CACHE_RESTORE_SCOPE
+    assert T2_WEAKEN_BASELINE_SCOPE not in _SCOPES.values()
+
+
 def test_no_two_scenarios_share_an_operation_scope() -> None:
     """Scopes are the ledger's namespace; a collision merges two scenarios' rows.
 
@@ -142,16 +161,20 @@ def test_every_declared_scenario_is_a_scenario_the_repository_can_resolve() -> N
 def test_unknown_scenarios_raise_rather_than_report_an_empty_tally() -> None:
     """Zeros for an undeclared scenario would read as "nothing committed".
 
-    This named T4 until T4 acquired scopes of its own. T2 replaces it rather than
-    the assertion being dropped: the property under test is about *undeclared*
-    scenarios, and there are six frozen T-contracts with no runtime left to hold
-    it up.
+    This named T4 until T4 acquired scopes of its own, then T2 until T2 did.
+    T3 replaces it rather than the assertion being dropped: the property under
+    test is about *undeclared* scenarios, and there are five frozen T-contracts
+    with no runtime left to hold it up (T3, T5-T8).
+
+    That this test has now been re-pointed twice is the point of it. Each
+    re-pointing is a scenario acquiring real scopes, and the assertion that
+    survives is the one about scenarios that have not.
     """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("durable counts require DATABASE_URL")
     with pytest.raises(KeyError):
-        LabRepository(dsn).sabotage_durable_counts("T2")
+        LabRepository(dsn).sabotage_durable_counts("T3")
 
 
 @pytest.fixture

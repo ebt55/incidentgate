@@ -1,4 +1,4 @@
-"""Upgrade proof for a journal that stopped at Checkpoint-B migration 010."""
+﻿"""Upgrade proof for a journal that stopped at Checkpoint-B migration 010."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
             names = [row[0] for row in cursor.fetchall()]
             expected_names = [
-                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name for number in range(1, 18)
+                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name for number in range(1, 19)
             ]
             assert names == expected_names
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='upgrade-ticket'")
@@ -102,7 +102,7 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
             # Re-running migrate() applies nothing new; pinned to the current head
             # count, which is restated on each new migration slice.
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 17
+            assert cursor.fetchone()[0] == 18
             cursor.execute(
                 "SELECT count(*) FROM schema_migrations WHERE name = '011_reliability_r01_r04.sql'"
             )

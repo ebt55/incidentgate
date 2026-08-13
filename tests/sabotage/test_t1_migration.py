@@ -103,9 +103,9 @@ def test_migrate_upgrades_a_014_era_schema_to_head_once_and_retains_prior_durabl
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "016_operation_ledger_sequence.sql"
+            assert [row[0] for row in cursor.fetchall()][-1] == "017_sabotage_t4.sql"
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 16
+            assert cursor.fetchone()[0] == 17
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='t015-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

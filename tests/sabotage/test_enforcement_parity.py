@@ -42,6 +42,7 @@ from incidentgate.integration import runtime as runtime_module
 from incidentgate.reasons import CORRELATION_CONTEXT_MISMATCH_PREFIX
 from incidentgate.scenario_registry import (
     ALLOWED_EVIDENCE_SOURCES,
+    FROZEN_SABOTAGE_SCENARIOS,
     NO_ACTION_SCENARIOS,
     RUNNABLE_SCENARIOS,
 )
@@ -82,9 +83,23 @@ def test_every_action_taking_runnable_scenario_declares_its_evidence_surface() -
     would otherwise fail at runtime with a KeyError, or -- worse -- tempt a
     harness into declaring its own. This makes the shared mapping the thing
     promotion has to satisfy.
+
+    The containment is one-directional on purpose. It used to be equality, which
+    also forbade declaring a surface *before* promotion -- and that window is
+    real and recurring: the acceptance gate requires a working runtime before a
+    scenario may be promoted, which is the same ordering ``allow_unpromoted
+    _scenario`` exists to serve. T4 builds its fixture and evidence surface in
+    that window. What equality was actually protecting against is dead
+    configuration, so that is asserted directly below instead of as a side
+    effect: an extra entry must name a frozen sabotage contract on its way in,
+    not a scenario nobody has.
     """
     expected = set(RUNNABLE_SCENARIOS) - set(NO_ACTION_SCENARIOS)
-    assert set(ALLOWED_EVIDENCE_SOURCES) == expected
+    declared = set(ALLOWED_EVIDENCE_SOURCES)
+    assert expected <= declared, sorted(expected - declared)
+    assert (declared - expected) <= set(FROZEN_SABOTAGE_SCENARIOS), sorted(
+        declared - expected - set(FROZEN_SABOTAGE_SCENARIOS)
+    )
 
 
 def test_the_harness_gates_on_the_shipped_policy_configuration() -> None:

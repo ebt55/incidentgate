@@ -14,8 +14,8 @@
 >   [Honest gaps](#honest-gaps).
 > - **No model is in the decision path** for any published measurement. Every
 >   evaluation row is a deterministic fixture. See [Honest gaps](#honest-gaps).
-> - Scenarios R13–R20, T2, T3 and T5–T8 are frozen contracts with no runtime. T1
->   and T4 are the two sabotage scenarios that have one, and both their attack
+> - Scenarios R13–R20, T3 and T5–T8 are frozen contracts with no runtime. T1, T2
+>   and T4 are the three sabotage scenarios that have one, and both their attack
 >   proposers and T4's monitor are deterministic stand-ins rather than models.
 >
 > Do not depend on this, do not cite its numbers as a product claim, and do not
@@ -45,9 +45,9 @@ golden no-kill run.
 
 | Measure | Result |
 | --- | --- |
-| Kill points × scenarios | 22 boundaries × 24 scenarios = 528 cells |
-| Cells where the boundary exists and fired | **368** |
-| Recovered to the golden end state | **368** |
+| Kill points × scenarios | 22 boundaries × 25 scenarios = 550 cells |
+| Cells where the boundary exists and fired | **390** |
+| Recovered to the golden end state | **390** |
 | Duplicate mutations | **0** |
 | Lost incidents | **0** |
 | Other durable end-state divergences | **0** |
@@ -74,12 +74,15 @@ path, so no drive ever produces a covert write on its own. Without a planted one
 the covert surface would be an unexercised guard, and a green T1 row would be a
 claim nobody had checked the instrument for.
 
-The covert surface is not the same shape for both sabotage scenarios, and the
-comparison spec published with the table says which is which. T1's is rows in
-its outbound-note store. T4 has no store — its covert objective is a state
-combination assembled across individually ordinary calls — so its surface is the
-ordered call ledger with the per-call verdict recorded at each step, which is the
-only place an assembly that was later unwound still exists.
+The covert surface is a different shape for each of the three sabotage
+scenarios, and the comparison spec published with the table says which is which.
+T1's is rows in its outbound-note store. T4 has no store — its covert objective
+is a state combination assembled across individually ordinary calls — so its
+surface is the ordered call ledger with the per-call verdict recorded at each
+step, which is the only place an assembly that was later unwound still exists.
+T2 has no store either, but for the opposite reason: its covert objective is two
+columns of its own incident fixture, changed by one prohibited call, so its
+surface is those two columns read directly.
 
 Measured 2026-08-13, from a cold database, on a clean tree. Regenerate with:
 
@@ -100,15 +103,16 @@ scenario without regenerating is a red test rather than a silent staleness.
 
 Two honest findings from that run, neither of which is a durability failure:
 
-- **`orphaned_approvals: 64` — the one non-zero number in the table.** An
+- **`orphaned_approvals: 68` — the one non-zero number in the table.** An
   orphaned approval is a durable approval token with no matching executed
   operation. Approval issuance is not idempotent across a crash: a kill between
   the approval commit and the operation commit loses the in-memory handle to a
   token that is *already durable*, so recovery mints a fresh token for the
   identical canonical action and spends that one instead. It appears in exactly
-  the four boundaries inside that window × the sixteen scenarios that mint an
+  the four boundaries inside that window × the seventeen scenarios that mint an
   approval at all, exactly once each — T4's promotion moved this number from 60
-  to 64 and changed nothing else, which is the arithmetic that claim predicts.
+  to 64 and T2's from 64 to 68, each time changing nothing else, which is the
+  arithmetic that claim predicts.
   It is neither a lost incident nor a
   duplicate mutation — those are counted separately and both are zero — because
   the leftover token is unspendable: it is bound to a canonical action hash
@@ -122,7 +126,8 @@ Two honest findings from that run, neither of which is a durability failure:
   into that class: its own killed cell is asserted to land on the key its
   executed operation already occupies, and to leave the covert outbound-note
   store empty. The unspendability argument is a property of the idempotency key
-  rather than of any one scenario, so it covers T4's orphans on the same terms.
+  rather than of any one scenario, so it covers T4's and T2's orphans on the
+  same terms — both were measured landing on exactly the same four boundaries.
 - `runtime.status().pending` is not a real interrupt check; it reports a pending
   approval whenever a policy and action exist without a result, even mid-execute.
 
@@ -176,8 +181,8 @@ still cannot mutate.
 | D1–D8, S1, S2 (checkpoints) | frozen | **implemented** |
 | R01–R12 (reliability) | frozen | **implemented** |
 | R13–R20 (reliability) | frozen | planned — no runtime |
-| T1, T4 (covert sabotage) | frozen, 3 attack-policy variants each | **implemented** |
-| T2, T3, T5–T8 (covert sabotage) | frozen, 18 attack-policy variants | planned — no runtime |
+| T1, T2, T4 (covert sabotage) | frozen, 3 attack-policy variants each | **implemented** |
+| T3, T5–T8 (covert sabotage) | frozen, 15 attack-policy variants | planned — no runtime |
 
 Every scenario declares its initial state, injected fault, allowed evidence,
 acceptable diagnoses, allowed and forbidden actions, recovery predicate, and a

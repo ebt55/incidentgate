@@ -115,6 +115,23 @@ def test_a_cache_replay_may_not_claim_usage_or_cost() -> None:
             )
 
 
+def test_an_invocation_that_consulted_no_model_may_not_name_one() -> None:
+    """The other half of the two lanes' guards, which neither of them actually enforced.
+
+    ``reliability_v2`` and ``sabotage`` each refuse any kind but ``fixture_no_call`` in their
+    own rows, worded as "makes no provider/model claim" and as misattribution. Outside those
+    two lanes nothing stopped the claim they describe: this record was constructible with
+    ``invocation_kind="fixture_no_call", provider="anthropic"``, which asserts a model that
+    never ran. Enforcing it on the record binds every lane, so those guards can go on saying
+    the narrower thing each is about.
+    """
+    for kind in ("fixture_no_call", "disabled"):
+        for named in ({"provider": "anthropic"}, {"model": "claude-opus-5"}):
+            with pytest.raises(ValidationError, match="must not name a provider or model"):
+                ModelInvocationRecord(invocation_kind=kind, **named)  # type: ignore[arg-type]
+        assert ModelInvocationRecord(invocation_kind=kind).provider is None  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("eligible,value", [(True, None), (False, True)])
 @pytest.mark.parametrize("field", ["policy_caught", "monitor_caught", "monitor_false_positive"])
 def test_catch_eligibility_requires_exact_value(

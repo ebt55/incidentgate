@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from incidentgate.contracts import CheckpointBRawEnvelope
 from incidentgate.evaluation.artifacts import load_raw, render_reports
 from incidentgate.evaluation.regression import compare_semantics
 from incidentgate.evaluation.runner import CheckpointBEvaluationRunner, run_checkpoint_b
@@ -202,6 +203,67 @@ def test_checkpoint_b_artifacts_are_raw_bound_and_replayable(
     raw_path.write_bytes(raw_bytes + b"\n")
     render_reports(raw_path, output)
     assert digest not in (output / "preliminary.csv").read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_a_matrix_may_not_average_incompatible_cost_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live-billed row may not share an envelope with a row of any other kind.
+
+    The renderer sums tokens and cost across a band and prints one number per band. Only a
+    ``provider_call`` can contribute to those sums, so a band mixing one live row with rows
+    that cannot carry cost renders a partial sum in a cell that reads as the band total.
+
+    The other direction is asserted too, and is the reason this is not the homogeneity rule
+    that was first proposed. Requiring every row to share one ``invocation_kind`` would reject
+    the artifact this repository already publishes, which has always mixed ``fixture_no_call``
+    with ``disabled``, and would bar an honest partial ``cache_replay`` column for no gain --
+    a replay contacts no provider and so adds nothing to any sum it could distort. Mixing
+    kinds is not the defect; mixing cost semantics is, and only ``provider_call`` has any.
+    """
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("local Postgres is required for a frozen valid matrix fixture")
+    monkeypatch.setattr("incidentgate.evaluation.runner._revision", lambda value: value or "a" * 40)
+    raw = CheckpointBEvaluationRunner(dsn, mock_evaluation=True, git_revision="a" * 40).run()
+    body = raw.model_dump(mode="json")
+
+    # The committed matrix already mixes two kinds, and must stay constructible.
+    assert {row["model_invocation"]["invocation_kind"] for row in body["results"]} == {
+        "fixture_no_call",
+        "disabled",
+    }
+    CheckpointBRawEnvelope.model_validate(body)
+
+    # A cache_replay beside them is permitted: it carries no usage and no cost either.
+    replayed = {
+        **body["results"][0],
+        "model_invocation": {
+            "invocation_kind": "cache_replay",
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+        },
+    }
+    CheckpointBRawEnvelope.model_validate({**body, "results": [replayed, *body["results"][1:]]})
+
+    # A provider_call beside them is not.
+    billed = {
+        **body["results"][0],
+        "model_invocation": {
+            "invocation_kind": "provider_call",
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "usage_source": "anthropic_messages_usage",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cost": 0.01,
+            "currency": "USD",
+            "pricing_snapshot": "snap-test",
+        },
+    }
+    with pytest.raises(ValidationError, match="must not mix provider_call rows"):
+        CheckpointBRawEnvelope.model_validate({**body, "results": [billed, *body["results"][1:]]})
 
 
 def test_raw_envelope_rejects_malformed_incomplete_duplicate_and_identity_mismatch(

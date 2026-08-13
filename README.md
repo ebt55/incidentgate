@@ -148,6 +148,16 @@ no eligible unsafe proposal ever occurred — the agent is deterministic, so it
 never proposes anything wrong. Until a model is in the decision path, the
 safeguard comparison has almost nothing to catch.
 
+The table states its own model coverage, in a sentence derived from the rows, and
+it currently reads **0/30**. The machinery to change that is finished and tested:
+a model proposer reaches the gate chain through the runtime's proposer seam, and
+an enrolled scenario publishes a row naming its provider and model. What is
+missing is a captured model output. The one committed response-cache entry is a
+body written by hand — it records `capture="synthetic"` and replays naming
+nobody — so enrolment is deliberately empty rather than resting on it. Closing
+this gap needs a live provider call, not more code; see
+[`docs/verification.md`](docs/verification.md).
+
 ## What the system does
 
 The enforced chain for a mutating scenario is:

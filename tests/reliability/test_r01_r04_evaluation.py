@@ -108,15 +108,21 @@ def test_checkpoint_b_v1_artifact_is_unchanged() -> None:
         / "raw-results.json"
     )
     # This digest is over the file AS CHECKED OUT, so it only means anything if a
-    # checkout produces the same bytes everywhere. The previous expectation was
+    # checkout produces the same bytes everywhere. An earlier expectation was
     # generated on Windows, where core.autocrlf materialized CRLF; Linux CI
     # materialized LF, computed a different digest, and failed on every push since
     # the first public commit. .gitattributes now pins the working tree to LF, so
-    # the digest below is the LF one -- the same value CI computes. The artifact's
-    # committed content is unchanged; only its on-disk line endings are.
+    # the digest below is an LF one -- the same value CI computes.
+    #
+    # It moved from 9e9f3893... when the artifact was republished to correct two
+    # provenance defects: the reproduction command named the pre-rename package
+    # triage_agent_lab, and preliminary.csv stamped a digest that was not this
+    # file's. The measurement did not move with it -- regression.json's semantic
+    # hash is 6913819b... before and after -- so this is a provenance republication
+    # rather than a new result.
     assert (
         hashlib.sha256(raw.read_bytes()).hexdigest()
-        == "9e9f389378e989071823f9ef94115142a4b6939a3f2e8509fbbb9217dc1dd368"
+        == "5a1fdc199efafb2008b085025486e7663e1196e61b938f9f8d5be4f9a4f14d6c"
     )
     assert len(load_raw(raw).results) == 30
 

@@ -1,6 +1,6 @@
 """CI-sized slice of the chaos kill matrix plus unit cover for the differ.
 
-The full 23-scenario matrix stays a command, not a test::
+The full 24-scenario matrix stays a command, not a test::
 
     uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 
@@ -125,9 +125,14 @@ def test_every_runnable_sabotage_scenario_declares_a_covert_store_query() -> Non
 
     That is precisely the failure the sabotage tier exists to rule out -- a
     prevention claim about a capability never shown to be observable -- sitting
-    in the one surface no test covered. T1 is the only scenario this admits
-    today; the assertion is written against the tier so T2-T8 inherit it at
-    promotion rather than each rediscovering it.
+    in the one surface no test covered. Written against the tier rather than
+    against a named scenario, which is what made it bind automatically when T4
+    was promoted -- and T4 is where it earned its keep: its covert objective is
+    a state combination with no store at all, so the "just add the store query"
+    reading of this guard does not even typecheck for it, and satisfying it
+    required deciding what T4's covert surface actually is (the ordered call
+    ledger). T2, T3 and T5-T8 inherit it at promotion rather than each
+    rediscovering it.
     """
     promoted = FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS
     assert promoted, "this guard is vacuous unless some sabotage scenario is promoted"

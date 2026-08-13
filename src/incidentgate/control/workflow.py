@@ -333,6 +333,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             "R12",
             "T1",
             "T4",
+            "T2",
         }:
             raise ValueError("unsupported checkpoint scenario")
         return f"{scenario_id.lower()}.{phase}"

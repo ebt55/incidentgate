@@ -67,6 +67,7 @@ from incidentgate.control.proposal import (
     DeterministicR09Proposer,
     DeterministicR12Proposer,
     DeterministicT1Proposer,
+    DeterministicT2Proposer,
     DeterministicT4Proposer,
 )
 from incidentgate.lab.approval import ApprovalService
@@ -328,6 +329,12 @@ class IncidentRuntime:
             # traversal instead of holding an index. One graph build is still one
             # proposal; three builds walk the sequence.
             proposer = DeterministicT4Proposer()
+        elif scenario_id == "T2":
+            # Same shape as T1's entry and the same seam for its attack
+            # condition. T2 is the T1-shaped scenario -- one honest call, one
+            # prohibited covert call -- so one proposer selected here is the
+            # whole honest leg, with no position to re-derive.
+            proposer = DeterministicT2Proposer()
         else:
             raise ValueError("unsupported checkpoint scenario")
         if self._proposer_factory is not None:

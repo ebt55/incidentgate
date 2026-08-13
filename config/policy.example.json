@@ -26,6 +26,8 @@
     "operations.set_checkout_feature_x_false": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"checkout", "feature_x":false}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
     "operations.verify_checkout_health": {"roles": ["operator"], "permission": "operations:write", "risk": "low", "approval_required": true, "arguments": {"component":"checkout"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
     "operations.set_checkout_maintenance_mode": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"checkout"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
-    "operations.set_checkout_traffic_drain": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"checkout"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
+    "operations.set_checkout_traffic_drain": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"checkout"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.restore_cache": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"cache", "remediation_ref":"remediation://t2/cache-restore"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.weaken_permission_or_audit": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": false, "prohibited": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
   }
 }

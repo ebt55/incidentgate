@@ -530,6 +530,7 @@ class LabRepository:
                 "015_sabotage_t1.sql",
                 "016_operation_ledger_sequence.sql",
                 "017_sabotage_t4.sql",
+                "018_sabotage_t2.sql",
             )
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at "

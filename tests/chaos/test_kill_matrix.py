@@ -248,6 +248,111 @@ def test_compare_treats_a_missing_durable_effect_as_a_lost_incident() -> None:
     assert diff.verdicts == (enddiff.LOST_INCIDENT,)
 
 
+def _t7_state(action_hash: str) -> dict[str, Any]:
+    return {
+        **_golden(),
+        "covert_side_effects": [["approver-1", action_hash, "apr-401", "1"]],
+        "fixture_state": {
+            "scenario_id": "T7",
+            "approval_actor": "approver-1",
+            "approval_bound_hash": action_hash,
+            "approved_action_hash": action_hash,
+            "executed_action_hash": action_hash,
+            "approval_token": "apr-401",
+            "approval_use_count": 1,
+        },
+        "evidence_read_kinds": [
+            [
+                "observability.action_hash",
+                json.dumps(
+                    {"approved_action_hash": action_hash, "executed_action_hash": action_hash},
+                    sort_keys=True,
+                ),
+            ],
+            [
+                "observability.approval_store",
+                json.dumps(
+                    {
+                        "actor": "approver-1",
+                        "hash": action_hash,
+                        "token": "apr-401",
+                        "use_count": 1,
+                    },
+                    sort_keys=True,
+                ),
+            ],
+            [
+                "observability.approval_store",
+                json.dumps(
+                    {
+                        "actor": "approver-1",
+                        "hash": "hash-restart-a",
+                        "token": "apr-401",
+                        "use_count": 0,
+                    },
+                    sort_keys=True,
+                ),
+            ],
+        ],
+    }
+
+
+def _mismatch_fixture_hash(state: dict[str, Any]) -> None:
+    state["fixture_state"]["executed_action_hash"] = "c" * 64
+
+
+def _mismatch_covert_hash(state: dict[str, Any]) -> None:
+    state["covert_side_effects"][0][1] = "c" * 64
+
+
+def _mismatch_evidence_hash(state: dict[str, Any]) -> None:
+    state["evidence_read_kinds"][0][1] = json.dumps(
+        {"approved_action_hash": "b" * 64, "executed_action_hash": "c" * 64}
+    )
+
+
+def test_compare_rebinds_only_a_coherent_t7_thread_bound_action_hash() -> None:
+    assert enddiff.compare(_t7_state("a" * 64), _t7_state("b" * 64)).clean
+
+
+@pytest.mark.parametrize(
+    ("field", "mutate"),
+    [
+        ("fixture_state", _mismatch_fixture_hash),
+        ("covert_side_effects", _mismatch_covert_hash),
+        ("evidence_read_kinds", _mismatch_evidence_hash),
+    ],
+)
+def test_compare_rejects_a_t7_action_hash_mismatch(field: str, mutate: Any) -> None:
+    golden, actual = _t7_state("a" * 64), _t7_state("b" * 64)
+    mutate(actual)
+    diff = enddiff.compare(golden, actual)
+    assert enddiff.STATE_DIVERGENCE in diff.verdicts
+    assert field in {item.field for item in diff.differences}
+
+
+def test_compare_does_not_collapse_two_distinct_t7_hashes() -> None:
+    golden, actual = _t7_state("a" * 64), _t7_state("b" * 64)
+    actual["covert_side_effects"].append(["approver-2", "c" * 64, "apr-402", "1"])
+    diff = enddiff.compare(golden, actual)
+    assert enddiff.STATE_DIVERGENCE in diff.verdicts
+
+
+def test_compare_leaves_malformed_t7_hashes_and_non_t7_states_exact() -> None:
+    golden, malformed = _t7_state("a" * 64), _t7_state("not-a-hash")
+    assert enddiff.STATE_DIVERGENCE in enddiff.compare(golden, malformed).verdicts
+
+    non_t7_golden = {
+        **_golden(),
+        "fixture_state": {"scenario_id": "D1", "action_hash": "a" * 64},
+    }
+    non_t7_actual = {
+        **non_t7_golden,
+        "fixture_state": {"scenario_id": "D1", "action_hash": "b" * 64},
+    }
+    assert enddiff.STATE_DIVERGENCE in enddiff.compare(non_t7_golden, non_t7_actual).verdicts
+
+
 @pytest.fixture(scope="module")
 def subset() -> dict[str, Any]:
     """Run the representative matrix once for every live assertion below."""

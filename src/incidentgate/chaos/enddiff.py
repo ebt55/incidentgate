@@ -11,10 +11,11 @@ else, so the spec and the check cannot drift apart.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypeGuard
 from uuid import UUID
 
 import psycopg
@@ -32,6 +33,13 @@ RULE_AT_LEAST = "at-least-golden"
 
 #: Payload keys whose value is a wall-clock instant recorded inside evidence.
 TIMESTAMP_PAYLOAD_KEYS = frozenset({"checked_at"})
+
+_ACTION_HASH = re.compile(r"^[a-f0-9]{64}$")
+_T7_FIXTURE_HASH_KEYS = (
+    "approval_bound_hash",
+    "approved_action_hash",
+    "executed_action_hash",
+)
 
 #: The durable end state each scenario is diffed on, projected from the typed
 #: scenario registry rather than restated here.
@@ -481,12 +489,123 @@ def _as_int(value: Any) -> int:
     return int(value) if isinstance(value, int | float) else 0
 
 
+def _is_action_hash(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and _ACTION_HASH.fullmatch(value) is not None
+
+
+def _t7_fixture_hash(state: dict[str, Any]) -> str | None:
+    fixture = state.get("fixture_state")
+    if not isinstance(fixture, dict) or fixture.get("scenario_id") != "T7":
+        return None
+    hashes = [fixture.get(key) for key in _T7_FIXTURE_HASH_KEYS]
+    if len(set(hashes)) != 1 or not _is_action_hash(hashes[0]):
+        return None
+    return hashes[0]
+
+
+def _t7_covert_hashes(value: object) -> set[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    hashes: set[str] = set()
+    for row in value:
+        if not isinstance(row, list) or len(row) != 4 or not _is_action_hash(row[1]):
+            return None
+        hashes.add(row[1])
+    return hashes
+
+
+def _t7_evidence_hashes(value: object) -> set[str] | None:
+    if not isinstance(value, list):
+        return None
+    hashes: set[str] = set()
+    saw_action_hash = saw_approval_store = False
+    for row in value:
+        if not isinstance(row, list) or len(row) != 2 or not isinstance(row[0], str):
+            return None
+        if row[0] not in {"observability.action_hash", "observability.approval_store"}:
+            continue
+        if not isinstance(row[1], str):
+            return None
+        try:
+            payload = json.loads(row[1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if row[0] == "observability.action_hash":
+            values = [
+                payload.get("approved_action_hash"),
+                payload.get("executed_action_hash"),
+            ]
+            non_null = [item for item in values if item is not None]
+            if non_null:
+                if len(non_null) != 2:
+                    return None
+                for action_hash in non_null:
+                    if not _is_action_hash(action_hash):
+                        return None
+                    hashes.add(action_hash)
+                saw_action_hash = True
+        else:
+            value_ = payload.get("hash")
+            if _is_action_hash(value_):
+                hashes.add(value_)
+                saw_approval_store = True
+    return hashes if saw_action_hash and saw_approval_store else None
+
+
+def _t7_rebound_actual(golden: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:
+    """Rebind T7's coherent, thread-bound action identity for cross-run comparison.
+
+    Canonical action hashes deliberately include the chaos thread id.  T7 stores
+    that opaque identity in its fixture, covert receipt, and evidence payloads,
+    so cross-run equality is meaningful only when every occurrence is internally
+    coherent.  This is intentionally a narrow T7 projection: malformed values,
+    unrelated payloads, and every other identity remain byte-for-byte compared.
+    """
+    golden_hash, actual_hash = _t7_fixture_hash(golden), _t7_fixture_hash(actual)
+    if golden_hash is None or actual_hash is None:
+        return actual
+    for state, action_hash in ((golden, golden_hash), (actual, actual_hash)):
+        covert = _t7_covert_hashes(state.get("covert_side_effects"))
+        evidence_hashes = _t7_evidence_hashes(state.get("evidence_read_kinds"))
+        if covert != {action_hash} or evidence_hashes != {action_hash}:
+            return actual
+
+    rebound = dict(actual)
+    fixture = dict(actual["fixture_state"])
+    for key in _T7_FIXTURE_HASH_KEYS:
+        fixture[key] = golden_hash
+    rebound["fixture_state"] = fixture
+    rebound["covert_side_effects"] = [
+        [*row[:1], golden_hash, *row[2:]] for row in actual["covert_side_effects"]
+    ]
+    rebound_evidence: list[Any] = []
+    for tool_name, payload_text in actual["evidence_read_kinds"]:
+        if tool_name not in {"observability.action_hash", "observability.approval_store"}:
+            rebound_evidence.append([tool_name, payload_text])
+            continue
+        payload = json.loads(payload_text)
+        keys = (
+            ("approved_action_hash", "executed_action_hash")
+            if tool_name == "observability.action_hash"
+            else ("hash",)
+        )
+        for key in keys:
+            if payload.get(key) == actual_hash:
+                payload[key] = golden_hash
+        rebound_evidence.append([tool_name, json.dumps(payload, sort_keys=True)])
+    rebound["evidence_read_kinds"] = rebound_evidence
+    return rebound
+
+
 def compare(golden: dict[str, Any], actual: dict[str, Any]) -> DiffResult:
     """Apply :data:`COMPARISON_SPEC` field by field; nothing else is checked."""
     differences: list[Difference] = []
     observations: dict[str, int] = {}
+    comparable_actual = _t7_rebound_actual(golden, actual)
     for spec in COMPARISON_SPEC:
-        expected, found = golden.get(spec.name), actual.get(spec.name)
+        expected, found = golden.get(spec.name), comparable_actual.get(spec.name)
         if spec.rule == RULE_AT_LEAST:
             excess = _as_int(found) - _as_int(expected)
             if spec.observation is not None:

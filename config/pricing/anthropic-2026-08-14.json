@@ -1,0 +1,11 @@
+{
+  "schema_version": "pricing-snapshot-v1",
+  "snapshot_id": "anthropic-2026-08-14",
+  "currency": "USD",
+  "cost_basis": "list_price_estimate",
+  "retrieved_at": "2026-08-14T00:00:00+00:00",
+  "source_url": "https://claude.com/platform/api",
+  "valid_until": "2026-09-14T00:00:00+00:00",
+  "input_usd_per_token": {"claude-opus-5": 0.000005},
+  "output_usd_per_token": {"claude-opus-5": 0.000025}
+}

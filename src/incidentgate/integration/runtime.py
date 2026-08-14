@@ -55,7 +55,7 @@ from incidentgate.control.models import (
     HumanDecision,
     WorkflowResult,
 )
-from incidentgate.control.ports import ProposalGenerator
+from incidentgate.control.ports import AuthorizationRequester, ProposalGenerator
 from incidentgate.control.proposal import (
     DeterministicR01Proposer,
     DeterministicR02Proposer,
@@ -70,6 +70,12 @@ from incidentgate.control.proposal import (
     DeterministicT2Proposer,
     DeterministicT4Proposer,
 )
+from incidentgate.control.safeguards import (
+    PRODUCTION_SAFEGUARDS,
+    AuthorizationGate,
+    SafeguardConfiguration,
+)
+from incidentgate.control.workflow import DurableHumanAuthorization
 from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import AuditTimelineEvent, LabRepository
@@ -90,6 +96,7 @@ from incidentgate.telemetry import (
 
 from .adapters import (
     DeferredEvidenceCollector,
+    DeterministicControlAuthorization,
     LabAuditEmitter,
     LabEvidenceCollector,
     LabOperationExecutor,
@@ -180,6 +187,12 @@ class IncidentRuntime:
         # incident, matching how the monitor is built.
         proposer_factory: Callable[[], ProposalGenerator] | None = None,
         collection_crash_after_attempt: int | None = None,
+        # Which gates enforce and who authorizes. Defaults to production's, and
+        # the default is the only configuration the host can reach: nothing in
+        # ``host/`` constructs a SafeguardConfiguration, which is what makes the
+        # deterministic authorization control unselectable there rather than
+        # merely undocumented. See control/safeguards.py.
+        safeguards: SafeguardConfiguration = PRODUCTION_SAFEGUARDS,
         # The acceptance gate's only escape hatch, and deliberately a loud one.
         # A T-tier scenario needs a working runtime *before* it can be promoted
         # into RUNNABLE_SCENARIOS -- that is the order the acceptance gate
@@ -239,8 +252,39 @@ class IncidentRuntime:
         self._monitor_factory = monitor_factory
         self._proposer_factory = proposer_factory
         self._collection_crash_after_attempt = collection_crash_after_attempt
+        self._safeguards = safeguards
         self._allow_unpromoted_scenario = allow_unpromoted_scenario
         self._graph: Any | None = None
+
+    @property
+    def safeguards(self) -> SafeguardConfiguration:
+        """Which gates this runtime enforces, readable by a test that must check.
+
+        Public because "did the host build a production runtime?" has to be
+        answerable from outside; a private attribute would make the guard test
+        reach through the boundary it exists to police.
+        """
+        return self._safeguards
+
+    def _authorization(self) -> AuthorizationRequester:
+        """Bind the authorization port this runtime's configuration selects.
+
+        Built per graph construction rather than once, for the reason the monitor
+        is: it holds the repository and the clock, and rebuilding it keeps it on
+        the same durable state the run is writing.
+        """
+        if self._safeguards.authorization_gate is AuthorizationGate.DURABLE_HUMAN:
+            return DurableHumanAuthorization()
+        approver = self._safeguards.control_approver
+        # Guaranteed by SafeguardConfiguration.__post_init__, which refuses the
+        # deterministic control without a named stand-in.
+        assert approver is not None
+        return DeterministicControlAuthorization(
+            self._repository,
+            self._clock,
+            approver=approver,
+            approval_ttl=self._approval_ttl,
+        )
 
     def close(self) -> None:
         self._connection.close()
@@ -365,6 +409,8 @@ class IncidentRuntime:
             audit=LabAuditEmitter(self._repository, caller.actor),
             clock=self._clock,
             telemetry=self._telemetry,
+            safeguards=self._safeguards,
+            authorization=self._authorization(),
         )
         self._response_loss_once = False
         return build_workflow_graph(dependencies, checkpointer=self._checkpointer)

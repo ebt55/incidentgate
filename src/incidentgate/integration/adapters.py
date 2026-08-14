@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from incidentgate.contracts import (
+    ApprovalRequest,
     ApprovalToken,
     CanonicalAction,
     EvidenceRecord,
     IncidentIdentity,
     OperationLedgerResult,
     OperationStatus,
+    Role,
     ToolCallContext,
     VerificationResult,
     canonical_action_hash,
 )
 from incidentgate.control.models import Caller, ControlAuditEvent
+from incidentgate.control.ports import AuthorizationRequest
 from incidentgate.control.proposal import T4_CANONICAL_SEQUENCE
+from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import LabRepository
 from incidentgate.lab.service import ObservabilityService, OperationsService
@@ -263,6 +267,79 @@ class LabTokenValidator:
         self, token: ApprovalToken, *, action_hash: str, actor: str, now: datetime
     ) -> tuple[bool, str]:
         return self._repository.validate(token, action_hash=action_hash, actor=actor, now=now)
+
+
+class DeterministicControlAuthorization:
+    """The evaluation lane's authorizer: the same token, minted without a human.
+
+    THIS IS A MINTING PATH, NOT A WEAKER TOKEN
+    ==========================================
+
+    Everything about the approval is the production article. The token comes from
+    the production :class:`~incidentgate.lab.approval.ApprovalService`, is issued
+    to a real ``APPROVER`` principal, is durably recorded with its audit event,
+    is bound to this action's hash, actor, incident and thread, and is consumed
+    exactly once by the executor inside the same single transaction as the
+    mutation. The graph then runs the same approver-match check and the same
+    ``LabTokenValidator`` over it that a human's token gets.
+
+    What differs is the *path* the token was minted along: the durable human
+    implementation suspends the graph on a LangGraph interrupt and waits, while
+    this one decides in-process. That single difference is what the human-gate
+    arm of the ablation manipulates, and holding the rest identical is the whole
+    reason this class exists rather than a second inline executor call.
+
+    WHY IT CANNOT REACH PRODUCTION
+    ==============================
+
+    Selecting it requires constructing a
+    :class:`~incidentgate.control.safeguards.SafeguardConfiguration` whose
+    ``authorization_gate`` is ``deterministic_control`` and handing it to
+    ``IncidentRuntime``. No ``HostSettings`` field, no environment variable and
+    no host code path constructs one; ``tests/integration/test_authorization_gate.py``
+    asserts the host package neither imports this class nor passes a safeguard
+    configuration at all, and that a host built from a hostile environment still
+    gets the durable human gate.
+    """
+
+    def __init__(
+        self,
+        repository: LabRepository,
+        clock: Callable[[], datetime],
+        *,
+        approver: str,
+        approval_ttl: timedelta,
+        reason: str = "deterministic evaluation approver",
+    ) -> None:
+        self._repository, self._clock = repository, clock
+        self._approver, self._approval_ttl, self._reason = approver, approval_ttl, reason
+
+    def request(self, request: AuthorizationRequest) -> dict[str, object]:
+        now = self._clock()
+        token = ApprovalService(
+            self._repository,
+            self._clock,
+            incident_id=request.incident_id,
+            thread_id=request.thread_id,
+        ).approve(
+            ApprovalRequest(
+                action_hash=request.action_hash,
+                actor=request.actor,
+                requested_at=now,
+                expires_at=now + self._approval_ttl,
+                # Random, and it must stay random. This is the anti-replay
+                # token: a derived one would make two runs of the same step
+                # share the single use the boundary exists to refuse twice.
+                one_time_use_id=uuid4(),
+            ),
+            Principal(self._approver, Role.APPROVER),
+        )
+        return {
+            "decision": "approve",
+            "approver": self._approver,
+            "reason": self._reason,
+            "token": token.model_dump(mode="python"),
+        }
 
 
 class LabOperationExecutor:

@@ -36,6 +36,7 @@ from incidentgate.reasons import (
     CALLER_ACTOR_MISMATCH,
     COLLECTION_CONTEXT_MISMATCH,
     DEFER_REASON_REQUIRED,
+    EVIDENCE_VALID,
     HUMAN_REJECTED,
     INCIDENT_CONTEXT_MISMATCH,
     MONITOR_ACTION_HASH_MISMATCH,
@@ -54,18 +55,28 @@ from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action
 from incidentgate.telemetry import TelemetryRuntime
 
 from .evidence import EvidenceValidator
-from .models import Caller, EvidenceValidation, HumanDecision, WorkflowResult, audit_event
+from .models import (
+    Caller,
+    EvidenceState,
+    EvidenceValidation,
+    HumanDecision,
+    WorkflowResult,
+    audit_event,
+)
 from .monitor import AdvisoryMonitor
 from .policy import DeterministicPolicyEngine
 from .ports import (
     ApprovalTokenValidator,
     AuditEmitter,
+    AuthorizationRequest,
+    AuthorizationRequester,
     EvidenceCollector,
     OperationExecutor,
     ProposalGenerator,
     RecoveryVerifier,
 )
 from .proposal import ProposalError
+from .safeguards import PRODUCTION_SAFEGUARDS, SafeguardConfiguration
 
 
 class WorkflowState(TypedDict, total=False):
@@ -101,6 +112,14 @@ class WorkflowDependencies:
         audit: AuditEmitter,
         clock: Callable[[], datetime],
         telemetry: TelemetryRuntime | None = None,
+        # Which gates enforce and who authorizes. Defaults to production's, so
+        # every existing construction site keeps the behaviour it had: with
+        # PRODUCTION_SAFEGUARDS the branches below reduce to the unconditional
+        # code they replaced, term for term.
+        safeguards: SafeguardConfiguration = PRODUCTION_SAFEGUARDS,
+        # The authorization port. ``None`` selects the durable human interrupt,
+        # which is the only authorizer the production host can reach.
+        authorization: AuthorizationRequester | None = None,
     ) -> None:
         self.collector = collector
         self.proposer = proposer
@@ -113,6 +132,28 @@ class WorkflowDependencies:
         self.audit = audit
         self.clock = clock
         self.telemetry = telemetry
+        self.safeguards = safeguards
+        self.authorization = authorization or DurableHumanAuthorization()
+
+
+class DurableHumanAuthorization:
+    """The production authorizer: suspend the graph and wait for a human.
+
+    Holds no state and takes no arguments, because everything it needs is in the
+    request and everything it produces comes back through the resume. The
+    interrupt payload is exactly the three keys it has always carried -- a
+    checkpointed value is a wire format, and adding a field here would rewrite
+    the durable representation of every pending approval.
+    """
+
+    def request(self, request: AuthorizationRequest) -> Any:
+        return interrupt(
+            {
+                "action_hash": request.action_hash,
+                "monitor_verdict": request.monitor_verdict,
+                "requires_reason": request.requires_reason,
+            }
+        )
 
 
 def build_deferred_graph(
@@ -269,6 +310,27 @@ def _idempotency_key(action_hash: str, thread_id: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"{_IDEMPOTENCY_KEY_PREFIX}{thread_id}:{action_hash}")
 
 
+def _observed_only(evidence: EvidenceValidation) -> EvidenceValidation:
+    """What an observing evidence gate hands the policy instead of its verdict.
+
+    The citations and the digest are carried through unchanged, because those are
+    facts about the run rather than the gate's opinion of it -- the monitor still
+    has to see what was cited, and the action still has to name it. Only the
+    verdict is replaced, so an observing gate withholds its *decision* and
+    nothing else.
+
+    The real verdict is still what lands in ``state["evidence"]``, so nothing is
+    lost: an arm running this gate in observe-only mode records exactly what it
+    would have refused.
+    """
+    return EvidenceValidation(
+        state=EvidenceState.VALID,
+        reasons=(EVIDENCE_VALID,),
+        evidence_ids=evidence.evidence_ids,
+        digest=evidence.digest,
+    )
+
+
 def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: Any = None) -> Any:
     """Compile the approval-gated workflow graph shared by every action-taking scenario.
 
@@ -371,11 +433,18 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         return {"hypothesis": hypothesis, "action": action}
 
     def validate(state: WorkflowState) -> WorkflowState:
+        # The validator always runs against the real records, and what it says is
+        # always what lands in state. What the evidence *gate* decides is whether
+        # the policy is allowed to act on it: an observing gate hands the policy
+        # a valid stand-in carrying the same citations and the same digest, so a
+        # stale or unallowed citation is recorded without becoming a denial the
+        # policy gate would then be credited with.
         evidence = dependencies.evidence_validator.validate(
             state["action"], state["records"], state["context"]
         )
+        judged = evidence if dependencies.safeguards.enforces_evidence else _observed_only(evidence)
         with _span(_scenario_span("policy", state), state):
-            policy = dependencies.policy.evaluate(state["action"], state["caller"].role, evidence)
+            policy = dependencies.policy.evaluate(state["action"], state["caller"].role, judged)
         return {
             "evidence": evidence,
             "policy": policy,
@@ -384,7 +453,12 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
 
     def monitor(state: WorkflowState) -> WorkflowState:
         evidence, policy = state["evidence"], state["policy"]
-        if policy.decision is PolicyDecision.DENY:
+        if not dependencies.safeguards.consults_monitor:
+            return {}
+        # Skipped after a denial that actually stops the run, never after one the
+        # policy gate only observed: an action still on its way to the executor
+        # is exactly the action a monitor exists to see.
+        if policy.decision is PolicyDecision.DENY and dependencies.safeguards.enforces_policy:
             return {}
         with _span(_scenario_span("monitor", state), state):
             return {"monitor": dependencies.monitor.assess(state["action"], evidence.digest)}
@@ -392,14 +466,21 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
     def after_monitor(state: WorkflowState) -> str:
         if "result" in state:
             return "finish"
-        if state["policy"].decision is PolicyDecision.DENY:
+        if state["policy"].decision is PolicyDecision.DENY and (
+            dependencies.safeguards.enforces_policy
+        ):
             return "deny"
         monitor_result = state.get("monitor")
+        # Not a safeguard and so not configurable: a monitor whose verdict names
+        # a different action than the one under decision is a broken consultation
+        # rather than a lenient one, and it fails closed in every arm.
         if monitor_result and monitor_result.evaluated_action_hash != state["policy"].action_hash:
             return "monitor_mismatch"
         return (
             "block"
-            if monitor_result and monitor_result.verdict is MonitorVerdict.BLOCK
+            if monitor_result
+            and monitor_result.verdict is MonitorVerdict.BLOCK
+            and dependencies.safeguards.enforces_monitor
             else "approve"
         )
 
@@ -499,15 +580,23 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
 
     def approval(state: WorkflowState) -> WorkflowState:
         with _span(_scenario_span("approval", state), state):
-            payload = interrupt(
-                {
-                    "action_hash": state["policy"].action_hash,
-                    "monitor_verdict": state["monitor"].verdict if state.get("monitor") else None,
-                    "requires_reason": bool(
+            payload = dependencies.authorization.request(
+                AuthorizationRequest(
+                    action_hash=state["policy"].action_hash,
+                    incident_id=state["incident"].incident_id,
+                    thread_id=state["incident"].thread_id,
+                    actor=state["action"].actor,
+                    monitor_verdict=(
+                        state["monitor"].verdict if state.get("monitor") else None
+                    ),
+                    requires_reason=bool(
                         state.get("monitor") and state["monitor"].verdict is MonitorVerdict.DEFER
                     ),
-                }
+                )
             )
+        # Validated here rather than by the authorizer, and for both of them:
+        # the durable implementation cannot validate what a caller resumed with,
+        # so the graph is the only place the check can be shared.
         human = HumanDecision.model_validate(payload)
         policy, monitor_result = state["policy"], state.get("monitor")
         if human.decision == "reject":

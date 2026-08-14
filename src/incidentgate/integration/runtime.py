@@ -36,17 +36,13 @@ from incidentgate.contracts import (
 )
 from incidentgate.control import (
     AdvisoryMonitor,
-    DeterministicD1Proposer,
-    DeterministicD2Proposer,
-    DeterministicD3Proposer,
-    DeterministicD5Proposer,
-    DeterministicD8Proposer,
     DeterministicPolicyEngine,
     EvidenceValidator,
     FixtureMonitor,
     WorkflowDependencies,
     build_deferred_graph,
     build_workflow_graph,
+    proposal,
 )
 from incidentgate.control.models import (
     Caller,
@@ -56,20 +52,6 @@ from incidentgate.control.models import (
     WorkflowResult,
 )
 from incidentgate.control.ports import AuthorizationRequester, ProposalGenerator
-from incidentgate.control.proposal import (
-    DeterministicR01Proposer,
-    DeterministicR02Proposer,
-    DeterministicR03Proposer,
-    DeterministicR04Proposer,
-    DeterministicR06Proposer,
-    DeterministicR07Proposer,
-    DeterministicR08Proposer,
-    DeterministicR09Proposer,
-    DeterministicR12Proposer,
-    DeterministicT1Proposer,
-    DeterministicT2Proposer,
-    DeterministicT4Proposer,
-)
 from incidentgate.control.safeguards import (
     PRODUCTION_SAFEGUARDS,
     AuthorizationGate,
@@ -84,6 +66,7 @@ from incidentgate.scenario_registry import (
     ALLOWED_EVIDENCE_SOURCES,
     NO_ACTION_SCENARIOS,
     RUNNABLE_SCENARIOS,
+    SCENARIOS,
 )
 from incidentgate.telemetry import (
     TelemetryConfig,
@@ -338,57 +321,25 @@ class IncidentRuntime:
                 telemetry=self._telemetry,
             )
         sources = ALLOWED_EVIDENCE_SOURCES
-        proposer: ProposalGenerator
-        if scenario_id == "D1":
-            proposer = DeterministicD1Proposer()
-        elif scenario_id == "D2":
-            proposer = DeterministicD2Proposer()
-        elif scenario_id == "D3":
-            proposer = DeterministicD3Proposer()
-        elif scenario_id == "D5":
-            proposer = DeterministicD5Proposer()
-        elif scenario_id == "D8":
-            proposer = DeterministicD8Proposer()
-        elif scenario_id == "R01":
-            proposer = DeterministicR01Proposer()
-        elif scenario_id == "R02":
-            proposer = DeterministicR02Proposer()
-        elif scenario_id == "R03":
-            proposer = DeterministicR03Proposer()
-        elif scenario_id == "R04":
-            proposer = DeterministicR04Proposer()
-        elif scenario_id == "R06":
-            proposer = DeterministicR06Proposer()
-        elif scenario_id == "R07":
-            proposer = DeterministicR07Proposer()
-        elif scenario_id == "R08":
-            proposer = DeterministicR08Proposer()
-        elif scenario_id == "R09":
-            proposer = DeterministicR09Proposer()
-        elif scenario_id == "R12":
-            proposer = DeterministicR12Proposer()
-        elif scenario_id == "T1":
-            # The honest baseline policy. T1's attack condition is supplied through
-            # the proposer_factory seam below, which is the same seam a captured
-            # model condition will use -- so the gate sees no difference between a
-            # deterministic attack policy and a model-driven one.
-            proposer = DeterministicT1Proposer()
-        elif scenario_id == "T4":
-            # Same shape as T1's entry and the same seam for its attack
-            # condition. The difference is that T4's honest work is three calls
-            # rather than one, so the class selected here re-derives its position
-            # in the canonical sequence from call-ledger evidence on every
-            # traversal instead of holding an index. One graph build is still one
-            # proposal; three builds walk the sequence.
-            proposer = DeterministicT4Proposer()
-        elif scenario_id == "T2":
-            # Same shape as T1's entry and the same seam for its attack
-            # condition. T2 is the T1-shaped scenario -- one honest call, one
-            # prohibited covert call -- so one proposer selected here is the
-            # whole honest leg, with no position to re-derive.
-            proposer = DeterministicT2Proposer()
-        else:
+        # The scenario's shipped honest proposer, resolved from the registry by
+        # the name it declares. This was a seventeen-branch if-chain that
+        # restated, in a second place and by hand, the same set
+        # ``_scenario_span`` restated in a third: adding T4 to one and not the
+        # other failed every T4 run inside the policy node. Both are now
+        # projections of one declaration.
+        #
+        # What each proposer is remains a fact about the scenario rather than
+        # about this method. T1's, T2's and T4's are honest baselines whose
+        # attack conditions arrive through the proposer_factory seam below --
+        # the same seam a captured model condition uses, so the gates see no
+        # difference between a deterministic attack policy and a model-driven
+        # one -- and T4's re-derives its position in the canonical sequence from
+        # call-ledger evidence on every traversal rather than holding an index,
+        # because its honest work is three calls where the others are one.
+        definition = SCENARIOS.get(scenario_id)
+        if definition is None or definition.proposer is None:
             raise ValueError("unsupported checkpoint scenario")
+        proposer: ProposalGenerator = getattr(proposal, definition.proposer)()
         if self._proposer_factory is not None:
             # Deliberately after the scenario check: selecting a model-backed
             # proposer does not make an unsupported scenario supported.

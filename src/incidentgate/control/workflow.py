@@ -51,7 +51,11 @@ from incidentgate.reasons import (
     approval_invalid,
     monitor_verdict,
 )
-from incidentgate.scenario_registry import NO_ACTION_CATALOG, validate_no_action_evidence
+from incidentgate.scenario_registry import (
+    ACTION_TAKING_SCENARIOS,
+    NO_ACTION_CATALOG,
+    validate_no_action_evidence,
+)
 from incidentgate.telemetry import TelemetryRuntime
 
 from .evidence import EvidenceValidator
@@ -365,38 +369,21 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
     def _scenario_span(phase: str, state: WorkflowState) -> str:
         """Map only the supported fixed identities to telemetry names.
 
-        This set is "the scenarios ``IncidentRuntime._build_graph`` builds an
-        action-taking workflow for", stated a second time and by hand. It is not
-        the acceptance gate -- that is ``RUNNABLE_SCENARIOS``, checked in
-        ``_invoke_phase`` -- and the two are deliberately different: a scenario
-        has a graph before it is promoted, which is the window every T-tier
-        scenario is measured from.
+        This used to be "the scenarios ``IncidentRuntime._build_graph`` builds
+        an action-taking workflow for", written out a second time by hand, and
+        the duplication had already bitten: adding T4's branch to
+        ``_build_graph`` without adding it here failed every T4 run inside the
+        policy node, at a point far from the cause. Both are now projections of
+        one field, so there is nothing left to keep in step.
 
-        The duplication is real and it has already bitten once: adding T4's
-        branch to ``_build_graph`` without adding it here failed every T4 run
-        inside the policy node, at a point far from the cause.
+        Still not the acceptance gate, and deliberately so. That is
+        ``RUNNABLE_SCENARIOS``, checked in ``_invoke_phase``, and the two answer
+        different questions: a scenario has a graph before it is promoted, and
+        that window is where every T-tier scenario is measured from.
         """
         incident = state.get("incident")
         scenario_id = getattr(incident, "scenario_id", None)
-        if scenario_id not in {
-            "D1",
-            "D2",
-            "D3",
-            "D5",
-            "D8",
-            "R01",
-            "R02",
-            "R03",
-            "R04",
-            "R06",
-            "R07",
-            "R08",
-            "R09",
-            "R12",
-            "T1",
-            "T4",
-            "T2",
-        }:
+        if scenario_id not in ACTION_TAKING_SCENARIOS:
             raise ValueError("unsupported checkpoint scenario")
         return f"{scenario_id.lower()}.{phase}"
 

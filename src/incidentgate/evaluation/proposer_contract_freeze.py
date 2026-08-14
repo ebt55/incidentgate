@@ -15,6 +15,7 @@ from incidentgate.contracts import EvaluationMode
 from incidentgate.control.response_cache import schema_sha256, sha256_text
 from incidentgate.evaluation.capture_model_outputs import CaptureWorkItem
 from incidentgate.evaluation.proposer_capture_plan import (
+    ProposerAuditObservation,
     ProposerCaptureAudit,
     ProposerCaptureRefusal,
     audit_frozen_proposer_requests,
@@ -90,6 +91,10 @@ def build_proposer_capture_contract(
         != expected
     ):
         raise ValueError("proposer audit sources do not exactly match frozen holdout variants")
+    audit_by_source: dict[tuple[str, str, str], ProposerAuditObservation] = {
+        (row.source.scenario_id, row.source.variant_id, row.source.split): row
+        for row in audited_holdout
+    }
     item_by_source: dict[tuple[str, str, str], CaptureWorkItem] = {}
     for item in items:
         context = item.context
@@ -103,10 +108,11 @@ def build_proposer_capture_contract(
     if actual != frozenset(expected):
         raise ValueError("proposer audit sources do not exactly match frozen holdout variants")
 
-    identities: set[tuple[str, str, str, str, str, str]] = set()
+    identities: set[tuple[str, str, str, str]] = set()
     bindings: list[ProposerPromptBinding] = []
     for source in sorted(expected):
         item = item_by_source[source]
+        row_contract = audit_by_source[source].contract
         request, context = item.request, item.context
         if (
             context.role != "proposer"
@@ -122,16 +128,25 @@ def build_proposer_capture_contract(
             context.prompt_version,
             context.input_schema_version,
             context.input_schema_sha256,
-            context.output_schema_sha256,
-            schema_sha256(request.schema),
         )
         identities.add(identity)
+        actual_provider_schema = schema_sha256(request.schema)
+        if (
+            row_contract.action_profile_id != context.scenario_id
+            or context.action_profile_id != row_contract.action_profile_id
+            or row_contract.output_schema_sha256 != context.output_schema_sha256
+            or row_contract.provider_schema_sha256 != actual_provider_schema
+        ):
+            raise ValueError("proposer audited contract disagrees with exact capture request")
         bindings.append(
             ProposerPromptBinding(
                 scenario_id=context.scenario_id,
                 variant_id=context.variant_id,
                 split="holdout",
                 system_prompt_sha256=sha256_text(request.system),
+                action_profile_id=row_contract.action_profile_id,
+                output_schema_sha256=context.output_schema_sha256,
+                provider_schema_sha256=actual_provider_schema,
             )
         )
     if len(identities) != 1:
@@ -141,10 +156,9 @@ def build_proposer_capture_contract(
         prompt_version,
         input_schema_version,
         input_schema_sha256,
-        output_schema_sha256,
-        provider_schema_sha256,
     ) = identities.pop()
     return ProposerCaptureContractArtifact(
+        schema_version="proposer-capture-contract-v2",
         contract_id=contract_id,
         frozen_at=frozen_at,
         provider="anthropic",
@@ -153,8 +167,6 @@ def build_proposer_capture_contract(
         prompt_bindings=tuple(bindings),
         input_schema_version=input_schema_version,
         input_schema_sha256=input_schema_sha256,
-        output_schema_sha256=output_schema_sha256,
-        provider_schema_sha256=provider_schema_sha256,
     )
 
 

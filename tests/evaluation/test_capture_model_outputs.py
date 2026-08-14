@@ -189,6 +189,98 @@ def _proposer_holdout_args(tmp_path: Path, **changes: object) -> Namespace:
     return _args(tmp_path, **base)
 
 
+def _v2_proposer_contract(frozen_at: datetime) -> ProposerCaptureContractArtifact:
+    return ProposerCaptureContractArtifact(
+        schema_version="proposer-capture-contract-v2",
+        contract_id="capture-v2",
+        frozen_at=frozen_at,
+        provider="anthropic",
+        model="claude-opus-5",
+        prompt_version="proposal/v1",
+        input_schema_version="proposal-evidence-digest/v1",
+        input_schema_sha256="d" * 64,
+        prompt_bindings=tuple(
+            ProposerPromptBinding(
+                scenario_id=scenario_id,
+                variant_id=f"{scenario_id}-holdout-v1",
+                split="holdout",
+                system_prompt_sha256=capture_module.sha256_text(scenario_id),
+                action_profile_id=scenario_id,
+                output_schema_sha256=output_hash,
+                provider_schema_sha256=provider_hash,
+            )
+            for scenario_id, output_hash, provider_hash in (
+                ("T1", "1" * 64, "a" * 64),
+                ("T2", "2" * 64, "b" * 64),
+                ("T4", "4" * 64, "c" * 64),
+            )
+        ),
+    )
+
+
+def test_v2_preflight_uses_only_common_cli_identity_and_rejects_global_hash_flags(
+    tmp_path: Path,
+) -> None:
+    args = _proposer_holdout_args(
+        tmp_path,
+        proposer_output_schema_sha256=None,
+        proposer_provider_schema_sha256=None,
+    )
+    inspection = lambda _: ProposerHoldoutArtifactInspection(
+        _v2_proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+    )
+    plan = preflight(
+        args,
+        env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC),
+        git_clean=lambda: True,
+        proposer_holdout_inspector=inspection,
+        root=tmp_path,
+    )
+    assert plan.proposer_contract is not None
+    assert plan.proposer_contract.output_schema_sha256 is None
+    with pytest.raises(ValueError, match="forbids legacy global"):
+        preflight(
+            _proposer_holdout_args(tmp_path),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            proposer_holdout_inspector=inspection,
+            root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "binding_change",
+    (
+        {"action_profile_id": "T2"},
+        {"scenario_id": "D1"},
+        {"output_schema_sha256": None},
+        {"provider_schema_sha256": None},
+    ),
+)
+def test_v2_artifact_rejects_non_exact_source_bindings(binding_change: dict[str, object]) -> None:
+    payload = _v2_proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)).model_dump()
+    payload["prompt_bindings"][0].update(binding_change)
+    with pytest.raises(ValueError):
+        ProposerCaptureContractArtifact.model_validate(payload)
+
+
+def test_v2_artifact_rejects_missing_or_duplicate_scenario_binding() -> None:
+    payload = _v2_proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)).model_dump()
+    payload["prompt_bindings"] = payload["prompt_bindings"][:2]
+    with pytest.raises(ValueError):
+        ProposerCaptureContractArtifact.model_validate(payload)
+    payload = _v2_proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)).model_dump()
+    payload["prompt_bindings"] = (
+        payload["prompt_bindings"][0],
+        payload["prompt_bindings"][0],
+        payload["prompt_bindings"][2],
+    )
+    with pytest.raises(ValueError):
+        ProposerCaptureContractArtifact.model_validate(payload)
+
+
 def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path) -> None:
     args = _proposer_holdout_args(tmp_path)
     frozen_at = datetime(2026, 8, 14, tzinfo=UTC)
@@ -258,7 +350,7 @@ def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, fiel
 
 
 def test_proposer_holdout_requires_provider_schema_cli_identity(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="proposer artifact"):
+    with pytest.raises(ValueError, match="requires global schema hashes"):
         preflight(
             _proposer_holdout_args(tmp_path, proposer_provider_schema_sha256=None),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
@@ -1307,6 +1399,7 @@ def _verified_frozen_audit_and_items() -> tuple[object, dict[str, tuple[CaptureW
                 "d" * 64,
                 "e" * 64,
                 "f" * 64,
+                scenario_id,
             )
             source = ProposerAuditSource(
                 scenario_id, variant.variant_id, variant.split, variant.seed

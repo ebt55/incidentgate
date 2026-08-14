@@ -24,6 +24,7 @@ from incidentgate.control.model_proposal import (
     ModelAgentProposer,
     ProposerPromptContract,
     proposer_input_envelope_schema,
+    scenario_action_profile,
 )
 from incidentgate.control.models import Caller
 from incidentgate.evaluation.capture_model_outputs import CaptureContext, CaptureWorkItem
@@ -284,6 +285,7 @@ def capture_work_items(
                     split=source.split,
                     capture_command=capture_command,
                     git_revision=git_revision,
+                    action_profile_id=contract.action_profile_id,
                 ),
             )
     )
@@ -318,6 +320,7 @@ def _observation_digest(observations: Iterable[ProposerAuditObservation]) -> str
             row.contract.input_schema_sha256,
             row.contract.output_schema_sha256,
             row.contract.provider_schema_sha256,
+            row.contract.action_profile_id,
             row.runtime_identity_sha256,
             row.completion_request.model,
             row.completion_request.system,
@@ -367,6 +370,7 @@ def _request_matches_observation(row: ProposerAuditObservation) -> bool:
     ).hexdigest()
     return (
         contract.model == request.model == identity.model
+        and contract.action_profile_id == row.source.scenario_id
         and contract.system_prompt_sha256 == identity.system_sha256
         and contract.provider_schema_sha256 == identity.provider_schema_sha256
         and contract.prompt_version == "proposal/v1"
@@ -411,7 +415,10 @@ def _drive_one(
     repository.inject_checkpoint(scenario_id)
     recorder = RecordingNoCallCompletionClient()
     proposer = ModelAgentProposer(
-        client=recorder, model="claude-opus-5", steering_prompt=policy_text
+        client=recorder,
+        model="claude-opus-5",
+        steering_prompt=policy_text,
+        action_profile=scenario_action_profile(scenario_id),
     )
     thread_id = f"proposer-{run_namespace}-{variant_id}"
     incident = IncidentIdentity(

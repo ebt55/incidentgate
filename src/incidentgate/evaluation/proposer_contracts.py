@@ -23,6 +23,9 @@ class ProposerPromptBinding(ContractModel):
     variant_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
     split: Literal["holdout"]
     system_prompt_sha256: str
+    action_profile_id: Literal["T1", "T2", "T4"] | None = None
+    output_schema_sha256: str | None = None
+    provider_schema_sha256: str | None = None
 
     @field_validator("system_prompt_sha256")
     @classmethod
@@ -57,7 +60,9 @@ def validate_proposer_prompt_bindings(bindings: object) -> None:
 class ProposerCaptureContractArtifact(ContractModel):
     """Frozen proposer surface admitted to a holdout capture; no writer lives here."""
 
-    schema_version: Literal["proposer-capture-contract-v1"] = "proposer-capture-contract-v1"
+    schema_version: Literal["proposer-capture-contract-v1", "proposer-capture-contract-v2"] = (
+        "proposer-capture-contract-v1"
+    )
     contract_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     frozen_at: datetime
     provider: Literal["anthropic"]
@@ -66,8 +71,8 @@ class ProposerCaptureContractArtifact(ContractModel):
     prompt_bindings: tuple[ProposerPromptBinding, ...] = Field(min_length=1, max_length=64)
     input_schema_version: str
     input_schema_sha256: str
-    output_schema_sha256: str
-    provider_schema_sha256: str
+    output_schema_sha256: str | None = None
+    provider_schema_sha256: str | None = None
 
     @field_validator("model", "prompt_version", "input_schema_version")
     @classmethod
@@ -76,7 +81,7 @@ class ProposerCaptureContractArtifact(ContractModel):
             raise ValueError("contract text must be a bounded non-empty string")
         return value
 
-    @field_validator("input_schema_sha256", "output_schema_sha256", "provider_schema_sha256")
+    @field_validator("input_schema_sha256")
     @classmethod
     def _validate_sha(cls, value: str) -> str:
         if _SHA.fullmatch(value) is None:
@@ -93,6 +98,31 @@ class ProposerCaptureContractArtifact(ContractModel):
     @model_validator(mode="after")
     def _validate_prompt_bindings(self) -> ProposerCaptureContractArtifact:
         validate_proposer_prompt_bindings(self.prompt_bindings)
+        if self.schema_version == "proposer-capture-contract-v1":
+            if _SHA.fullmatch(self.output_schema_sha256 or "") is None or _SHA.fullmatch(
+                self.provider_schema_sha256 or ""
+            ) is None:
+                raise ValueError("v1 proposer contract requires global schema hashes")
+            if any(
+                binding.action_profile_id is not None
+                or binding.output_schema_sha256 is not None
+                or binding.provider_schema_sha256 is not None
+                for binding in self.prompt_bindings
+            ):
+                raise ValueError("v1 proposer bindings cannot carry scoped profile fields")
+        else:
+            if self.output_schema_sha256 is not None or self.provider_schema_sha256 is not None:
+                raise ValueError("v2 proposer schema hashes belong to each source binding")
+            if {binding.scenario_id for binding in self.prompt_bindings} != {"T1", "T2", "T4"}:
+                raise ValueError("v2 proposer bindings must exactly cover T1, T2, and T4")
+            if any(
+                binding.scenario_id not in {"T1", "T2", "T4"}
+                or binding.action_profile_id != binding.scenario_id
+                or _SHA.fullmatch(binding.output_schema_sha256 or "") is None
+                or _SHA.fullmatch(binding.provider_schema_sha256 or "") is None
+                for binding in self.prompt_bindings
+            ):
+                raise ValueError("v2 proposer bindings require scoped profile and schema hashes")
         return self
 
 

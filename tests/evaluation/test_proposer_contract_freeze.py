@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,7 +69,7 @@ def _row(scenario_id: str, variant_id: str, runtime: str) -> ProposerAuditObserv
         ProposerPromptContract(
             "proposal/v1", "claude-opus-5", identity.system_sha256,
             "proposal-evidence-digest/v1", input_hash, output_hash,
-            identity.provider_schema_sha256,
+            identity.provider_schema_sha256, scenario_id,
         ),
         hashlib.sha256(runtime.encode()).hexdigest(),
     )
@@ -111,9 +112,39 @@ def test_freeze_derives_canonical_bindings_and_shared_identity_from_audited_requ
         ("T4", "T4-holdout-v1", "holdout"),
     ]
     assert artifact.model == "claude-opus-5"
-    assert artifact.provider_schema_sha256 == hashlib.sha256(
-        json.dumps({"type": "object"}, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    assert artifact.schema_version == "proposer-capture-contract-v2"
+    assert all(
+        binding.action_profile_id == binding.scenario_id for binding in artifact.prompt_bindings
+    )
+    assert all(binding.provider_schema_sha256 for binding in artifact.prompt_bindings)
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        lambda row: replace(row, contract=replace(row.contract, action_profile_id=None)),
+        lambda row: replace(row, contract=replace(row.contract, action_profile_id="T2")),
+        lambda row: replace(row, contract=replace(row.contract, output_schema_sha256="e" * 64)),
+        lambda row: replace(row, contract=replace(row.contract, provider_schema_sha256="f" * 64)),
+    ),
+)
+def test_freeze_refuses_missing_or_swapped_scoped_contract_evidence(
+    change: Callable[[ProposerAuditObservation], ProposerAuditObservation],
+) -> None:
+    audit = _audit()
+    rows = list(audit.observations)
+    rows[0] = change(rows[0])
+    with pytest.raises(ValueError, match="unverified|disagrees"):
+        build_proposer_capture_contract(
+            audit=replace(audit, observations=tuple(rows)),
+            capture_command="pytest tests/evaluation",
+            git_revision="a" * 40,
+            worktree_clean=True,
+            contract_id="holdout-proposer",
+            frozen_at=AT,
+            provider="anthropic",
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+        )
 
 
 @pytest.mark.parametrize("changes", [

@@ -74,12 +74,11 @@ class HoldoutProposerContract:
     prompt_version: str
     input_schema_version: str
     input_schema_sha256: str
-    output_schema_sha256: str
-    provider_schema_sha256: str
+    output_schema_sha256: str | None
+    provider_schema_sha256: str | None
     prompt_bindings: tuple[ProposerPromptBinding, ...]
 
-    def system_prompt_sha256_for(self, context: CaptureContext) -> str:
-        """Return the one frozen proposer prompt hash authorized for this source."""
+    def binding_for(self, context: CaptureContext) -> ProposerPromptBinding:
         validate_proposer_prompt_bindings(self.prompt_bindings)
         for binding in self.prompt_bindings:
             if (binding.scenario_id, binding.variant_id, binding.split) == (
@@ -87,8 +86,12 @@ class HoldoutProposerContract:
                 context.variant_id,
                 context.split,
             ):
-                return binding.system_prompt_sha256
+                return binding
         raise ValueError("proposer source is not listed in frozen holdout contract")
+
+    def system_prompt_sha256_for(self, context: CaptureContext) -> str:
+        """Return the one frozen proposer prompt hash authorized for this source."""
+        return self.binding_for(context).system_prompt_sha256
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ class CaptureContext:
     split: Literal["development", "calibration", "holdout"]
     capture_command: str
     git_revision: str
+    action_profile_id: Literal["T1", "T2", "T4"] | None = None
 
 
 @dataclass(frozen=True)
@@ -377,15 +381,13 @@ def preflight(
                 raise ValueError("holdout threshold artifact does not match the capture contract")
             threshold_contract = HoldoutThresholdContract(*threshold_actual)
         if "proposer" in roles:
-            proposer_expected = (
+            proposer_common_expected = (
                 getattr(args, "proposer_provider", None), args.model,
                 getattr(args, "proposer_prompt_version", None),
                 getattr(args, "proposer_input_schema_version", None),
                 getattr(args, "proposer_input_schema_sha256", None),
-                getattr(args, "proposer_output_schema_sha256", None),
-                getattr(args, "proposer_provider_schema_sha256", None),
             )
-            if any(not value for value in proposer_expected):
+            if any(not value for value in proposer_common_expected):
                 raise ValueError(
                     "holdout capture requires a concrete proposer artifact and contract"
                 )
@@ -400,21 +402,50 @@ def preflight(
             if not isinstance(proposer_inspection, ProposerHoldoutArtifactInspection):
                 raise ValueError("holdout proposer artifact has invalid inspection")
             proposer_artifact = proposer_inspection.artifact
-            proposer_actual = (
+            if proposer_artifact.schema_version == "proposer-capture-contract-v1" and any(
+                binding.scenario_id in {"T1", "T2", "T4"}
+                for binding in proposer_artifact.prompt_bindings
+            ):
+                raise ValueError("scenario-profile holdout capture requires a v2 proposer artifact")
+            proposer_common = (
                 proposer_artifact.provider,
                 proposer_artifact.model,
                 proposer_artifact.prompt_version,
                 proposer_artifact.input_schema_version,
                 proposer_artifact.input_schema_sha256,
-                proposer_artifact.output_schema_sha256,
-                proposer_artifact.provider_schema_sha256,
             )
-            if proposer_artifact.frozen_at >= moment or proposer_actual != proposer_expected:
+            if proposer_artifact.schema_version == "proposer-capture-contract-v1":
+                proposer_expected = proposer_common_expected + (
+                    getattr(args, "proposer_output_schema_sha256", None),
+                    getattr(args, "proposer_provider_schema_sha256", None),
+                )
+                if any(not value for value in proposer_expected):
+                    raise ValueError(
+                        "holdout v1 proposer capture requires global schema hashes"
+                    )
+                contract_matches = proposer_common + (
+                    proposer_artifact.output_schema_sha256,
+                    proposer_artifact.provider_schema_sha256,
+                ) == proposer_expected
+            else:
+                if (
+                    getattr(args, "proposer_output_schema_sha256", None) is not None
+                    or getattr(args, "proposer_provider_schema_sha256", None) is not None
+                ):
+                    raise ValueError("v2 proposer capture forbids legacy global schema hash flags")
+                contract_matches = proposer_common == proposer_common_expected
+            if proposer_artifact.frozen_at >= moment or not contract_matches:
                 raise ValueError("holdout proposer artifact does not match the capture contract")
+            legacy_hashes = (
+                (proposer_artifact.output_schema_sha256, proposer_artifact.provider_schema_sha256)
+                if proposer_artifact.schema_version == "proposer-capture-contract-v1"
+                else (None, None)
+            )
             proposer_contract = HoldoutProposerContract(
                 proposer_artifact.contract_id,
                 proposer_artifact.frozen_at,
-                *proposer_actual,
+                *proposer_common,
+                *legacy_hashes,
                 proposer_artifact.prompt_bindings,
             )
         if not (git_clean or clean_git_tree)():
@@ -604,17 +635,35 @@ def _validate_plan(plan: CapturePlan) -> None:
             _CONTRACT_ID.fullmatch(contract.contract_id) is None
             or contract.frozen_at.tzinfo is None
             or contract.frozen_at.utcoffset() is None
-            or any(
-                _SHA.fullmatch(value) is None
-                for value in (
-                    contract.input_schema_sha256,
-                    contract.output_schema_sha256,
-                    contract.provider_schema_sha256,
-                )
-            )
+            or _SHA.fullmatch(contract.input_schema_sha256) is None
         ):
             raise ValueError("capture plan has invalid proposer holdout contract")
         validate_proposer_prompt_bindings(contract.prompt_bindings)
+        scoped = any(binding.action_profile_id is not None for binding in contract.prompt_bindings)
+        if scoped:
+            if (
+                {binding.scenario_id for binding in contract.prompt_bindings}
+                != {"T1", "T2", "T4"}
+                or any(
+                    binding.action_profile_id != binding.scenario_id
+                    or _SHA.fullmatch(binding.output_schema_sha256 or "") is None
+                    or _SHA.fullmatch(binding.provider_schema_sha256 or "") is None
+                    for binding in contract.prompt_bindings
+                )
+                or contract.output_schema_sha256 is not None
+                or contract.provider_schema_sha256 is not None
+            ):
+                raise ValueError("capture plan has invalid scoped proposer holdout contract")
+        elif (
+            _SHA.fullmatch(contract.output_schema_sha256 or "") is None
+            or _SHA.fullmatch(contract.provider_schema_sha256 or "") is None
+            or any(
+                binding.output_schema_sha256 is not None
+                or binding.provider_schema_sha256 is not None
+                for binding in contract.prompt_bindings
+            )
+        ):
+            raise ValueError("capture plan has invalid legacy proposer holdout contract")
 
 
 _VERSION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
@@ -715,35 +764,31 @@ def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
             raise ValueError("proposer canonical prompt disagrees with capture request/context")
     if plan.split == "holdout":
         contract = _contract_for_role(plan, context.role)
-        common_identity = (
-            request.model,
-            context.prompt_version,
-            context.input_schema_sha256,
-            context.output_schema_sha256,
-        )
+        common_identity = (request.model, context.prompt_version, context.input_schema_sha256)
         contract_common_identity = None if contract is None else (
-            contract.model,
-            contract.prompt_version,
-            contract.input_schema_sha256,
-            contract.output_schema_sha256,
+            contract.model, contract.prompt_version, contract.input_schema_sha256
         )
         if common_identity != contract_common_identity or (
             isinstance(contract, HoldoutProposerContract)
             and context.input_schema_version != contract.input_schema_version
         ):
             raise ValueError("holdout work item disagrees with frozen role-specific contract")
-        if (
-            context.role == "proposer"
-            and isinstance(contract, HoldoutProposerContract)
-            and sha256_text(request.system) != contract.system_prompt_sha256_for(context)
-        ):
-            raise ValueError("proposer system prompt disagrees with frozen holdout contract")
-        if (
-            context.role == "proposer"
-            and isinstance(contract, HoldoutProposerContract)
-            and request_schema_sha256(request) != contract.provider_schema_sha256
-        ):
-            raise ValueError("proposer provider schema disagrees with frozen holdout contract")
+        if context.role == "proposer" and isinstance(contract, HoldoutProposerContract):
+            binding = contract.binding_for(context)
+            scoped = binding.action_profile_id is not None
+            if scoped and (
+                context.action_profile_id != binding.action_profile_id
+                or context.output_schema_sha256 != binding.output_schema_sha256
+                or request_schema_sha256(request) != binding.provider_schema_sha256
+            ):
+                raise ValueError("proposer work item disagrees with frozen source binding")
+            if not scoped and (
+                context.output_schema_sha256 != contract.output_schema_sha256
+                or request_schema_sha256(request) != contract.provider_schema_sha256
+            ):
+                raise ValueError("proposer provider schema disagrees with frozen holdout contract")
+            if sha256_text(request.system) != binding.system_prompt_sha256:
+                raise ValueError("proposer system prompt disagrees with frozen holdout contract")
 
 
 def _head_revision(root: Path) -> str:

@@ -80,6 +80,7 @@ def _row(
             input_schema_sha256,
             "d" * 64,
             identity.provider_schema_sha256,
+            "T1",
         ),
         hashlib.sha256(runtime_token.encode()).hexdigest(),
     )

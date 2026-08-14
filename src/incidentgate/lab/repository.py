@@ -580,6 +580,24 @@ _register(
 )
 
 
+def operation_specs_for(scenario_id: str) -> tuple[OperationSpec, ...]:
+    """Every capability one scenario owns, in the order it registered them.
+
+    The public reader the typed scenario registry binds to, and it is bound
+    lazily on purpose: an OperationSpec carries SQL and lives beside psycopg,
+    while the registry is imported by modules that must stay free of a database
+    driver. Returning a tuple rather than the live mapping keeps the
+    registration order -- which is the order a condition issues the
+    capabilities -- and keeps the registry unable to add one.
+    """
+    return tuple(spec for spec in _SPECS.values() if spec.scenario_id == scenario_id)
+
+
+def registered_operation_specs() -> tuple[OperationSpec, ...]:
+    """Every capability the lab can commit, across every scenario."""
+    return tuple(_SPECS.values())
+
+
 def _restore_config_arguments(action: CanonicalAction) -> None:
     arguments = action.arguments
     if (

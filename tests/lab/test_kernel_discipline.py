@@ -58,12 +58,41 @@ def _attribute_calls(tree: ast.AST, attribute: str) -> list[ast.Call]:
     ]
 
 
-def _mutations(tree: ast.AST) -> list[ast.FunctionDef]:
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == MUTATION_NAME
-    ]
+def _functions(tree: ast.AST) -> dict[str, ast.FunctionDef]:
+    return {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    return {
+        call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+
+
+def _mutations_and_their_helpers(tree: ast.AST) -> list[ast.FunctionDef]:
+    """Every mutation body, plus every module function a mutation can reach.
+
+    Following the calls is what keeps this check honest: a mutation that moved
+    its fixture read into a helper would otherwise leave the helper unchecked,
+    and the helper is where the reaching-around would live.
+    """
+    declared = _functions(tree)
+    reachable = [node for name, node in declared.items() if name == MUTATION_NAME]
+    seen = {MUTATION_NAME}
+    frontier = list(reachable)
+    while frontier:
+        current = frontier.pop()
+        for name in _called_names(current) - seen:
+            helper = declared.get(name)
+            if helper is None:
+                continue
+            seen.add(name)
+            reachable.append(helper)
+            frontier.append(helper)
+    return reachable
 
 
 def test_the_kernel_reads_the_clock_exactly_once() -> None:
@@ -153,14 +182,26 @@ def test_no_mutation_reaches_past_its_locked_transaction() -> None:
     written is checked for it here.
     """
     tree = _module_source(repository)
-    found = _mutations(tree)
+    found = _mutations_and_their_helpers(tree)
     assert found, "no scenario mutation was found; the source check would be vacuous"
     for mutation in found:
-        source = ast.dump(mutation)
-        for forbidden in ("_clock", "_connect", "commit", *WALL_CLOCK_NAMES):
-            assert f"attr='{forbidden}'" not in source, (
-                f"a scenario mutation reached {forbidden}"
-            )
+        called = {
+            call.func.attr
+            for call in ast.walk(mutation)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+        }
+        # ``transaction.now`` is read, never called -- that is the whole point of
+        # handing an instant rather than a clock -- so the check is on calls.
+        assert not (called & WALL_CLOCK_NAMES), (
+            f"{mutation.name} called a wall clock: {sorted(called & WALL_CLOCK_NAMES)}"
+        )
+        assert "commit" not in called, f"{mutation.name} tried to end its own transaction"
+        reached = {
+            node.attr for node in ast.walk(mutation) if isinstance(node, ast.Attribute)
+        }
+        assert not (reached & {"_clock", "_connect"}), (
+            f"{mutation.name} reached a repository seam it is not handed"
+        )
         literals = [
             node.value
             for node in ast.walk(mutation)
@@ -168,5 +209,5 @@ def test_no_mutation_reaches_past_its_locked_transaction() -> None:
         ]
         for table in KERNEL_OWNED_TABLES:
             assert not any(table in literal for literal in literals), (
-                f"a scenario mutation named {table}, which only the kernel may write"
+                f"{mutation.name} named {table}, which only the kernel may write"
             )

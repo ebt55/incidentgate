@@ -509,6 +509,210 @@ _register(
 )
 
 
+def _restore_config_arguments(action: CanonicalAction) -> None:
+    arguments = action.arguments
+    if (
+        not isinstance(arguments, RestoreConfigArgs)
+        or arguments.component != "api"
+        or (
+            arguments.variable_name != "REQUIRED_API_URL"
+            or arguments.approved_value_ref != APPROVED_API_URL_REF
+        )
+    ):
+        raise ApprovalDenied("D2 restore config arguments are outside the bounded scope")
+
+
+def _restart_arguments(action: CanonicalAction) -> None:
+    arguments = action.arguments
+    if not isinstance(arguments, RestartArgs) or arguments.component != "api":
+        raise ApprovalDenied("restart arguments are outside the bounded scope")
+
+
+def _cleanup_arguments(action: CanonicalAction) -> None:
+    arguments = action.arguments
+    if (
+        not isinstance(arguments, CleanupArgs)
+        or arguments.component != "api"
+        or arguments.cleanup_scope != "simulated_logs"
+        or arguments.max_bytes != 67_108_864
+    ):
+        raise ApprovalDenied("D5 cleanup arguments are outside the bounded simulated-log scope")
+
+
+def _checkpoint_spec(
+    scenario: str,
+    arguments_type: type,
+    validate_arguments: Callable[[CanonicalAction], None],
+    precondition: Callable[[Mapping[str, object]], bool],
+    mutation: ScenarioMutation,
+    transition: str,
+    *,
+    table: str,
+    filter_clause: str,
+) -> OperationSpec:
+    """One checkpoint capability. These four are the audit-emitting family.
+
+    Their two fixture refusals stay two refusals. A missing row and a row that
+    is present but not in its injected fault state are different facts about the
+    lab -- the first says the scenario was never initialized, the second says
+    the fault is not there to repair -- and they carry different prose today.
+
+    The ``injected`` flag is part of the *precondition* rather than of
+    presence, and that is what makes D2 and D3 explicable: their fixture table,
+    ``scenario_target_state``, has no ``injected`` column at all. Their fault IS
+    the field values, so asking whether it was injected and asking whether the
+    precondition holds are the same question for them, and a different one for
+    D5 and D8, whose tables carry the flag.
+    """
+    return OperationSpec(
+        scenario_id=scenario,
+        operation_scope=_SCOPES[scenario],
+        incident_id=f"INC-{scenario}",
+        tool_name=f"operations.{scenario_arguments_kind(arguments_type)}",
+        arguments_type=arguments_type,
+        validate_arguments=validate_arguments,
+        fixture_lock_sql=f"SELECT * FROM {table} WHERE {filter_clause} FOR UPDATE",
+        fixture_lock_params=(),
+        fixture_present=unconditional,
+        precondition=precondition,
+        mutation=mutation,
+        fixture_table=table,
+        fixture_filter=filter_clause,
+        commit_transition=transition,
+        stamps_updated_at=True,
+        binding_message="action is not bound to the scenario operation context and scope",
+        missing_key_message="operation idempotency key is required",
+        fixture_absent_message="scenario target state is missing",
+        precondition_message="scenario operation requires the injected target state",
+        response_loss_message=(
+            f"{scenario} operation committed but response was intentionally lost"
+        ),
+    )
+
+
+def _d2_mutation() -> ScenarioMutation:
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={
+                "component": "api",
+                "health_status": 200,
+                "config_present": True,
+                "config_reference": APPROVED_API_URL_REF,
+                "result": "config_restored",
+            },
+            fixture_touch="health_status = 200, config_present = true, config_reference = %s",
+            fixture_touch_params=(APPROVED_API_URL_REF,),
+        )
+
+    return mutation
+
+
+def _d3_mutation() -> ScenarioMutation:
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={
+                "component": "api",
+                "health_status": 200,
+                "pool_used": 2,
+                # Quoted from the locked pre-mutation row rather than from a
+                # constant: the pool's size is the fixture's to state, and this
+                # is the one checkpoint payload that reads one.
+                "pool_capacity": transaction.fixture["pool_capacity"],
+                "result": "restarted",
+            },
+            fixture_touch="health_status = 200, pool_used = 2, generation = generation + 1",
+        )
+
+    return mutation
+
+
+def _d5_mutation() -> ScenarioMutation:
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={
+                "component": "api",
+                "cleanup_scope": "simulated_logs",
+                "removed_bytes": 67108864,
+                "remaining_bytes": 33554432,
+                "health_status": 200,
+                "result": "bounded_cleanup",
+            },
+            fixture_touch="log_bytes=33554432, free_bytes=100663296, health_status=200",
+        )
+
+    return mutation
+
+
+def _d8_mutation() -> ScenarioMutation:
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={"component": "api", "health_status": 200, "result": "restarted"},
+            fixture_touch="health_status=200, generation=generation+1",
+        )
+
+    return mutation
+
+
+_register(
+    _checkpoint_spec(
+        "D2",
+        RestoreConfigArgs,
+        _restore_config_arguments,
+        # No ``injected`` column exists on scenario_target_state, so the fault
+        # state itself is the whole precondition: the missing variable is the
+        # incident.
+        lambda state: bool(
+            state["health_status"] == 500
+            and state["config_present"] is False
+            and state["config_reference"] is None
+        ),
+        _d2_mutation(),
+        "config_restore_committed",
+        table="scenario_target_state",
+        filter_clause="scenario_id = 'D2' AND component = 'api'",
+    ),
+    _checkpoint_spec(
+        "D3",
+        RestartArgs,
+        _restart_arguments,
+        # Same as D2: no ``injected`` column, so an exhausted pool at 503 is the
+        # fault and the precondition at once.
+        lambda state: bool(
+            state["health_status"] == 503 and state["pool_used"] == state["pool_capacity"]
+        ),
+        _d3_mutation(),
+        "restart_committed",
+        table="scenario_target_state",
+        filter_clause="scenario_id = 'D3' AND component = 'api'",
+    ),
+    _checkpoint_spec(
+        "D5",
+        CleanupArgs,
+        _cleanup_arguments,
+        lambda state: bool(
+            state["injected"]
+            and state["log_bytes"] == 100663296
+            and state["free_bytes"] == 33554432
+            and state["health_status"] == 503
+        ),
+        _d5_mutation(),
+        "cleanup_committed",
+        table="d5_fixture_state",
+        filter_clause="scenario_id = 'D5'",
+    ),
+    _checkpoint_spec(
+        "D8",
+        RestartArgs,
+        _restart_arguments,
+        lambda state: bool(state["injected"] and state["health_status"] == 503),
+        _d8_mutation(),
+        "restart_committed",
+        table="d8_fixture_state",
+        filter_clause="scenario_id = 'D8'",
+    ),
+)
+
+
 def _sabotage_spec(
     scenario: str,
     scope: str,
@@ -3366,17 +3570,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        arguments = action.arguments
-        if (
-            not isinstance(arguments, RestoreConfigArgs)
-            or arguments.component != "api"
-            or (
-                arguments.variable_name != "REQUIRED_API_URL"
-                or arguments.approved_value_ref != APPROVED_API_URL_REF
-            )
-        ):
-            raise ApprovalDenied("D2 restore config arguments are outside the bounded scope")
-        return self._mutate_checkpoint("D2", context, action, token, response_loss=response_loss)
+        return self._commit(
+            _SCOPES["D2"], context, action, token, response_loss=response_loss
+        )
 
     def restart(
         self,
@@ -3385,11 +3581,19 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        arguments = action.arguments
-        if not isinstance(arguments, RestartArgs) or arguments.component != "api":
-            raise ApprovalDenied("restart arguments are outside the bounded scope")
-        return self._mutate_checkpoint(
-            "D8" if context.incident_id == D8_INCIDENT else "D3",
+        """The one tool name two scenarios answer to, still chosen the same way.
+
+        D8 and D3 are separate capabilities with separate ledger scopes, and the
+        incident on the *context* is what picks between them -- before any
+        identity validation, which is the reverse of the order every other check
+        runs in. It fails closed anyway: a context claiming D8 against a D3
+        action selects D8's spec and is then refused by D8's binding check. The
+        dispatch is kept where it was rather than folded into the kernel,
+        because moving it would change which of two refusals a mismatched call
+        receives.
+        """
+        return self._commit(
+            _SCOPES["D8"] if context.incident_id == D8_INCIDENT else _SCOPES["D3"],
             context,
             action,
             token,
@@ -3403,15 +3607,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        arguments = action.arguments
-        if (
-            not isinstance(arguments, CleanupArgs)
-            or arguments.component != "api"
-            or arguments.cleanup_scope != "simulated_logs"
-            or arguments.max_bytes != 67_108_864
-        ):
-            raise ApprovalDenied("D5 cleanup arguments are outside the bounded simulated-log scope")
-        return self._mutate_checkpoint("D5", context, action, token, response_loss=response_loss)
+        return self._commit(
+            _SCOPES["D5"], context, action, token, response_loss=response_loss
+        )
 
     def rollback_migration_2026_08_10_5(
         self,
@@ -3827,198 +4025,6 @@ class LabRepository:
             remediation_ref=None if remediation is None else str(remediation),
             mutation_count=int(cast(int, state["mutation_count"])),
         )
-
-    def _mutate_checkpoint(
-        self,
-        scenario: str,
-        context: ToolCallContext,
-        action: CanonicalAction,
-        token: ApprovalToken,
-        *,
-        response_loss: bool,
-    ) -> OperationLedgerResult:
-        _, incident = self._scenario(scenario)
-        expected_tool = (
-            "operations.cleanup"
-            if scenario == "D5"
-            else ("operations.restore_config" if scenario == "D2" else "operations.restart")
-        )
-        scope = _SCOPES[scenario]
-        if context.idempotency_key is None:
-            raise ApprovalDenied("operation idempotency key is required")
-        if (
-            context.incident_id != incident
-            or action.incident_id != incident
-            or action.thread_id != context.thread_id
-            or action.actor != context.actor
-            or action.permission != context.permission
-            or action.tool_name != expected_tool
-        ):
-            raise ApprovalDenied("action is not bound to the scenario operation context and scope")
-        action_hash = canonical_action_hash(action)
-        with (
-            # Outermost, so it runs after the inner transaction has rolled back.
-            self._refusal_recorded(context, action_hash),
-            self._connect() as connection,
-            connection.cursor() as cursor,
-        ):
-            cursor.execute(
-                "SELECT * FROM operation_ledger WHERE operation_scope = %s AND idempotency_key = "
-                "%s FOR UPDATE",
-                (scope, context.idempotency_key),
-            )
-            existing = cursor.fetchone()
-            if existing is not None:
-                cursor.execute(
-                    "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
-                )
-                self._validate_replay(context, action_hash, token, existing, cursor.fetchone())
-                return self._ledger_result(existing, OperationStatus.DUPLICATE, scope)
-            cursor.execute(
-                "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
-            )
-            approval = cursor.fetchone()
-            now = self._clock()
-            self._validate_approval(context, action_hash, token, approval, now)
-            self._validate_evidence(cursor, context, action.evidence_ids, now)
-            table = (
-                "d5_fixture_state"
-                if scenario == "D5"
-                else ("d8_fixture_state" if scenario == "D8" else "scenario_target_state")
-            )
-            cursor.execute(
-                f"SELECT * FROM {table} WHERE scenario_id = %s "
-                + (
-                    "FOR UPDATE" if scenario in {"D5", "D8"} else "AND component = 'api' FOR UPDATE"
-                ),
-                (scenario,),
-            )
-            state = cursor.fetchone()
-            if state is None:
-                raise ApprovalDenied("scenario target state is missing")
-            update_params: tuple[object, ...]
-            if scenario == "D5":
-                valid = (
-                    state["injected"]
-                    and state["log_bytes"] == 100663296
-                    and state["free_bytes"] == 33554432
-                    and state["health_status"] == 503
-                )
-                result = {
-                    "component": "api",
-                    "cleanup_scope": "simulated_logs",
-                    "removed_bytes": 67108864,
-                    "remaining_bytes": 33554432,
-                    "health_status": 200,
-                    "result": "bounded_cleanup",
-                }
-                update = (
-                    "UPDATE d5_fixture_state SET log_bytes=33554432, free_bytes=100663296, "
-                    "health_status=200, mutation_count=mutation_count+1, updated_at=%s WHERE "
-                    "scenario_id='D5'"
-                )
-                update_params = (now,)
-                transition = "cleanup_committed"
-            elif scenario == "D8":
-                valid = state["injected"] and state["health_status"] == 503
-                result = {"component": "api", "health_status": 200, "result": "restarted"}
-                update = (
-                    "UPDATE d8_fixture_state SET health_status=200, generation=generation+1, "
-                    "mutation_count=mutation_count+1, updated_at=%s WHERE scenario_id='D8'"
-                )
-                update_params = (now,)
-                transition = "restart_committed"
-            elif scenario == "D2":
-                valid = (
-                    state["health_status"] == 500
-                    and state["config_present"] is False
-                    and state["config_reference"] is None
-                )
-                result = {
-                    "component": "api",
-                    "health_status": 200,
-                    "config_present": True,
-                    "config_reference": APPROVED_API_URL_REF,
-                    "result": "config_restored",
-                }
-                update = (
-                    "UPDATE scenario_target_state SET health_status = 200, config_present = true, "
-                    "config_reference = %s, mutation_count = mutation_count + 1, updated_at = %s "
-                    "WHERE scenario_id = 'D2' AND component = 'api'"
-                )
-                update_params = (APPROVED_API_URL_REF, now)
-                transition = "config_restore_committed"
-            else:
-                valid = (
-                    state["health_status"] == 503 and state["pool_used"] == state["pool_capacity"]
-                )
-                result = {
-                    "component": "api",
-                    "health_status": 200,
-                    "pool_used": 2,
-                    "pool_capacity": state["pool_capacity"],
-                    "result": "restarted",
-                }
-                update = (
-                    "UPDATE scenario_target_state SET health_status = 200, pool_used = 2, "
-                    "generation = generation + 1, mutation_count = mutation_count + 1, updated_at "
-                    "= %s WHERE scenario_id = 'D3' AND component = 'api'"
-                )
-                update_params = (now,)
-                transition = "restart_committed"
-            if not valid:
-                raise ApprovalDenied("scenario operation requires the injected target state")
-            cursor.execute(
-                "INSERT INTO operation_ledger (operation_scope, idempotency_key, action_hash, "
-                "approval_token_id, one_time_use_id, incident_id, thread_id, correlation_id, "
-                "actor, permission, approver, result, committed_at) VALUES (%s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s)",
-                (
-                    scope,
-                    context.idempotency_key,
-                    action_hash,
-                    token.token_id,
-                    token.one_time_use_id,
-                    context.incident_id,
-                    context.thread_id,
-                    context.correlation_id,
-                    context.actor,
-                    context.permission,
-                    token.approver,
-                    json.dumps(result),
-                    now,
-                ),
-            )
-            cursor.execute(update, update_params)
-            cursor.execute(
-                "UPDATE approvals SET consumed_at = %s WHERE token_id = %s", (now, token.token_id)
-            )
-            cursor.execute(
-                # Same application clock as every other audit event; see above.
-                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload, "
-                "created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (uuid4(), context.incident_id, transition, context.actor, json.dumps(result), now),
-            )
-            ledger = {
-                "action_hash": action_hash,
-                "approval_token_id": token.token_id,
-                "one_time_use_id": token.one_time_use_id,
-                "incident_id": context.incident_id,
-                "thread_id": context.thread_id,
-                "correlation_id": context.correlation_id,
-                "actor": context.actor,
-                "permission": context.permission,
-                "approver": token.approver,
-                "result": result,
-                "committed_at": now,
-                "idempotency_key": context.idempotency_key,
-            }
-        if response_loss:
-            raise ResponseLost(
-                f"{scenario} operation committed but response was intentionally lost"
-            )
-        return self._ledger_result(ledger, OperationStatus.SUCCEEDED, scope)
 
     @staticmethod
     def _result() -> dict[str, object]:

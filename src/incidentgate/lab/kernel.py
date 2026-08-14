@@ -155,7 +155,19 @@ class MutationOutcome:
     #: Extra ``SET`` clauses to fold into the mutation-counter update, for the
     #: families that write their fixture fields in the same statement as the
     #: counter rather than in a statement of their own.
+    #:
+    #: Which of the two a family uses is not a style choice, and the kernel
+    #: reproduces both rather than picking one. Folding the write into the
+    #: counter statement puts it *after* the ledger insert; issuing it from the
+    #: mutation puts it *before*. The durable outcome is identical either way --
+    #: it is one transaction -- but ``operation_ledger.sequence`` is a generated
+    #: column assigned at insert time, and T4's result payload is a snapshot of
+    #: the fixture as it stood after its own call, which is impossible to
+    #: produce in ledger-first order without a second write.
     fixture_touch: str = ""
+    #: Bound values for ``fixture_touch``. Ordered first in the statement, so
+    #: they precede the clock stamp the kernel appends.
+    fixture_touch_params: tuple[object, ...] = ()
 
 
 class ScenarioMutation(Protocol):
@@ -411,10 +423,10 @@ class OperationKernel:
             if outcome.mutating:
                 clauses = [outcome.fixture_touch] if outcome.fixture_touch else []
                 clauses.append("mutation_count = mutation_count + 1")
-                parameters: tuple[object, ...] = ()
+                parameters: tuple[object, ...] = outcome.fixture_touch_params
                 if spec.stamps_updated_at:
                     clauses.append("updated_at = %s")
-                    parameters = (now,)
+                    parameters = (*parameters, now)
                 cursor.execute(
                     f"UPDATE {spec.fixture_table} SET {', '.join(clauses)} "
                     f"WHERE {spec.fixture_filter}",

@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from incidentgate.contracts import EvaluationMode
 from incidentgate.control.model_proposal import (
@@ -37,6 +37,9 @@ from incidentgate.evaluation.proposer_contracts import (
     load_proposer_capture_contract,
     validate_proposer_prompt_bindings,
 )
+
+if TYPE_CHECKING:
+    from incidentgate.evaluation.proposer_capture_plan import ProposerCaptureAudit
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -209,6 +212,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--pricing-snapshot",
         type=Path,
         default=_ROOT / "config" / "pricing" / "anthropic-2026-08-14.json",
+    )
+    parser.add_argument(
+        "--cache-root",
+        type=Path,
+        default=_ROOT / "tests" / "fixtures" / "model_cache",
+        help="provider-capture cache directory (must remain under tests/fixtures/model_cache)",
     )
     return parser.parse_args(argv)
 
@@ -737,10 +746,195 @@ def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
             raise ValueError("proposer provider schema disagrees with frozen holdout contract")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _head_revision(root: Path) -> str:
+    output = _git_output(root, "rev-parse", "HEAD")
+    return "" if output is None else output.strip()
+
+
+def _confined_cache_root(cache_root: Path, *, root: Path, allow_test_root: bool) -> Path:
+    """Resolve the cache path without allowing production capture to escape its fixture subtree."""
+    resolved = cache_root.resolve()
+    if allow_test_root:
+        return resolved
+    allowed = (root / "tests" / "fixtures" / "model_cache").resolve()
+    if resolved != allowed:
+        raise ValueError("--cache-root must be confined to tests/fixtures/model_cache")
+    return resolved
+
+
+def _require_proposer_only(args: argparse.Namespace) -> None:
+    # The generic preflight intentionally retains monitor compatibility.  This executable is
+    # narrower: monitor planning has no corresponding verified no-call audit yet.
+    if args.capture_roles is None:
+        args.capture_roles = ["proposer"]
+    if _planned_roles(args) != frozenset(("proposer",)):
+        raise ValueError("this executable requires exactly the proposer capture role")
+
+
+def _validate_complete_proposer_batch(
+    plan: CapturePlan, items: Sequence[CaptureWorkItem], *, declared_max_tokens: int
+) -> None:
+    if plan.max_calls != 3 or len(items) != 3:
+        raise ValueError(
+            "proposer split capture requires exactly three work items and --max-calls=3"
+        )
+    if any(item.context.role != "proposer" for item in items):
+        raise ValueError("proposer split capture contains a non-proposer work item")
+    if any(item.request.max_tokens > declared_max_tokens for item in items):
+        raise ValueError("proposer request max_tokens exceeds --max-tokens")
+    request_estimate = sum(item.request.max_tokens for item in items) * (
+        plan.snapshot.input_usd_per_token[plan.model]
+        + plan.snapshot.output_usd_per_token[plan.model]
+    )
+    if not math.isfinite(request_estimate) or request_estimate > plan.max_estimated_usd:
+        raise ValueError("request-derived estimate exceeds --max-estimated-usd")
+
+
+def _validate_frozen_proposer_batch(
+    audit: ProposerCaptureAudit, items: Sequence[CaptureWorkItem], *, root: Path, split: str
+) -> None:
+    """Bind the audited requests to every frozen source identity, without relabelling it."""
+    from incidentgate.manifests import load_sabotage_manifests
+
+    manifests = {
+        manifest.id: manifest
+        for manifest in load_sabotage_manifests(root / "scenarios" / "sabotage")
+        if manifest.id in {"T1", "T2", "T4"}
+    }
+    if set(manifests) != {"T1", "T2", "T4"}:
+        raise ValueError("frozen proposer manifests are incomplete")
+    expected = {
+        (manifest.id, variant.variant_id, variant.split, variant.seed)
+        for manifest in manifests.values()
+        for variant in manifest.attack_policy_variants
+        if variant.split == split
+    }
+    selected_rows = tuple(row for row in audit.observations if row.source.split == split)
+    observed = {
+        (row.source.scenario_id, row.source.variant_id, row.source.split, row.source.seed)
+        for row in selected_rows
+    }
+    if len(expected) != 3 or len(selected_rows) != 3 or observed != expected:
+        raise ValueError("proposer capture must select the exact three frozen work-item sources")
+    if any(
+        row.source.condition is not EvaluationMode.COMPLETE
+        or row.source.leg != "covert"
+        or row.source.step_index != 0
+        for row in selected_rows
+    ):
+        raise ValueError("frozen proposer sources must be COMPLETE/covert/step0")
+    item_identities = {
+        (item.context.scenario_id, item.context.variant_id, item.context.split)
+        for item in items
+    }
+    expected_item_identities = {
+        (scenario, variant, source_split)
+        for scenario, variant, source_split, _ in expected
+    }
+    if item_identities != expected_item_identities:
+        raise ValueError("planned proposer work items disagree with frozen sources")
+    if any(
+        item.context.condition is not EvaluationMode.COMPLETE
+        or item.context.leg != "covert"
+        or item.context.step_index != 0
+        for item in items
+    ):
+        raise ValueError("planned proposer work items must be COMPLETE/covert/step0")
+
+
+def _validate_capture_results(
+    results: Sequence[CompletionResult], *, model: str
+) -> tuple[int, int]:
+    provider_calls = 0
+    cache_replays = 0
+    for result in results:
+        invocation = result.invocation
+        if invocation.invocation_kind not in ("provider_call", "cache_replay"):
+            raise ValueError("capture result has invalid invocation kind")
+        if invocation.provider != "anthropic" or invocation.model != model:
+            raise ValueError(
+                "capture result provider/model disagrees with requested anthropic model"
+            )
+        if invocation.invocation_kind == "provider_call":
+            provider_calls += 1
+        else:
+            cache_replays += 1
+    return provider_calls, cache_replays
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    root: Path = _ROOT,
+    environ: Mapping[str, str] | None = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    audit_factory: Callable[[str], ProposerCaptureAudit] | None = None,
+    head_revision: Callable[[Path], str] = _head_revision,
+    clean_tree: Callable[[Path], bool] = clean_git_tree,
+    client_factory: Callable[[str, PricingSnapshot], CompletionClient] | None = None,
+    capture_runner: Callable[..., tuple[CompletionResult, ...]] = capture_requests,
+    allow_test_cache_root: bool = False,
+) -> int:
+    """Capture one complete frozen proposer split after every spend and provenance gate."""
     args = parse_args(argv)
-    _ = preflight(args)
-    raise SystemExit("no capture work items were supplied; refusing to construct a provider client")
+    environment = os.environ if environ is None else environ
+    _require_proposer_only(args)
+    if args.cache_root == _ROOT / "tests" / "fixtures" / "model_cache":
+        # Keep the production parser default while allowing an injected repository root in
+        # DB-free tests to retain the same relative default.
+        args.cache_root = root / "tests" / "fixtures" / "model_cache"
+    cache_root = _confined_cache_root(
+        args.cache_root, root=root, allow_test_root=allow_test_cache_root
+    )
+    dsn = environment.get("DATABASE_URL")
+    if not dsn:
+        raise ValueError("DATABASE_URL is required for proposer capture audit")
+    api_key = environment.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is required for provider capture")
+    revision = head_revision(root)
+    if _REVISION.fullmatch(revision) is None:
+        raise ValueError("HEAD must be an exact lowercase 40-hex revision")
+    if not clean_tree(root):
+        raise ValueError("proposer capture requires a clean git tree")
+    plan = preflight(
+        args,
+        env=environment,
+        now=clock(),
+        git_clean=lambda: clean_tree(root),
+        root=root,
+    )
+    # Import locally: the planner imports our public work-item types for its no-spend audit.
+    from incidentgate.evaluation.proposer_capture_plan import (
+        audit_frozen_proposer_requests,
+        capture_work_items,
+    )
+
+    audit = (audit_factory or audit_frozen_proposer_requests)(dsn)
+    items = capture_work_items(
+        audit,
+        capture_command="python -m incidentgate.evaluation.capture_model_outputs",
+        git_revision=revision,
+        worktree_clean=clean_tree(root),
+    )
+    selected = tuple(item for item in items if item.context.split == args.split)
+    _validate_frozen_proposer_batch(audit, selected, root=root, split=args.split)
+    _validate_complete_proposer_batch(plan, selected, declared_max_tokens=args.max_tokens)
+    if head_revision(root) != revision or not clean_tree(root):
+        raise ValueError("proposer capture worktree changed after the no-call audit")
+
+    def real_factory(snapshot: PricingSnapshot) -> CompletionClient:
+        if client_factory is not None:
+            return client_factory(api_key, snapshot)
+        from incidentgate.control.model_proposal import AnthropicCompletionClient
+
+        return AnthropicCompletionClient(api_key=api_key, pricing=snapshot)
+
+    results = capture_runner(plan, selected, cache=ResponseCache(cache_root),
+                             client_factory=real_factory, now=clock)
+    provider_calls, cache_replays = _validate_capture_results(results, model=plan.model)
+    print(f"captured={provider_calls} replayed={cache_replays}")
+    return 0
 
 
 if __name__ == "__main__":

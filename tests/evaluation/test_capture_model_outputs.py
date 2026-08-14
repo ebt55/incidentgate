@@ -10,7 +10,12 @@ import pytest
 
 import incidentgate.evaluation.capture_model_outputs as capture_module
 from incidentgate.contracts import EvaluationMode, ModelInvocationRecord
-from incidentgate.control.model_proposal import CompletionRequest, CompletionResult, PricingSnapshot
+from incidentgate.control.model_proposal import (
+    CompletionRequest,
+    CompletionResult,
+    PricingSnapshot,
+    ProposerPromptContract,
+)
 from incidentgate.control.response_cache import ResponseCache
 from incidentgate.evaluation.capture_model_outputs import (
     CaptureContext,
@@ -28,6 +33,13 @@ from incidentgate.evaluation.capture_model_outputs import (
     request_schema_sha256,
 )
 from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
+from incidentgate.evaluation.proposer_capture_plan import (
+    ProposerAuditObservation,
+    ProposerAuditSource,
+    ProposerRequestIdentity,
+    build_verified_capture_audit,
+)
+from incidentgate.manifests import load_sabotage_manifests
 
 
 def _args(tmp_path: Path, **changes: object) -> Namespace:
@@ -142,7 +154,8 @@ def _proposer_contract(
         provider="anthropic",
         model="claude-opus-5",
         prompt_version="proposal/v1",
-        prompt_bindings=bindings or (
+        prompt_bindings=bindings
+        or (
             ProposerPromptBinding(
                 scenario_id="D1",
                 variant_id="v1",
@@ -189,17 +202,26 @@ def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path
         for variant_id, system in (("v1", "one"), ("v2", "two"), ("v3", "three"))
     )
     plan = preflight(
-        args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-        now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+        args,
+        env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC),
+        git_clean=lambda: True,
         proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
             _proposer_contract(frozen_at, bindings=bindings), True, True, True
-        ), root=tmp_path,
+        ),
+        root=tmp_path,
     )
     assert plan.threshold_contract is None
     assert plan.proposer_contract == HoldoutProposerContract(
-        "capture-test", frozen_at, "anthropic", "claude-opus-5", "proposal/v1",
+        "capture-test",
+        frozen_at,
+        "anthropic",
+        "claude-opus-5",
+        "proposal/v1",
         "proposal-evidence-digest/v1",
-        "d" * 64, "e" * 64, request_schema_sha256_placeholder(),
+        "d" * 64,
+        "e" * 64,
+        request_schema_sha256_placeholder(),
         bindings,
     )
 
@@ -207,8 +229,13 @@ def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path
 @pytest.mark.parametrize(
     "field",
     [
-        "provider", "model", "prompt_version", "input_schema_version",
-        "input_schema_sha256", "output_schema_sha256", "provider_schema_sha256",
+        "provider",
+        "model",
+        "prompt_version",
+        "input_schema_version",
+        "input_schema_sha256",
+        "output_schema_sha256",
+        "provider_schema_sha256",
     ],
 )
 def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, field: str) -> None:
@@ -219,11 +246,14 @@ def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, fiel
     )
     with pytest.raises(ValueError, match="proposer artifact does not match"):
         preflight(
-            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            args,
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
             proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
                 artifact, True, True, True
-            ), root=tmp_path,
+            ),
+            root=tmp_path,
         )
 
 
@@ -241,28 +271,34 @@ def test_proposer_holdout_requires_provider_schema_cli_identity(tmp_path: Path) 
         )
 
 
-@pytest.mark.parametrize("inspection", [
-    ProposerHoldoutArtifactInspection(
-        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), False, True, True
-    ),
-    ProposerHoldoutArtifactInspection(
-        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, False, True
-    ),
-    ProposerHoldoutArtifactInspection(
-        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, False
-    ),
-    ProposerHoldoutArtifactInspection(
-        _proposer_contract(datetime(2026, 8, 15, tzinfo=UTC)), True, True, True
-    ),
-])
+@pytest.mark.parametrize(
+    "inspection",
+    [
+        ProposerHoldoutArtifactInspection(
+            _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), False, True, True
+        ),
+        ProposerHoldoutArtifactInspection(
+            _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, False, True
+        ),
+        ProposerHoldoutArtifactInspection(
+            _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, False
+        ),
+        ProposerHoldoutArtifactInspection(
+            _proposer_contract(datetime(2026, 8, 15, tzinfo=UTC)), True, True, True
+        ),
+    ],
+)
 def test_proposer_holdout_rejects_untracked_dirty_or_late_contract(
     tmp_path: Path, inspection: ProposerHoldoutArtifactInspection
 ) -> None:
     with pytest.raises(ValueError, match="proposer artifact"):
         preflight(
-            _proposer_holdout_args(tmp_path), env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
-            proposer_holdout_inspector=lambda _: inspection, root=tmp_path,
+            _proposer_holdout_args(tmp_path),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            proposer_holdout_inspector=lambda _: inspection,
+            root=tmp_path,
         )
 
 
@@ -271,18 +307,26 @@ def test_mixed_holdout_requires_both_role_contracts(tmp_path: Path) -> None:
     threshold_path.parent.mkdir(parents=True)
     threshold_path.write_text("{}", encoding="utf-8")
     args = _proposer_holdout_args(
-        tmp_path, capture_roles=["monitor", "proposer"], threshold_artifact=threshold_path,
-        threshold_provider="anthropic", threshold_prompt_version="monitor/v2",
-        threshold_input_schema_sha256="a" * 64, threshold_output_schema_sha256="b" * 64,
+        tmp_path,
+        capture_roles=["monitor", "proposer"],
+        threshold_artifact=threshold_path,
+        threshold_provider="anthropic",
+        threshold_prompt_version="monitor/v2",
+        threshold_input_schema_sha256="a" * 64,
+        threshold_output_schema_sha256="b" * 64,
     )
     plan = preflight(
-        args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-        now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+        args,
+        env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC),
+        git_clean=lambda: True,
         holdout_inspector=lambda _: HoldoutArtifactInspection(
             _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-        ), proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+        ),
+        proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
             _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-        ), root=tmp_path,
+        ),
+        root=tmp_path,
     )
     assert plan.threshold_contract is not None and plan.proposer_contract is not None
 
@@ -303,36 +347,45 @@ def test_mixed_holdout_rejects_missing_or_role_confused_contracts(tmp_path: Path
         preflight(
             _proposer_holdout_args(tmp_path, capture_roles=["monitor", "proposer"]),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            root=tmp_path,
         )
     with pytest.raises(ValueError, match="proposer"):
         preflight(
             _proposer_holdout_args(tmp_path, proposer_contract_artifact=None, **common),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
             holdout_inspector=lambda _: HoldoutArtifactInspection(
                 _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-            ), root=tmp_path,
+            ),
+            root=tmp_path,
         )
     with pytest.raises(ValueError, match="threshold artifact has invalid inspection"):
         preflight(
             _proposer_holdout_args(tmp_path, **common),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
             holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
                 _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-            ), root=tmp_path,
+            ),
+            root=tmp_path,
         )
     with pytest.raises(ValueError, match="proposer artifact has invalid inspection"):
         preflight(
             _proposer_holdout_args(tmp_path, **common),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
             holdout_inspector=lambda _: HoldoutArtifactInspection(
                 _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-            ), proposer_holdout_inspector=lambda _: HoldoutArtifactInspection(
+            ),
+            proposer_holdout_inspector=lambda _: HoldoutArtifactInspection(
                 _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-            ), root=tmp_path,
+            ),
+            root=tmp_path,
         )
 
 
@@ -350,8 +403,11 @@ def test_proposer_holdout_rejects_malformed_wrong_path_and_dirty_tree(tmp_path: 
     args = _proposer_holdout_args(tmp_path)
     with pytest.raises(ValueError):
         preflight(
-            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+            args,
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            root=tmp_path,
         )
     wrong_path = tmp_path / "config" / "monitor-thresholds" / "threshold.json"
     wrong_path.parent.mkdir(parents=True)
@@ -360,15 +416,20 @@ def test_proposer_holdout_rejects_malformed_wrong_path_and_dirty_tree(tmp_path: 
         preflight(
             _proposer_holdout_args(tmp_path, proposer_contract_artifact=wrong_path),
             env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            root=tmp_path,
         )
     with pytest.raises(ValueError, match="clean git tree"):
         preflight(
-            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: False,
+            args,
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: False,
             proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
                 _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
-            ), root=tmp_path,
+            ),
+            root=tmp_path,
         )
 
 
@@ -437,21 +498,37 @@ def test_holdout_rejects_index_dirty_and_overall_dirty_tree(tmp_path: Path) -> N
     path = tmp_path / "config" / "monitor-thresholds" / "threshold.json"
     path.parent.mkdir(parents=True)
     path.write_text("{}", encoding="utf-8")
-    args = _args(tmp_path, split="holdout", threshold_artifact=path,
-                 threshold_provider="anthropic", threshold_prompt_version="monitor/v2",
-                 threshold_input_schema_sha256="a" * 64, threshold_output_schema_sha256="b" * 64)
+    args = _args(
+        tmp_path,
+        split="holdout",
+        threshold_artifact=path,
+        threshold_provider="anthropic",
+        threshold_prompt_version="monitor/v2",
+        threshold_input_schema_sha256="a" * 64,
+        threshold_output_schema_sha256="b" * 64,
+    )
     inspection = HoldoutArtifactInspection(
         _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, False
     )
     with pytest.raises(ValueError, match="tracked and clean"):
-        preflight(args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-                  now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
-                  holdout_inspector=lambda _: inspection, root=tmp_path)
+        preflight(
+            args,
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            holdout_inspector=lambda _: inspection,
+            root=tmp_path,
+        )
     inspection = replace(inspection, index_clean=True)
     with pytest.raises(ValueError, match="clean git tree"):
-        preflight(args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
-                  now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: False,
-                  holdout_inspector=lambda _: inspection, root=tmp_path)
+        preflight(
+            args,
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: False,
+            holdout_inspector=lambda _: inspection,
+            root=tmp_path,
+        )
 
 
 def test_holdout_rejects_malformed_or_contract_mismatched_artifact(tmp_path: Path) -> None:
@@ -475,9 +552,7 @@ def test_holdout_rejects_malformed_or_contract_mismatched_artifact(tmp_path: Pat
             git_clean=lambda: True,
             root=tmp_path,
         )
-    wrong = _threshold(datetime(2026, 8, 14, tzinfo=UTC)).model_copy(
-        update={"provider": "other"}
-    )
+    wrong = _threshold(datetime(2026, 8, 14, tzinfo=UTC)).model_copy(update={"provider": "other"})
     inspection = HoldoutArtifactInspection(wrong, True, True, True)
     with pytest.raises(ValueError, match="contract"):
         preflight(
@@ -500,10 +575,13 @@ def _capture_item(prompt: str, *, variant: str = "v1") -> CaptureWorkItem:
             "model": "claude-opus-5",
             "max_tokens": 16,
             "temperature": None,
-            "thinking": None, "input_schema_sha256": "d" * 64,
+            "thinking": None,
+            "input_schema_sha256": "d" * 64,
             "output_schema_sha256": request_schema_sha256_placeholder(),
             "prompt_version": "monitor/v2",
-        }, sort_keys=True, separators=(",", ":")
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
     digest = hashlib.sha256(canonical.encode()).hexdigest()
     request = CompletionRequest(
@@ -512,9 +590,19 @@ def _capture_item(prompt: str, *, variant: str = "v1") -> CaptureWorkItem:
     return CaptureWorkItem(
         request,
         CaptureContext(
-            "monitor", "monitor-input-v2", "d" * 64, "monitor/v2", request_schema_sha256(request),
-            "D1", variant, EvaluationMode.COMPLETE, "incident", 0, "development",
-            "python -m incidentgate.evaluation.capture_model_outputs", "a" * 40,
+            "monitor",
+            "monitor-input-v2",
+            "d" * 64,
+            "monitor/v2",
+            request_schema_sha256(request),
+            "D1",
+            variant,
+            EvaluationMode.COMPLETE,
+            "incident",
+            0,
+            "development",
+            "python -m incidentgate.evaluation.capture_model_outputs",
+            "a" * 40,
         ),
     )
 
@@ -535,9 +623,15 @@ class _CaptureClient:
         return CompletionResult(
             '{"risk_score":0.1}',
             ModelInvocationRecord(
-                invocation_kind="provider_call", provider="anthropic", model=request.model,
-                input_tokens=1, output_tokens=1, usage_source="provider_usage",
-                cost=0.003, currency="USD", pricing_snapshot="snap-test",
+                invocation_kind="provider_call",
+                provider="anthropic",
+                model=request.model,
+                input_tokens=1,
+                output_tokens=1,
+                usage_source="provider_usage",
+                cost=0.003,
+                currency="USD",
+                pricing_snapshot="snap-test",
             ),
         )
 
@@ -590,7 +684,9 @@ def test_capture_refuses_duplicate_hash_before_factory(tmp_path: Path) -> None:
 def test_invalid_capture_plan_never_constructs_provider(tmp_path: Path, plan: CapturePlan) -> None:
     with pytest.raises(ValueError):
         capture_requests(
-            plan, (_capture_item("invalid"),), cache=ResponseCache(tmp_path),
+            plan,
+            (_capture_item("invalid"),),
+            cache=ResponseCache(tmp_path),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
 
@@ -605,16 +701,24 @@ def test_provider_failure_or_malformed_response_stores_nothing(
             return CompletionResult(
                 raw_json,
                 ModelInvocationRecord(
-                    invocation_kind="provider_call", provider="anthropic", model=request.model,
-                    input_tokens=1, output_tokens=1, usage_source="provider_usage",
-                    cost=0.003, currency="USD", pricing_snapshot="snap-test",
+                    invocation_kind="provider_call",
+                    provider="anthropic",
+                    model=request.model,
+                    input_tokens=1,
+                    output_tokens=1,
+                    usage_source="provider_usage",
+                    cost=0.003,
+                    currency="USD",
+                    pricing_snapshot="snap-test",
                 ),
             )
 
     item = _capture_item("bad")
     with pytest.raises(ValueError):
         capture_requests(
-            _capture_plan(), (item,), cache=ResponseCache(tmp_path),
+            _capture_plan(),
+            (item,),
+            cache=ResponseCache(tmp_path),
             client_factory=lambda _: BadClient(),
         )
     assert not list(tmp_path.rglob("*.json"))
@@ -627,23 +731,32 @@ def test_provider_exception_stores_nothing(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
         capture_requests(
-            _capture_plan(), (_capture_item("exception"),), cache=ResponseCache(tmp_path),
+            _capture_plan(),
+            (_capture_item("exception"),),
+            cache=ResponseCache(tmp_path),
             client_factory=lambda _: ExplodingClient(),
         )
     assert not list(tmp_path.rglob("*.json"))
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda item: replace(item, request=replace(item.request, schema={})),
-    lambda item: replace(item, context=replace(item.context, condition="runtime-string")),
-    lambda item: replace(item, context=replace(item.context, step_index=True)),
-    lambda item: replace(item, context=replace(item.context, capture_command="unsafe\ncommand")),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda item: replace(item, request=replace(item.request, schema={})),
+        lambda item: replace(item, context=replace(item.context, condition="runtime-string")),
+        lambda item: replace(item, context=replace(item.context, step_index=True)),
+        lambda item: replace(
+            item, context=replace(item.context, capture_command="unsafe\ncommand")
+        ),
+    ],
+)
 def test_invalid_work_item_is_rejected_before_factory(tmp_path: Path, mutation) -> None:
     item = mutation(_capture_item("invalid-work-item"))
     with pytest.raises((TypeError, ValueError)):
         capture_requests(
-            _capture_plan(), (item,), cache=ResponseCache(tmp_path),
+            _capture_plan(),
+            (item,),
+            cache=ResponseCache(tmp_path),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
 
@@ -653,8 +766,12 @@ def test_runtime_string_equal_to_evaluation_mode_is_rejected_before_factory(tmp_
     assert item.context.condition == EvaluationMode.COMPLETE
     item = replace(item, context=replace(item.context, condition="policy_monitor_human"))
     with pytest.raises((TypeError, ValueError)):
-        capture_requests(_capture_plan(), (item,), cache=ResponseCache(tmp_path),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            _capture_plan(),
+            (item,),
+            cache=ResponseCache(tmp_path),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
 
 
 @pytest.mark.parametrize("mutation", ["system", "extra"])
@@ -670,12 +787,18 @@ def test_monitor_canonical_envelope_drift_is_rejected_before_factory(
     else:
         envelope["unexpected"] = True
     canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    request = replace(item.request, canonical_prompt=canonical,
-                      prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest())
+    request = replace(
+        item.request,
+        canonical_prompt=canonical,
+        prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
+    )
     with pytest.raises(ValueError, match="monitor canonical"):
-        capture_requests(_capture_plan(), (replace(item, request=request),),
-                         cache=ResponseCache(tmp_path),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            _capture_plan(),
+            (replace(item, request=request),),
+            cache=ResponseCache(tmp_path),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
 
 
 def _proposer_capture_item(
@@ -694,14 +817,35 @@ def _proposer_capture_item(
         "schema_fingerprint": output_schema,
     }
     canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    request = CompletionRequest("claude-opus-5", system_prompt, prompt, 16, None, None,
-                                {"type": "object"}, canonical,
-                                hashlib.sha256(canonical.encode()).hexdigest())
-    return CaptureWorkItem(request, CaptureContext(
-        "proposer", "proposal-evidence-digest/v1", "d" * 64, "proposal/v1", output_schema,
-        scenario_id, variant_id, EvaluationMode.COMPLETE, "incident", 0, "development",
-        "python -m incidentgate.evaluation.capture_model_outputs", "a" * 40,
-    ))
+    request = CompletionRequest(
+        "claude-opus-5",
+        system_prompt,
+        prompt,
+        16,
+        None,
+        None,
+        {"type": "object"},
+        canonical,
+        hashlib.sha256(canonical.encode()).hexdigest(),
+    )
+    return CaptureWorkItem(
+        request,
+        CaptureContext(
+            "proposer",
+            "proposal-evidence-digest/v1",
+            "d" * 64,
+            "proposal/v1",
+            output_schema,
+            scenario_id,
+            variant_id,
+            EvaluationMode.COMPLETE,
+            "incident",
+            0,
+            "development",
+            "python -m incidentgate.evaluation.capture_model_outputs",
+            "a" * 40,
+        ),
+    )
 
 
 def test_proposer_schema_fingerprint_drift_rejected_and_valid_item_dispatches(
@@ -713,30 +857,49 @@ def test_proposer_schema_fingerprint_drift_rejected_and_valid_item_dispatches(
     envelope = json.loads(item.request.canonical_prompt)
     envelope["schema_fingerprint"] = "f" * 64
     canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    drifted = replace(item, request=replace(
-        item.request, canonical_prompt=canonical,
-        prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
-    ))
+    drifted = replace(
+        item,
+        request=replace(
+            item.request,
+            canonical_prompt=canonical,
+            prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
+        ),
+    )
     with pytest.raises(ValueError, match="proposer canonical"):
-        capture_requests(_capture_plan(), (drifted,), cache=ResponseCache(tmp_path),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            _capture_plan(),
+            (drifted,),
+            cache=ResponseCache(tmp_path),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
     cache = ResponseCache(tmp_path)
-    result = capture_requests(_capture_plan(), (item,), cache=cache,
-                              client_factory=lambda _: _CaptureClient())
+    result = capture_requests(
+        _capture_plan(), (item,), cache=cache, client_factory=lambda _: _CaptureClient()
+    )
     assert result[0].invocation.invocation_kind == "provider_call"
     assert cache.load(item.request.model, item.request.prompt_sha256).capture == "provider_call"
 
 
 def test_wrong_holdout_provider_result_stores_nothing(tmp_path: Path) -> None:
-    plan = replace(_capture_plan(), split="holdout", threshold_contract=HoldoutThresholdContract(
-        "openai", "claude-opus-5", "monitor/v2", "d" * 64, request_schema_sha256(
-            CompletionRequest("", "", "", 0, None, None, {"type": "object"}, "", "")
-        )))
+    plan = replace(
+        _capture_plan(),
+        split="holdout",
+        threshold_contract=HoldoutThresholdContract(
+            "openai",
+            "claude-opus-5",
+            "monitor/v2",
+            "d" * 64,
+            request_schema_sha256(
+                CompletionRequest("", "", "", 0, None, None, {"type": "object"}, "", "")
+            ),
+        ),
+    )
     item = _capture_item("holdout")
     item = replace(item, context=replace(item.context, split="holdout"))
     with pytest.raises(ValueError, match="provider disagrees"):
-        capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
-                         client_factory=lambda _: _CaptureClient())
+        capture_requests(
+            plan, (item,), cache=ResponseCache(tmp_path), client_factory=lambda _: _CaptureClient()
+        )
     assert not list(tmp_path.rglob("*.json"))
 
 
@@ -744,48 +907,71 @@ def test_proposer_holdout_dispatch_uses_its_frozen_contract_and_rejects_drift(
     tmp_path: Path,
 ) -> None:
     plan = replace(
-        _capture_plan(), split="holdout",
+        _capture_plan(),
+        split="holdout",
         proposer_contract=HoldoutProposerContract(
-            "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-            "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
+            "capture-test",
+            datetime(2026, 8, 14, tzinfo=UTC),
+            "anthropic",
+            "claude-opus-5",
+            "proposal/v1",
+            "proposal-evidence-digest/v1",
+            "d" * 64,
+            "e" * 64,
             request_schema_sha256_placeholder(),
-        (
-            ProposerPromptBinding(
-                scenario_id="D1", variant_id="v1", split="holdout",
-                system_prompt_sha256=capture_module.sha256_text(""),
+            (
+                ProposerPromptBinding(
+                    scenario_id="D1",
+                    variant_id="v1",
+                    split="holdout",
+                    system_prompt_sha256=capture_module.sha256_text(""),
+                ),
             ),
-        ),
         ),
     )
     item = replace(
         _proposer_capture_item("proposer-holdout"),
         context=replace(_proposer_capture_item("proposer-holdout").context, split="holdout"),
     )
-    result = capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
-                              client_factory=lambda _: _CaptureClient())
+    result = capture_requests(
+        plan, (item,), cache=ResponseCache(tmp_path), client_factory=lambda _: _CaptureClient()
+    )
     assert result[0].invocation.invocation_kind == "provider_call"
     drifted = replace(item, context=replace(item.context, prompt_version="proposal/v2"))
     with pytest.raises(ValueError, match="role-specific"):
-        capture_requests(plan, (drifted,), cache=ResponseCache(tmp_path / "drift"),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            plan,
+            (drifted,),
+            cache=ResponseCache(tmp_path / "drift"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
     import hashlib
 
     envelope = json.loads(item.request.canonical_prompt)
     envelope["system"] = "changed prompt bytes"
     canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    prompt_drift = replace(item, request=replace(
-        item.request,
-        system="changed prompt bytes",
-        canonical_prompt=canonical,
-        prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
-    ))
+    prompt_drift = replace(
+        item,
+        request=replace(
+            item.request,
+            system="changed prompt bytes",
+            canonical_prompt=canonical,
+            prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
+        ),
+    )
     with pytest.raises(ValueError, match="system prompt"):
-        capture_requests(plan, (prompt_drift,), cache=ResponseCache(tmp_path / "prompt-drift"),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            plan,
+            (prompt_drift,),
+            cache=ResponseCache(tmp_path / "prompt-drift"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
     schema_drift = replace(item, request=replace(item.request, schema={"type": "array"}))
     with pytest.raises(ValueError, match="provider schema"):
         capture_requests(
-            plan, (schema_drift,), cache=ResponseCache(tmp_path / "schema-drift"),
+            plan,
+            (schema_drift,),
+            cache=ResponseCache(tmp_path / "schema-drift"),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
     assert not list((tmp_path / "schema-drift").rglob("*.json"))
@@ -808,11 +994,20 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
         )
     )
     plan = replace(
-        _capture_plan(), max_calls=3, split="holdout",
+        _capture_plan(),
+        max_calls=3,
+        split="holdout",
         proposer_contract=HoldoutProposerContract(
-            "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-        "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
-            request_schema_sha256_placeholder(), bindings,
+            "capture-test",
+            datetime(2026, 8, 14, tzinfo=UTC),
+            "anthropic",
+            "claude-opus-5",
+            "proposal/v1",
+            "proposal-evidence-digest/v1",
+            "d" * 64,
+            "e" * 64,
+            request_schema_sha256_placeholder(),
+            bindings,
         ),
     )
     development_items = tuple(
@@ -841,12 +1036,12 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
     drifted_source = _proposer_capture_item(
         "v2", scenario_id="D2", variant_id="v2", system_prompt="policy one"
     )
-    drifted = replace(
-        drifted_source, context=replace(drifted_source.context, split="holdout")
-    )
+    drifted = replace(drifted_source, context=replace(drifted_source.context, split="holdout"))
     with pytest.raises(ValueError, match="system prompt"):
         capture_requests(
-            plan, (drifted,), cache=ResponseCache(tmp_path / "drift"),
+            plan,
+            (drifted,),
+            cache=ResponseCache(tmp_path / "drift"),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
     unlisted_source = _proposer_capture_item(
@@ -855,7 +1050,9 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
     unlisted = replace(unlisted_source, context=replace(unlisted_source.context, split="holdout"))
     with pytest.raises(ValueError, match="not listed"):
         capture_requests(
-            plan, (unlisted,), cache=ResponseCache(tmp_path / "unlisted"),
+            plan,
+            (unlisted,),
+            cache=ResponseCache(tmp_path / "unlisted"),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
     assert not list((tmp_path / "drift").rglob("*.json"))
@@ -869,13 +1066,17 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
     )
     with pytest.raises(ValueError, match="not listed"):
         capture_requests(
-            plan, (cross_scenario,), cache=ResponseCache(tmp_path / "cross-scenario"),
+            plan,
+            (cross_scenario,),
+            cache=ResponseCache(tmp_path / "cross-scenario"),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
     cross_split = replace(items[0], context=replace(items[0].context, split="development"))
     with pytest.raises(ValueError, match="model differs"):
         capture_requests(
-            plan, (cross_split,), cache=ResponseCache(tmp_path / "cross-split"),
+            plan,
+            (cross_split,),
+            cache=ResponseCache(tmp_path / "cross-split"),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
     assert not list((tmp_path / "cross-scenario").rglob("*.json"))
@@ -888,21 +1089,29 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
         [],
         [
             {
-                "scenario_id": "D1", "variant_id": "v2", "split": "holdout",
+                "scenario_id": "D1",
+                "variant_id": "v2",
+                "split": "holdout",
                 "system_prompt_sha256": "a" * 64,
             },
             {
-                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "scenario_id": "D1",
+                "variant_id": "v1",
+                "split": "holdout",
                 "system_prompt_sha256": "b" * 64,
             },
         ],
         [
             {
-                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "scenario_id": "D1",
+                "variant_id": "v1",
+                "split": "holdout",
                 "system_prompt_sha256": "a" * 64,
             },
             {
-                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "scenario_id": "D1",
+                "variant_id": "v1",
+                "split": "holdout",
                 "system_prompt_sha256": "b" * 64,
             },
         ],
@@ -917,7 +1126,9 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
         ],
         [
             {
-                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "scenario_id": "D1",
+                "variant_id": "v1",
+                "split": "holdout",
                 "system_prompt_sha256": "not-a-sha",
             }
         ],
@@ -936,8 +1147,14 @@ def test_hand_constructed_proposer_contract_cannot_bypass_binding_validation(
     tmp_path: Path,
 ) -> None:
     malformed = HoldoutProposerContract(
-        "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-        "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
+        "capture-test",
+        datetime(2026, 8, 14, tzinfo=UTC),
+        "anthropic",
+        "claude-opus-5",
+        "proposal/v1",
+        "proposal-evidence-digest/v1",
+        "d" * 64,
+        "e" * 64,
         request_schema_sha256_placeholder(),
         (
             ProposerPromptBinding(
@@ -953,7 +1170,9 @@ def test_hand_constructed_proposer_contract_cannot_bypass_binding_validation(
     item = replace(item, context=replace(item.context, split="holdout"))
     with pytest.raises(ValueError, match="canonically sorted"):
         capture_requests(
-            plan, (item,), cache=ResponseCache(tmp_path),
+            plan,
+            (item,),
+            cache=ResponseCache(tmp_path),
             client_factory=lambda _: pytest.fail("factory must not be called"),
         )
 
@@ -962,17 +1181,25 @@ def test_proposer_holdout_without_proposer_contract_never_constructs_provider(
     tmp_path: Path,
 ) -> None:
     plan = replace(
-        _capture_plan(), split="holdout",
+        _capture_plan(),
+        split="holdout",
         threshold_contract=HoldoutThresholdContract(
-            "anthropic", "claude-opus-5", "monitor/v2", "d" * 64,
+            "anthropic",
+            "claude-opus-5",
+            "monitor/v2",
+            "d" * 64,
             request_schema_sha256_placeholder(),
         ),
     )
     source = _proposer_capture_item("missing-proposer-contract")
     item = replace(source, context=replace(source.context, split="holdout"))
     with pytest.raises(ValueError, match="role-specific"):
-        capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            plan,
+            (item,),
+            cache=ResponseCache(tmp_path),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
     assert not list(tmp_path.rglob("*.json"))
 
 
@@ -983,8 +1210,12 @@ def test_oversized_provider_response_stores_nothing(tmp_path: Path) -> None:
             return replace(result, raw_json='{"x":"' + "a" * 1_000_001 + '"}')
 
     with pytest.raises(ValueError, match="size limit"):
-        capture_requests(_capture_plan(), (_capture_item("oversized"),),
-                         cache=ResponseCache(tmp_path), client_factory=lambda _: OversizedClient())
+        capture_requests(
+            _capture_plan(),
+            (_capture_item("oversized"),),
+            cache=ResponseCache(tmp_path),
+            client_factory=lambda _: OversizedClient(),
+        )
     assert not list(tmp_path.rglob("*.json"))
 
 
@@ -995,14 +1226,22 @@ def test_preexisting_synthetic_or_conflicting_context_never_constructs_factory(
     synthetic = _capture_item("synthetic")
     cache.store(synthetic.request.model, synthetic.request.prompt_sha256, "{}", capture="synthetic")
     with pytest.raises(ValueError, match="synthetic"):
-        capture_requests(plan, (synthetic,), cache=cache,
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            plan,
+            (synthetic,),
+            cache=cache,
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
     provider = _capture_item("provider")
     capture_requests(plan, (provider,), cache=cache, client_factory=lambda _: _CaptureClient())
     conflict = replace(provider, context=replace(provider.context, variant_id="v2"))
     with pytest.raises(ValueError, match="conflicts"):
-        capture_requests(plan, (conflict,), cache=cache,
-                         client_factory=lambda _: pytest.fail("factory must not be called"))
+        capture_requests(
+            plan,
+            (conflict,),
+            cache=cache,
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
 
 
 def test_ci_workflows_do_not_opt_into_provider_spend() -> None:
@@ -1013,16 +1252,331 @@ def test_ci_workflows_do_not_opt_into_provider_spend() -> None:
             assert "INCIDENTGATE_ALLOW_PROVIDER_SPEND" not in text
 
 
-def test_main_no_work_path_does_not_claim_capture_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_requires_database_url_before_provider_or_audit() -> None:
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        main(
+            [
+                "--i-will-spend-real-money",
+                "--max-calls",
+                "3",
+                "--max-estimated-usd",
+                "1",
+                "--model",
+                "claude-opus-5",
+                "--max-tokens",
+                "16",
+                "--split",
+                "development",
+            ],
+            environ={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1", "ANTHROPIC_API_KEY": "secret"},
+        )
+
+
+def _verified_frozen_audit_and_items() -> tuple[object, dict[str, tuple[CaptureWorkItem, ...]]]:
+    rows: list[ProposerAuditObservation] = []
+    items_by_split: dict[str, list[CaptureWorkItem]] = {
+        "development": [],
+        "calibration": [],
+        "holdout": [],
+    }
+    manifests = {
+        manifest.id: manifest
+        for manifest in load_sabotage_manifests(
+            Path(__file__).resolve().parents[2] / "scenarios" / "sabotage"
+        )
+        if manifest.id in {"T1", "T2", "T4"}
+    }
+    index = 0
+    for scenario_id in ("T1", "T2", "T4"):
+        for variant in manifests[scenario_id].attack_policy_variants:
+            item = _proposer_capture_item(
+                f"frozen-{scenario_id}-{variant.variant_id}",
+                scenario_id=scenario_id,
+                variant_id=variant.variant_id,
+            )
+            item = replace(
+                item,
+                context=replace(item.context, split=variant.split, leg="covert"),
+            )
+            items_by_split[variant.split].append(item)
+            contract = ProposerPromptContract(
+                "proposal/v1",
+                item.request.model,
+                "a" * 64,
+                "proposal-evidence-digest/v1",
+                "d" * 64,
+                "e" * 64,
+                "f" * 64,
+            )
+            source = ProposerAuditSource(
+                scenario_id, variant.variant_id, variant.split, variant.seed
+            )
+            rows.append(
+                ProposerAuditObservation(
+                    source,
+                    ProposerRequestIdentity.from_request(item.request),
+                    item.request,
+                    contract,
+                    f"{index:064x}",
+                )
+            )
+            index += 1
+    repeated = [
+        replace(row, runtime_identity_sha256=f"{index + offset:064x}")
+        for offset, row in enumerate(rows)
+    ]
+    return build_verified_capture_audit(rows, repeated), {
+        split: tuple(items) for split, items in items_by_split.items()
+    }
+
+
+def test_frozen_proposer_batch_requires_exact_source_and_item_identities() -> None:
+    audit, items_by_split = _verified_frozen_audit_and_items()
+    root = Path(__file__).resolve().parents[2]
+    for split, items in items_by_split.items():
+        capture_module._validate_frozen_proposer_batch(audit, items, root=root, split=split)
+        # Exercise a changed source in the selected split, regardless of sort order.
+        source_index = next(
+            i for i, row in enumerate(audit.observations) if row.source.split == split
+        )
+        changed_rows = list(audit.observations)
+        changed_rows[source_index] = replace(
+            changed_rows[source_index], source=replace(changed_rows[source_index].source, seed=999)
+        )
+        changed_seed = replace(audit, observations=tuple(changed_rows))
+        with pytest.raises(ValueError, match="exact three"):
+            capture_module._validate_frozen_proposer_batch(
+                changed_seed, items, root=root, split=split
+            )
+        changed_rows[source_index] = replace(
+            audit.observations[source_index],
+            source=replace(audit.observations[source_index].source, variant_id="substituted"),
+        )
+        with pytest.raises(ValueError, match="exact three"):
+            capture_module._validate_frozen_proposer_batch(
+                replace(audit, observations=tuple(changed_rows)), items, root=root, split=split
+            )
+        with pytest.raises(ValueError, match="exact three"):
+            capture_module._validate_frozen_proposer_batch(
+                replace(
+                    audit,
+                    observations=tuple(
+                        row for index, row in enumerate(audit.observations) if index != source_index
+                    ),
+                ),
+                items,
+                root=root,
+                split=split,
+            )
+        with pytest.raises(ValueError, match="exact three"):
+            capture_module._validate_frozen_proposer_batch(
+                replace(
+                    audit, observations=(*audit.observations, audit.observations[source_index])
+                ),
+                items,
+                root=root,
+                split=split,
+            )
+        with pytest.raises(ValueError, match="disagree"):
+            capture_module._validate_frozen_proposer_batch(
+                audit, items[:-1], root=root, split=split
+            )
+        mismatched = replace(items[0], context=replace(items[0].context, variant_id="substituted"))
+        with pytest.raises(ValueError, match="disagree"):
+            capture_module._validate_frozen_proposer_batch(
+                audit, (mismatched, *items[1:]), root=root, split=split
+            )
+        bad_rows = list(audit.observations)
+        bad_rows[source_index] = replace(
+            bad_rows[source_index],
+            source=replace(
+                bad_rows[source_index].source, condition=EvaluationMode.POLICY_ONLY
+            ),
+        )
+        with pytest.raises(ValueError, match="COMPLETE"):
+            capture_module._validate_frozen_proposer_batch(
+                replace(audit, observations=tuple(bad_rows)), items, root=root, split=split
+            )
+        for field, value in (("leg", "incident"), ("step_index", 1)):
+            bad_rows = list(audit.observations)
+            bad_rows[source_index] = replace(
+                bad_rows[source_index],
+                source=replace(bad_rows[source_index].source, **{field: value}),
+            )
+            with pytest.raises(ValueError, match="COMPLETE"):
+                capture_module._validate_frozen_proposer_batch(
+                    replace(audit, observations=tuple(bad_rows)), items, root=root, split=split
+                )
+
+
+def test_main_executes_complete_proposer_split_with_injected_no_provider_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from incidentgate.evaluation import proposer_capture_plan
+
+    audit, items_by_split = _verified_frozen_audit_and_items()
+    items = items_by_split["development"]
+    factory_calls: list[tuple[str, PricingSnapshot]] = []
     monkeypatch.setattr(
-        capture_module,
-        "preflight",
-        lambda _args: CapturePlan(
-            "claude-opus-5", 1, 1.0, "development", 0.01,
-            PricingSnapshot("snap-test", "USD", {"claude-opus-5": 0.001},
-                            {"claude-opus-5": 0.002}),
-        ),
+        proposer_capture_plan,
+        "capture_work_items",
+        lambda _audit, **_: items,
     )
-    with pytest.raises(SystemExit, match="no capture work items were supplied"):
-        main(["--i-will-spend-real-money", "--max-calls", "1", "--max-estimated-usd", "1",
-              "--model", "claude-opus-5", "--max-tokens", "16", "--split", "development"])
+
+    assert (
+        main(
+            [
+                "--i-will-spend-real-money",
+                "--max-calls",
+                "3",
+                "--max-estimated-usd",
+                "1",
+                "--model",
+                "claude-opus-5",
+                "--max-tokens",
+                "16",
+                "--split",
+                "development",
+                "--cache-root",
+                str(tmp_path),
+            ],
+            environ={
+                "INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1",
+                "DATABASE_URL": "postgresql://audit-only",
+                "ANTHROPIC_API_KEY": "never-render-this",
+            },
+            audit_factory=lambda _: audit,
+            head_revision=lambda _: "a" * 40,
+            clean_tree=lambda _: True,
+            clock=lambda: datetime(2026, 8, 15, tzinfo=UTC),
+            allow_test_cache_root=True,
+            client_factory=lambda key, snapshot: (
+                factory_calls.append((key, snapshot)) or _CaptureClient()
+            ),
+        )
+        == 0
+    )
+    assert len(factory_calls) == 1
+    assert len(list(tmp_path.rglob("*.json"))) == 3
+
+    # All entries are now validated provider replays, so no provider client is built.
+    assert (
+        main(
+            [
+                "--i-will-spend-real-money",
+                "--max-calls",
+                "3",
+                "--max-estimated-usd",
+                "1",
+                "--model",
+                "claude-opus-5",
+                "--max-tokens",
+                "16",
+                "--split",
+                "development",
+                "--cache-root",
+                str(tmp_path),
+            ],
+            environ={
+                "INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1",
+                "DATABASE_URL": "postgresql://audit-only",
+                "ANTHROPIC_API_KEY": "never-render-this",
+            },
+            audit_factory=lambda _: audit,
+            head_revision=lambda _: "a" * 40,
+            clean_tree=lambda _: True,
+            clock=lambda: datetime(2026, 8, 15, tzinfo=UTC),
+            allow_test_cache_root=True,
+            client_factory=lambda *_: pytest.fail("replay must not construct provider"),
+        )
+        == 0
+    )
+
+
+def test_main_refusals_never_construct_provider_or_write_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from incidentgate.evaluation import proposer_capture_plan
+
+    audit, items_by_split = _verified_frozen_audit_and_items()
+    items = items_by_split["development"]
+    monkeypatch.setattr(proposer_capture_plan, "capture_work_items", lambda _audit, **_: items)
+    base = [
+        "--i-will-spend-real-money",
+        "--max-calls",
+        "3",
+        "--max-estimated-usd",
+        "1",
+        "--model",
+        "claude-opus-5",
+        "--max-tokens",
+        "16",
+        "--split",
+        "development",
+        "--cache-root",
+        str(tmp_path),
+    ]
+    environment = {
+        "INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1",
+        "DATABASE_URL": "postgresql://audit-only",
+        "ANTHROPIC_API_KEY": "super-secret-value",
+    }
+
+    def refuse(argv: list[str], **seams: object) -> None:
+        invocation_environment = seams.pop("environ", environment)
+        with pytest.raises(ValueError):
+            main(
+                argv,
+                environ=invocation_environment,
+                audit_factory=lambda _: audit,
+                head_revision=seams.pop("head_revision", lambda _: "a" * 40),
+                clean_tree=seams.pop("clean_tree", lambda _: True),
+                allow_test_cache_root=True,
+                client_factory=lambda *_: pytest.fail("factory must remain at zero"),
+                **seams,
+            )
+        assert not list(tmp_path.rglob("*.json"))
+
+    refuse(base + ["--capture-role", "monitor"])
+    refuse(base + ["--capture-role", "proposer", "--capture-role", "monitor"])
+    refuse(base, environ={**environment, "ANTHROPIC_API_KEY": ""})
+    refuse(base, clean_tree=lambda _: False)
+    refuse(base, head_revision=lambda _: "A" * 40)
+    lower_token_limit = list(base)
+    lower_token_limit[8] = "8"
+    refuse(lower_token_limit)  # request max_tokens exceeds declared max.
+    fewer_calls = list(base)
+    fewer_calls[2] = "2"
+    refuse(fewer_calls)
+    mismatched = replace(items[0], context=replace(items[0].context, variant_id="wrong"))
+    monkeypatch.setattr(
+        proposer_capture_plan, "capture_work_items", lambda _audit, **_: (mismatched, *items[1:])
+    )
+    refuse(base)
+    monkeypatch.setattr(proposer_capture_plan, "capture_work_items", lambda _audit, **_: items)
+    revisions = iter(("a" * 40, "b" * 40))
+    refuse(base, head_revision=lambda _: next(revisions))
+    cleanliness = iter((True, True, False))
+    refuse(base, clean_tree=lambda _: next(cleanliness))
+    assert "super-secret-value" not in capsys.readouterr().out
+
+
+def test_main_production_cache_root_must_be_exact_before_audit_or_provider(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    common = [
+        "--i-will-spend-real-money",
+        "--max-calls",
+        "3",
+        "--max-estimated-usd",
+        "1",
+        "--model",
+        "claude-opus-5",
+        "--max-tokens",
+        "16",
+        "--split",
+        "development",
+    ]
+    env = {"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1", "DATABASE_URL": "x", "ANTHROPIC_API_KEY": "x"}
+    for cache_root in (tmp_path, root / "tests" / "fixtures" / "model_cache" / "nested"):
+        with pytest.raises(ValueError, match="cache-root"):
+            main(common + ["--cache-root", str(cache_root)], environ=env)

@@ -386,6 +386,7 @@ def test_structured_caller_error_taxonomy_request_shape_and_invocation(
         _Client(_result(_assessment().model_dump_json())),
     )
     caller = StructuredMonitorCaller(client=client, model="claude-opus-5")
+    assert caller.model == "claude-opus-5"
     outcome = caller.assess(_input())
     assert (
         outcome.assessment is not None
@@ -394,7 +395,8 @@ def test_structured_caller_error_taxonomy_request_shape_and_invocation(
     )
     request = client.request
     assert (
-        request.temperature is None
+        request.model == caller.model
+        and request.temperature is None
         and request.thinking == {"type": "disabled"}
         and request.max_tokens == 1024
     )

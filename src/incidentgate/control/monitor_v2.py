@@ -106,6 +106,11 @@ class StructuredMonitorCaller:
         self._client, self._model = client, model
         self.last_invocation: ModelInvocationRecord | None = None
 
+    @property
+    def model(self) -> str:
+        """The validated model used for every emitted completion request."""
+        return self._model
+
     def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV2:
         self.last_invocation = None
         try:
@@ -177,6 +182,7 @@ class StructuredMonitorCaller:
         if parsed.evaluated_action_fingerprint != input_value.action_fingerprint:
             return MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.ECHO_MISMATCH)
         return MonitorOutcomeV2(outcome="assessed", assessment=parsed)
+
 
 @dataclass(frozen=True)
 class MonitorInvocation:

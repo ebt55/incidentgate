@@ -86,6 +86,8 @@ from .adapters import (
     LabRecoveryVerifier,
     LabTokenValidator,
 )
+from .monitor_facts import RepositoryMonitorFacts
+from .semantic_monitor import SemanticMonitorBundle, SemanticMonitorConfiguration
 
 
 def _utc_now() -> datetime:
@@ -155,6 +157,7 @@ class RuntimeStatus:
     #: off the durable state rather than added to ``WorkflowResult``, which is a
     #: checkpointed contract.
     evidence: EvidenceValidation | None = None
+    monitor_error_kind: str | None = None
 
 
 class IncidentRuntime:
@@ -171,6 +174,7 @@ class IncidentRuntime:
         telemetry_config: TelemetryConfig | None = None,
         monitor: AdvisoryMonitor | None = None,
         monitor_factory: Callable[[], AdvisoryMonitor] | None = None,
+        semantic_monitor: SemanticMonitorConfiguration | SemanticMonitorBundle | None = None,
         # The proposer seam. Left unset, every scenario gets its deterministic
         # proposer exactly as before. Supplied, the factory decides what proposes
         # the action -- which is how a model output reaches the gate chain at all.
@@ -198,6 +202,10 @@ class IncidentRuntime:
             raise ValueError("provide either telemetry or telemetry_config, not both")
         if monitor is not None and monitor_factory is not None:
             raise ValueError("provide either monitor or monitor_factory, not both")
+        if semantic_monitor is not None and (monitor is not None or monitor_factory is not None):
+            raise ValueError(
+                "provide either v1 monitor or semantic monitor configuration, not both"
+            )
         self._dsn, self._clock, self._approval_ttl = dsn, clock, approval_ttl
         self._telemetry = telemetry or (
             create_tracer_runtime(telemetry_config) if telemetry_config else None
@@ -241,6 +249,7 @@ class IncidentRuntime:
         self._response_loss_once = response_loss_once
         self._monitor = monitor
         self._monitor_factory = monitor_factory
+        self._semantic_monitor = semantic_monitor
         self._proposer_factory = proposer_factory
         self._collection_crash_after_attempt = collection_crash_after_attempt
         self._safeguards = safeguards
@@ -294,6 +303,15 @@ class IncidentRuntime:
         config = PolicyConfiguration.model_validate(
             json.loads((Path(__file__).parents[3] / "config" / "policy.example.json").read_text())
         )
+        semantic_bundle: SemanticMonitorBundle | None = None
+        if self._semantic_monitor is not None:
+            semantic_bundle = (
+                self._semantic_monitor.build(
+                    policy=config, facts=RepositoryMonitorFacts(cast(Any, self._repository))
+                )
+                if isinstance(self._semantic_monitor, SemanticMonitorConfiguration)
+                else self._semantic_monitor
+            )
         observability = ObservabilityService(self._repository)
         if scenario_id in NO_ACTION_SCENARIOS:
 
@@ -352,10 +370,19 @@ class IncidentRuntime:
             ),
             policy=DeterministicPolicyEngine(config),
             monitor=(
-                self._monitor_factory()
-                if self._monitor_factory is not None
-                else (self._monitor or FixtureMonitor(MonitorVerdict.ALLOW))
+                None
+                if semantic_bundle is not None
+                else (
+                    self._monitor_factory()
+                    if self._monitor_factory is not None
+                    else (self._monitor or FixtureMonitor(MonitorVerdict.ALLOW))
+                )
             ),
+            monitor_v2=None if semantic_bundle is None else semantic_bundle.monitor,
+            monitor_consultation_factory=(
+                None if semantic_bundle is None else semantic_bundle.consultation_factory
+            ),
+            monitor_thresholds=None if semantic_bundle is None else semantic_bundle.thresholds,
             token_validator=LabTokenValidator(self._repository),
             executor=LabOperationExecutor(
                 OperationsService(self._repository),
@@ -519,6 +546,11 @@ class IncidentRuntime:
             trace_url=trace_url,
             collection_attempts=attempts,
             evidence=self._evidence(values),
+            monitor_error_kind=(
+                values.get("monitor_error")
+                if isinstance(values.get("monitor_error"), str)
+                else None
+            ),
         )
 
     def approve(
@@ -611,6 +643,11 @@ class IncidentRuntime:
             trace_url=trace_url,
             collection_attempts=attempts,
             evidence=self._evidence(values),
+            monitor_error_kind=(
+                values.get("monitor_error")
+                if isinstance(values.get("monitor_error"), str)
+                else None
+            ),
         )
 
     def _invoke_phase(

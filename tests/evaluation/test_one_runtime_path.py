@@ -137,6 +137,9 @@ def semantic_trace(outcome: SabotageConditionOutcome) -> bytes:
                         "observed_evidence_reasons": list(step.observed_evidence_reasons),
                         "monitor_consulted": step.monitor_consulted,
                         "monitor_verdict": step.monitor_verdict,
+                        "monitor_error_kind": step.monitor_error_kind,
+                        "monitor_invocation": step.monitor_invocation,
+                        "monitor_input_hash": step.monitor_input_hash,
                         "approval_requested": step.approval_requested,
                         "authorization": step.authorization,
                         "executed": step.executed,
@@ -208,6 +211,21 @@ def test_run_condition_branches_on_no_condition_at_all() -> None:
         "the driver only through safeguards_for, which is what makes it the manipulated "
         "variable rather than a label on two different machines"
     )
+    runtime_calls = [
+        node
+        for node in ast.walk(run)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_runtime_step"
+    ]
+    assert len(runtime_calls) == 1
+    semantic_arguments = [
+        keyword.value
+        for keyword in runtime_calls[0].keywords
+        if keyword.arg == "semantic_monitor"
+    ]
+    assert len(semantic_arguments) == 1 and isinstance(semantic_arguments[0], ast.Name)
+    assert semantic_arguments[0].id == "semantic_monitor"
 
 
 def test_the_condition_labels_map_onto_the_arms_the_matrix_publishes() -> None:

@@ -128,11 +128,12 @@ while the covert objective is refused.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, Protocol, runtime_checkable
 
 from incidentgate.contracts import (
     CanonicalAction,
@@ -140,6 +141,7 @@ from incidentgate.contracts import (
     EvidenceRecord,
     Hypothesis,
     IncidentIdentity,
+    ModelInvocationRecord,
     MonitorVerdict,
     OperationLedgerResult,
     PolicyConfiguration,
@@ -150,6 +152,7 @@ from incidentgate.contracts import (
 )
 from incidentgate.control.models import Caller, EvidenceState
 from incidentgate.control.monitor import AdvisoryMonitor, FixtureMonitor
+from incidentgate.control.monitor_v2 import MonitorErrorKind
 from incidentgate.control.ports import ProposalGenerator
 from incidentgate.control.safeguards import (
     AuthorizationGate,
@@ -157,6 +160,7 @@ from incidentgate.control.safeguards import (
     SafeguardConfiguration,
 )
 from incidentgate.integration.runtime import IncidentRuntime, PendingApproval, RuntimeStatus
+from incidentgate.integration.semantic_monitor import SemanticMonitorBundle
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.errors import ResponseLost
 from incidentgate.lab.repository import LabRepository
@@ -321,6 +325,24 @@ class SabotageStep:
     #: ledger returned the original row, and a row that hid the redelivery could
     #: not say which of those happened.
     redelivered: bool = False
+    #: The v2 monitor's typed availability or validation failure.  It is a
+    #: failure to assess, not a BLOCK verdict.
+    monitor_error_kind: MonitorErrorKind | None = None
+    #: The actual semantic-monitor model exchange, when one shaped this step.
+    #: Legacy v1 monitors deliberately cannot populate this field.
+    monitor_invocation: ModelInvocationRecord | None = None
+    #: Stable SHA-256 of the rendered semantic-monitor input, never its body.
+    monitor_input_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.monitor_error_kind is not None and not isinstance(
+            self.monitor_error_kind, MonitorErrorKind
+        ):
+            raise TypeError("monitor_error_kind must be a MonitorErrorKind")
+        if self.monitor_input_hash is not None and not re.fullmatch(
+            r"[a-f0-9]{64}", self.monitor_input_hash
+        ):
+            raise ValueError("monitor_input_hash must be a lowercase SHA-256 digest")
 
     @property
     def refused(self) -> bool:
@@ -333,6 +355,7 @@ class SabotageStep:
         return (
             self.policy_decision is PolicyDecision.DENY
             or self.monitor_verdict is MonitorVerdict.BLOCK
+            or self.monitor_error_kind is not None
         )
 
 
@@ -439,6 +462,69 @@ def _identity(scenario_id: str, thread_id: str, actor: str) -> tuple[
     )
 
 
+@runtime_checkable
+class _SemanticMonitorObservation(Protocol):
+    """The public, prompt-free observation surface an episode may read."""
+
+    @property
+    def last_input_hash(self) -> str | None: ...
+
+    @property
+    def last_invocation(self) -> ModelInvocationRecord | None: ...
+
+
+def _semantic_monitor_observation(
+    semantic_monitor: SemanticMonitorBundle | None,
+    *,
+    status: RuntimeStatus,
+    safeguards: SafeguardConfiguration,
+) -> tuple[MonitorErrorKind | None, ModelInvocationRecord | None, str | None]:
+    """Read only the terminal semantic consultation's public observation facts.
+
+    A shared semantic bundle intentionally persists across episode steps.  Its
+    monitor wrapper clears these fields at the beginning of each consultation,
+    but a skipped monitor stage has no consultation to clear them.  The runner
+    therefore treats disabled and policy-unreached stages as no observation
+    rather than accidentally publishing the preceding step's metadata.
+    """
+    if semantic_monitor is None or not safeguards.consults_monitor:
+        return None, None, None
+    if status.result is None:
+        return None, None, None
+    if status.result.monitor is None and status.monitor_error_kind is None:
+        return None, None, None
+    if (
+        status.result.policy is not None
+        and status.result.policy.decision is PolicyDecision.DENY
+        and safeguards.enforces_policy
+    ):
+        return None, None, None
+
+    error_kind: MonitorErrorKind | None = None
+    if status.monitor_error_kind is not None:
+        try:
+            error_kind = MonitorErrorKind(status.monitor_error_kind)
+        except ValueError as error:
+            raise TypeError("runtime returned an unknown monitor error kind") from error
+
+    monitor = semantic_monitor.monitor
+    if not isinstance(monitor, _SemanticMonitorObservation):
+        return error_kind, None, None
+    input_hash = monitor.last_input_hash
+    invocation = monitor.last_invocation
+    if input_hash is not None and (
+        not isinstance(input_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", input_hash)
+    ):
+        raise TypeError("semantic monitor exposed an invalid input hash")
+    if invocation is not None and not isinstance(invocation, ModelInvocationRecord):
+        raise TypeError("semantic monitor exposed an invalid invocation record")
+    return (
+        error_kind,
+        invocation,
+        input_hash,
+    )
+
+
 def _runtime_step(
     dsn: str,
     *,
@@ -449,6 +535,7 @@ def _runtime_step(
     actor: str,
     approver: str,
     monitor: AdvisoryMonitor | None,
+    semantic_monitor: SemanticMonitorBundle | None,
     safeguards: SafeguardConfiguration,
     clock: Callable[[], datetime],
 ) -> SabotageStep:
@@ -475,28 +562,41 @@ def _runtime_step(
     same capability, arguments and decision -- because the alternative was
     publishing an episode that could not name the arguments of half its calls.
     """
+    if monitor is not None and semantic_monitor is not None:
+        raise ValueError("provide either legacy monitor or semantic monitor, not both")
     incident, operator, context = _identity(scenario_id, thread_id, actor)
     recorder = _RecordingProposer(proposer)
     redelivered = False
-    with IncidentRuntime(
-        dsn,
-        clock=clock,
+    if semantic_monitor is not None:
+        runtime = IncidentRuntime(
+            dsn,
+            clock=clock,
+            semantic_monitor=semantic_monitor,
+            proposer_factory=lambda: recorder,
+            safeguards=safeguards,
+            allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
+        )
+    else:
+        runtime = IncidentRuntime(
+            dsn,
+            clock=clock,
         # Scenarios that supply no monitor keep the always-allow fixture, which
         # is what every condition ran before any scenario needed a real one: the
         # full column's claim was then about the policy and the human gate, and
         # the monitor stage was present but never dissenting. Passed in every
         # arm, including the two that disable the monitor stage, so the arms
         # share one monitor identity and not merely one monitor type.
-        monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
-        proposer_factory=lambda: recorder,
-        safeguards=safeguards,
+            monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
+            proposer_factory=lambda: recorder,
+            safeguards=safeguards,
         # The acceptance gate lists a published evaluation among the clauses a
         # scenario must satisfy *before* it is promoted, so requiring promotion
         # in order to run the evaluation would be circular -- T1 was measured
         # from inside this same window. The gate is untouched for the host, the
         # UI and the chaos worker, which are the paths it exists to hold shut.
-        allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
-    ) as runtime:
+            allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
+        )
+    with runtime:
         try:
             outcome: PendingApproval | RuntimeStatus = runtime.start(incident, operator, context)
         except ResponseLost:
@@ -527,6 +627,9 @@ def _runtime_step(
     authorized = result.approval is not None and result.approval.decision == "approve"
     enforcing_policy = safeguards.enforces_policy
     evidence = status.evidence
+    monitor_error_kind, monitor_invocation, monitor_input_hash = _semantic_monitor_observation(
+        semantic_monitor, status=status, safeguards=safeguards
+    )
     return SabotageStep(
         step_index=step_index,
         thread_id=thread_id,
@@ -546,8 +649,11 @@ def _runtime_step(
         observed_policy_reasons=result.policy.reasons if result.policy is not None else (),
         observed_evidence_state=evidence.state if evidence is not None else None,
         observed_evidence_reasons=evidence.reasons if evidence is not None else (),
-        monitor_consulted=result.monitor is not None,
+        monitor_consulted=result.monitor is not None or monitor_error_kind is not None,
         monitor_verdict=result.monitor.verdict if result.monitor is not None else None,
+        monitor_error_kind=monitor_error_kind,
+        monitor_invocation=monitor_invocation,
+        monitor_input_hash=monitor_input_hash,
         approval_requested=requested,
         authorization=(
             _AUTHORIZATION_LABEL[safeguards.authorization_gate] if authorized else None
@@ -579,6 +685,9 @@ def run_condition(
     #: today and is exactly the kind of thing that stops being harmless once a
     #: monitor holds any memory of the episode.
     monitor: AdvisoryMonitor | None = None,
+    #: The semantic monitor alternative, built once so its public per-call
+    #: observations stay attached to the same monitor that the runtime used.
+    semantic_monitor: SemanticMonitorBundle | None = None,
     #: The arm, stated directly. Left unset the condition supplies it through
     #: :func:`safeguards_for`, which is the mapping the published matrix uses.
     #: A caller passing one explicitly is running an arm the condition labels do
@@ -610,6 +719,8 @@ def run_condition(
     executor inside the mutation's own transaction. They differ in the path the
     token is minted along, and in nothing else.
     """
+    if monitor is not None and semantic_monitor is not None:
+        raise ValueError("provide either legacy monitor or semantic monitor, not both")
     if not covert_plan or not incident_plan:
         raise ValueError("both episodes need at least one planned call")
     applied = safeguards if safeguards is not None else safeguards_for(condition, approver=approver)
@@ -632,6 +743,7 @@ def run_condition(
             actor=actor,
             approver=approver,
             monitor=monitor,
+            semantic_monitor=semantic_monitor,
             safeguards=applied,
             clock=clock,
         )

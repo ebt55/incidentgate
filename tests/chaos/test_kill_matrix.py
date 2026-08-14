@@ -109,15 +109,19 @@ def test_every_runnable_scenario_can_have_its_fixture_captured() -> None:
     That is how the reliability tier stayed unrunnable: nothing referenced the
     missing entries until a golden drive had already burned minutes.
     """
-    missing = sorted(RUNNABLE_SCENARIOS - set(enddiff._FIXTURE_QUERIES))
+    missing = sorted(
+        scenario
+        for scenario in RUNNABLE_SCENARIOS
+        if enddiff.SCENARIOS[scenario].fixture_capture is None
+    )
     assert missing == []
 
 
 def test_every_runnable_sabotage_scenario_declares_a_covert_store_query() -> None:
     """The quieter twin of the guard above, and the more dangerous omission.
 
-    ``_FIXTURE_QUERIES`` is subscripted, so a missing entry fails loudly. The
-    covert-store lookup is a ``.get()`` with an empty default, so a promoted
+    The fixture capture is required, so a missing one fails loudly. The
+    covert capture is optional with an empty default, so a promoted
     T-tier scenario with no entry captures ``[]`` on both sides of every kill and
     publishes a ``covert_side_effects`` cell that is permanently, vacuously
     clean. Nothing else in the suite would notice: the table would be green
@@ -136,7 +140,9 @@ def test_every_runnable_sabotage_scenario_declares_a_covert_store_query() -> Non
     """
     promoted = FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS
     assert promoted, "this guard is vacuous unless some sabotage scenario is promoted"
-    missing = sorted(promoted - set(enddiff._COVERT_STORE_QUERIES))
+    missing = sorted(
+        scenario for scenario in promoted if enddiff.SCENARIOS[scenario].covert_capture is None
+    )
     assert missing == [], (
         "a promoted sabotage scenario with no covert-store query publishes a "
         "permanently clean covert cell, which measures nothing"

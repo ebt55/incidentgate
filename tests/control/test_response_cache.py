@@ -29,6 +29,7 @@ therefore this same key, which is what
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -37,6 +38,7 @@ from typing import Any
 import pytest
 
 from incidentgate.contracts import (
+    EvaluationMode,
     EvidenceRecord,
     IncidentIdentity,
     ModelInvocationRecord,
@@ -53,6 +55,7 @@ from incidentgate.control.models import Caller
 from incidentgate.control.proposal import ProposalError
 from incidentgate.control.response_cache import (
     CacheBackedCompletionClient,
+    ProviderCaptureProvenance,
     ResponseCache,
     ResponseCacheMiss,
 )
@@ -172,6 +175,7 @@ def committed_fixture_key() -> str:
 
 
 def _request(model: str, prompt_sha256: str) -> CompletionRequest:
+    canonical = "prompt-a" if prompt_sha256 == HASH_A else "prompt-b"
     return CompletionRequest(
         model=model,
         system="system",
@@ -179,8 +183,8 @@ def _request(model: str, prompt_sha256: str) -> CompletionRequest:
         max_tokens=512,
         temperature=None,
         thinking=None,
-        schema={},
-        canonical_prompt="canonical",
+        schema={"type": "object"},
+        canonical_prompt=canonical,
         prompt_sha256=prompt_sha256,
     )
 
@@ -199,9 +203,57 @@ def _provider_invocation() -> ModelInvocationRecord:
     )
 
 
+def _provenance(request: CompletionRequest, result: CompletionResult) -> ProviderCaptureProvenance:
+    invocation = result.invocation
+    return ProviderCaptureProvenance(
+        provider="anthropic",
+        model=request.model,
+        role="proposer",
+        prompt_sha256=request.prompt_sha256,
+        request_schema_sha256=sha256(
+            json.dumps(request.schema, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        input_schema_version="proposal-input-v1",
+        prompt_version="proposal/v1",
+        stop_reason="end_turn",
+        input_tokens=invocation.input_tokens or 0,
+        output_tokens=invocation.output_tokens or 0,
+        usage_source=invocation.usage_source or "anthropic_messages_usage",
+        capture_mode="live_provider_call",
+        captured_at=OBSERVED,
+        capture_command="python -m incidentgate.evaluation.capture_model_outputs",
+        git_revision="a" * 40,
+        pricing_snapshot_id=invocation.pricing_snapshot or "snap-test",
+        estimated_cost=invocation.cost,
+        currency=invocation.currency,
+        cost_unavailable_reason=None,
+        scenario_id="D1",
+        variant_id="v1",
+        condition=EvaluationMode.COMPLETE,
+        leg="incident",
+        step_index=0,
+        split="development",
+    )
+
+
+def _store_provider(cache: ResponseCache, model: str, prompt_sha256: str) -> None:
+    request = _request(model, prompt_sha256)
+    invocation = _provider_invocation().model_copy(update={"model": model})
+    result = CompletionResult(model_output(), invocation)
+    cache.store(
+        model,
+        prompt_sha256,
+        model_output(),
+        capture="provider_call",
+        provenance=_provenance(request, result),
+        invocation=result.invocation,
+        request=request,
+    )
+
+
 def test_cache_round_trips_same_key(tmp_path: Path) -> None:
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
+    _store_provider(cache, HAIKU, HASH_A)
     entry = cache.load(HAIKU, HASH_A)
     assert entry.raw_json == model_output()
     assert entry.capture == "provider_call"
@@ -247,7 +299,7 @@ def test_a_synthetic_entry_replays_as_a_fixture_and_names_nobody(tmp_path: Path)
 
     # And the same bytes under a capture that really happened do name their model. The only
     # difference between these two replays is the recorded provenance, which is the point.
-    cache.store(OPUS, HASH_B, model_output(), capture="provider_call")
+    _store_provider(cache, OPUS, HASH_B)
     replayed = CacheBackedCompletionClient(cache).complete(_request(OPUS, HASH_B))
     assert replayed.invocation.invocation_kind == "cache_replay"
     assert replayed.invocation.model == OPUS
@@ -264,7 +316,7 @@ def test_cache_miss_is_explicit(tmp_path: Path) -> None:
 def test_cache_hit_is_recorded_as_a_named_replay_not_a_fixture(tmp_path: Path) -> None:
     """A replay is a real model's output; it must not look like a deterministic fixture."""
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
+    _store_provider(cache, HAIKU, HASH_A)
     result = CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A))
     assert result.raw_json == model_output()
     assert result.invocation.invocation_kind == "cache_replay"
@@ -279,17 +331,23 @@ def test_cache_hit_is_recorded_as_a_named_replay_not_a_fixture(tmp_path: Path) -
 def test_a_replay_names_the_provider_the_caller_declared(tmp_path: Path) -> None:
     """Captures from another provider must not be replayed under Anthropic's name."""
     cache = ResponseCache(tmp_path)
-    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call")
-    client = CacheBackedCompletionClient(cache, provider="some-other-provider")
-    assert client.complete(_request(HAIKU, HASH_A)).invocation.provider == "some-other-provider"
-    with pytest.raises(ValueError, match="must name the provider"):
-        CacheBackedCompletionClient(cache, provider="")
+    _store_provider(cache, HAIKU, HASH_A)
+    assert (
+        CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A)).invocation.provider
+        == "anthropic"
+    )
+    with pytest.raises(ValueError, match="disagrees"):
+        CacheBackedCompletionClient(cache, provider="some-other-provider").complete(
+            _request(HAIKU, HASH_A)
+        )
 
 
 def test_record_mode_populates_then_replays(tmp_path: Path) -> None:
     cache = ResponseCache(tmp_path)
     upstream = FakeClient(model_output(), invocation=_provider_invocation())
-    recorder = CacheBackedCompletionClient(cache, record_client=upstream, record_mode=True)
+    recorder = CacheBackedCompletionClient(
+        cache, record_client=upstream, record_mode=True, provenance_builder=_provenance
+    )
     request = _request(HAIKU, HASH_A)
 
     first = recorder.complete(request)
@@ -318,18 +376,95 @@ def test_record_mode_cannot_launder_a_canned_body_into_a_capture(tmp_path: Path)
     """
     cache = ResponseCache(tmp_path)
     canned = FakeClient(model_output())  # a FakeClient defaults to fixture_no_call
-    recorder = CacheBackedCompletionClient(cache, record_client=canned, record_mode=True)
-    recorder.complete(_request(HAIKU, HASH_A))
-
-    assert cache.load(HAIKU, HASH_A).capture == "synthetic"
-    replayed = CacheBackedCompletionClient(cache).complete(_request(HAIKU, HASH_A))
-    assert replayed.invocation.invocation_kind == "fixture_no_call"
-    assert replayed.invocation.provider is None
+    recorder = CacheBackedCompletionClient(
+        cache, record_client=canned, record_mode=True, provenance_builder=_provenance
+    )
+    with pytest.raises(ValueError, match="refuses non-provider"):
+        recorder.complete(_request(HAIKU, HASH_A))
+    assert not (tmp_path / HAIKU / f"{HASH_A}.json").exists()
 
 
 def test_record_mode_requires_client(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="record mode requires a record client"):
+    with pytest.raises(ValueError, match="record mode requires"):
         CacheBackedCompletionClient(ResponseCache(tmp_path), record_mode=True)
+
+
+@pytest.mark.parametrize("mode", ["direct", "record"])
+@pytest.mark.parametrize("mutation", ["canonical", "schema"])
+def test_provider_capture_requires_coherent_request_digests(
+    tmp_path: Path, mode: str, mutation: str
+) -> None:
+    cache = ResponseCache(tmp_path)
+    request = _request(HAIKU, HASH_A)
+    original_request = request
+    if mutation == "canonical":
+        request = replace(request, canonical_prompt="different")
+    else:
+        request = replace(request, schema={"type": "array"})
+    invocation = _provider_invocation()
+    result = CompletionResult(model_output(), invocation)
+    original_provenance = _provenance(original_request, result)
+    if mode == "direct":
+        with pytest.raises(ValueError, match="(canonical prompt|schema) disagrees"):
+            cache.store(
+                HAIKU, HASH_A, result.raw_json, capture="provider_call",
+                provenance=original_provenance, invocation=invocation, request=request,
+            )
+    else:
+        recorder = CacheBackedCompletionClient(
+            cache, record_client=FakeClient(result.raw_json, invocation=invocation),
+            record_mode=True, provenance_builder=lambda _request, _result: original_provenance,
+        )
+        with pytest.raises(ValueError, match="(canonical prompt|schema) disagrees"):
+            recorder.complete(request)
+    assert not (tmp_path / HAIKU / f"{HASH_A}.json").exists()
+
+
+def test_provider_cache_store_is_idempotent_but_refuses_conflicts(tmp_path: Path) -> None:
+    cache = ResponseCache(tmp_path)
+    request = _request(HAIKU, HASH_A)
+    invocation = _provider_invocation()
+    provenance = _provenance(request, CompletionResult(model_output(), invocation))
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call",
+                provenance=provenance, invocation=invocation, request=request)
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call",
+                provenance=provenance, invocation=invocation, request=request)
+    with pytest.raises(ValueError, match="semantically different"):
+        cache.store(HAIKU, HASH_A, '{"different":true}', capture="provider_call",
+                    provenance=provenance, invocation=invocation, request=request)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("input_tokens", True), ("step_index", True), ("captured_at", "2026-01-01T00:00:00"),
+        ("provider", "Anthropic"), ("prompt_sha256", "x"), ("git_revision", "x" * 40),
+        ("estimated_cost", float("nan")), ("estimated_cost", float("inf")),
+        ("estimated_cost", -1.0), ("currency", None),
+        ("cost_unavailable_reason", "model_not_priced_in_snapshot"),
+    ],
+)
+def test_provider_provenance_rejects_unsafe_or_incoherent_values(field: str, value: object) -> None:
+    request = _request(HAIKU, HASH_A)
+    invocation = _provider_invocation()
+    base = _provenance(request, CompletionResult(model_output(), invocation)).model_dump()
+    base[field] = value
+    with pytest.raises((ValueError, TypeError)):
+        ProviderCaptureProvenance.model_validate(base)
+
+
+def test_provider_cache_rejects_malformed_provenance_and_oversized_body(tmp_path: Path) -> None:
+    cache = ResponseCache(tmp_path)
+    path = tmp_path / HAIKU / f"{HASH_A}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"capture": "provider_call", "model": HAIKU,
+                                "prompt_sha256": HASH_A, "raw_json": "{}",
+                                "provenance": {"provider": "anthropic"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed provider cache provenance"):
+        cache.load(HAIKU, HASH_A)
+    path.write_bytes(b"{" + b'"x":' + b'"' + b"a" * 1_100_000 + b'"}')
+    with pytest.raises(ValueError, match="cache entry exceeds size limit"):
+        cache.load(HAIKU, HASH_A)
 
 
 def test_corrupt_and_unsafe_entries_are_rejected(tmp_path: Path) -> None:
@@ -471,13 +606,10 @@ def record_committed_fixture() -> Path:
     # lets it migrate an older entry rather than fail on one.
     for existing in (COMMITTED_CACHE / OPUS).glob("*.json"):
         existing.unlink()
-    proposer = ModelAgentProposer(
-        client=CacheBackedCompletionClient(cache, record_client=upstream, record_mode=True),
-        model=OPUS,
-        temperature=None,
-    )
+    proposer = ModelAgentProposer(client=upstream, model=OPUS, temperature=None)
     proposer.propose(incident(), caller(), context(), records())
     current = committed_fixture_key()
+    cache.store(OPUS, current, model_output(), capture="synthetic")
     for stale in (COMMITTED_CACHE / OPUS).glob("*.json"):
         if stale.stem != current:
             stale.unlink()

@@ -373,6 +373,7 @@ def test_boundaries_are_derived_from_the_compiled_graphs(subset: dict[str, Any])
     assert set(subset["golden"]["D1"]["unreached_graph_nodes"]) == {
         "deny",
         "blocked",
+        "monitor_error",
         "monitor_mismatch",
     }
 

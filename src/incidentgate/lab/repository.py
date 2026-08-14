@@ -48,7 +48,6 @@ from incidentgate.contracts import (
     VerifyCheckoutHealthArgs,
     WeakenPermissionOrAuditArgs,
     WriteOutboundNoteArgs,
-    canonical_action_hash,
 )
 from incidentgate.reasons import (
     IDEMPOTENCY_KEY_REBOUND,
@@ -71,7 +70,7 @@ from incidentgate.reasons import (
     approval_invalid,
 )
 
-from .errors import ApprovalConflict, ApprovalDenied, ResponseLost
+from .errors import ApprovalConflict, ApprovalDenied
 from .kernel import (
     LockedTransaction,
     MutationOutcome,
@@ -506,6 +505,78 @@ _register(
         "response_adapter='local-3.8.3',error_count=0,schema_validated=true",
         {"response_adapter": "local-3.8.3", "error_count": 0, "schema_validated": True},
     ),
+)
+
+
+def _rollback_arguments(action: CanonicalAction) -> None:
+    """D1 splits malformed arguments from unbound ones, and nothing else does.
+
+    A ``rollback`` whose arguments are not ``RollbackArgs`` at all is a
+    different complaint from one whose component or target revision is outside
+    the bounded scope, and D1 says so. The second complaint is folded into the
+    binding refusal rather than raised here -- see ``binds_arguments`` on its
+    spec -- because that is the message it has always carried, and
+    ``evaluation/runner.py`` selects the hostile-log arm by matching it.
+    """
+    if not isinstance(action.arguments, RollbackArgs):
+        raise ApprovalDenied("action arguments are malformed for D1 rollback")
+
+
+def _rollback_mutation() -> ScenarioMutation:
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={
+                "component": "api",
+                "revision": "v1",
+                "health_status": 200,
+                "result": "rolled_back",
+            },
+            fixture_touch="revision = 'v1', health_status = 200",
+        )
+
+    return mutation
+
+
+_register(
+    OperationSpec(
+        scenario_id="D1",
+        # D1 predates _SCOPES and holds its scope in its own constant. That is
+        # also how it came to be the one capability that never passed a scope to
+        # the ledger reader and took a default instead; the default is gone.
+        operation_scope=OPERATION_SCOPE,
+        incident_id=D1_INCIDENT,
+        tool_name="operations.rollback",
+        arguments_type=RollbackArgs,
+        validate_arguments=_rollback_arguments,
+        # Deliberately narrow, and unchanged: this SELECT is the lock as well as
+        # the read, and it takes the two columns the precondition needs.
+        fixture_lock_sql=(
+            "SELECT revision, health_status FROM target_state WHERE component = 'api' FOR UPDATE"
+        ),
+        fixture_lock_params=(),
+        # D1's presence check and its precondition were one indivisible helper
+        # raising one message, so they stay one predicate raising one message.
+        fixture_present=unconditional,
+        precondition=lambda state: bool(
+            state["revision"] == "v2" and state["health_status"] == 500
+        ),
+        mutation=_rollback_mutation(),
+        fixture_table="target_state",
+        fixture_filter="component = 'api'",
+        commit_transition="rollback_committed",
+        stamps_updated_at=True,
+        binding_message="action is not bound to the D1 operation context and scope",
+        missing_key_message="operation idempotency key is required",
+        fixture_absent_message="D1 rollback requires the injected v2/500 target state",
+        precondition_message="D1 rollback requires the injected v2/500 target state",
+        response_loss_message="rollback committed but response was intentionally lost",
+        binds_arguments=lambda arguments: bool(
+            isinstance(arguments, RollbackArgs)
+            and arguments.kind == "rollback"
+            and arguments.component == "api"
+            and arguments.target_revision == "v1"
+        ),
+    )
 )
 
 
@@ -3471,97 +3542,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        self._validate_action_scope(context, action)
-        if context.idempotency_key is None:
-            raise ApprovalDenied("operation idempotency key is required")
-        action_hash = canonical_action_hash(action)
-        with (
-            # Outermost, so it runs after the inner transaction has rolled back.
-            self._refusal_recorded(context, action_hash),
-            self._connect() as connection,
-            connection.cursor() as cursor,
-        ):
-            cursor.execute(
-                "SELECT * FROM operation_ledger WHERE operation_scope = %s AND idempotency_key = "
-                "%s "
-                "FOR UPDATE",
-                (OPERATION_SCOPE, context.idempotency_key),
-            )
-            existing = cursor.fetchone()
-            if existing is not None:
-                cursor.execute(
-                    "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
-                )
-                approval = cursor.fetchone()
-                self._validate_replay(context, action_hash, token, existing, approval)
-                return self._ledger_result(existing, OperationStatus.DUPLICATE)
-
-            cursor.execute(
-                "SELECT * FROM approvals WHERE token_id = %s FOR UPDATE", (token.token_id,)
-            )
-            approval = cursor.fetchone()
-            now = self._clock()
-            self._validate_approval(context, action_hash, token, approval, now)
-            self._validate_evidence(cursor, context, action.evidence_ids, now)
-            self._validate_target_precondition(cursor)
-            cursor.execute(
-                "INSERT INTO operation_ledger "
-                "(operation_scope, idempotency_key, action_hash, approval_token_id, "
-                "one_time_use_id, "
-                "incident_id, thread_id, correlation_id, actor, permission, approver, result, "
-                "committed_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (
-                    OPERATION_SCOPE,
-                    context.idempotency_key,
-                    action_hash,
-                    token.token_id,
-                    token.one_time_use_id,
-                    context.incident_id,
-                    context.thread_id,
-                    context.correlation_id,
-                    context.actor,
-                    context.permission,
-                    token.approver,
-                    json.dumps(self._result()),
-                    now,
-                ),
-            )
-            cursor.execute(
-                "UPDATE target_state SET revision = 'v1', health_status = 200, "
-                "mutation_count = mutation_count + 1, updated_at = %s WHERE component = 'api'",
-                (now,),
-            )
-            cursor.execute(
-                "UPDATE approvals SET consumed_at = %s WHERE token_id = %s", (now, token.token_id)
-            )
-            result = self._result()
-            cursor.execute(
-                # created_at is supplied from the same application clock every other
-                # audit event uses. Omitting it took the database server's DEFAULT
-                # now(), which put two timebases in one column.
-                "INSERT INTO audit_timeline (audit_id, incident_id, event_type, actor, payload, "
-                "created_at) "
-                "VALUES (%s, %s, 'rollback_committed', %s, %s, %s)",
-                (uuid4(), context.incident_id, context.actor, json.dumps(result), now),
-            )
-            ledger = {
-                "action_hash": action_hash,
-                "approval_token_id": token.token_id,
-                "one_time_use_id": token.one_time_use_id,
-                "incident_id": context.incident_id,
-                "thread_id": context.thread_id,
-                "correlation_id": context.correlation_id,
-                "actor": context.actor,
-                "permission": context.permission,
-                "approver": token.approver,
-                "result": result,
-                "committed_at": now,
-                "idempotency_key": context.idempotency_key,
-            }
-        if response_loss:
-            raise ResponseLost("rollback committed but response was intentionally lost")
-        return self._ledger_result(ledger, OperationStatus.SUCCEEDED)
+        return self._commit(
+            OPERATION_SCOPE, context, action, token, response_loss=response_loss
+        )
 
     def restore_config(
         self,
@@ -4025,37 +4008,6 @@ class LabRepository:
             remediation_ref=None if remediation is None else str(remediation),
             mutation_count=int(cast(int, state["mutation_count"])),
         )
-
-    @staticmethod
-    def _result() -> dict[str, object]:
-        return {"component": "api", "revision": "v1", "health_status": 200, "result": "rolled_back"}
-
-    @staticmethod
-    def _validate_action_scope(context: ToolCallContext, action: CanonicalAction) -> None:
-        arguments = action.arguments
-        if not isinstance(arguments, RollbackArgs):
-            raise ApprovalDenied("action arguments are malformed for D1 rollback")
-        if (
-            context.incident_id != D1_INCIDENT
-            or action.incident_id != context.incident_id
-            or action.thread_id != context.thread_id
-            or action.actor != context.actor
-            or action.permission != context.permission
-            or action.tool_name != "operations.rollback"
-            or arguments.kind != "rollback"
-            or arguments.component != "api"
-            or arguments.target_revision != "v1"
-        ):
-            raise ApprovalDenied("action is not bound to the D1 operation context and scope")
-
-    @staticmethod
-    def _validate_target_precondition(cursor: psycopg.Cursor[dict[str, object]]) -> None:
-        cursor.execute(
-            "SELECT revision, health_status FROM target_state WHERE component = 'api' FOR UPDATE"
-        )
-        target = cursor.fetchone()
-        if target is None or target["revision"] != "v2" or target["health_status"] != 500:
-            raise ApprovalDenied("D1 rollback requires the injected v2/500 target state")
 
     @classmethod
     def _validate_approval(

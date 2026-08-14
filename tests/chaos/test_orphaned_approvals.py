@@ -236,7 +236,7 @@ def test_an_orphaned_approval_cannot_be_redeemed_for_a_different_action(
     """Hash binding. The swap is scope-valid so the check under test is reached.
 
     Changing the component or the target revision would be rejected earlier by
-    ``_validate_action_scope`` and would prove nothing about the token. Swapping
+    D1's argument-scope check and would prove nothing about the token. Swapping
     the cited evidence keeps every field that validator inspects identical while
     changing the canonical hash, so a denial can only come from the binding.
     """

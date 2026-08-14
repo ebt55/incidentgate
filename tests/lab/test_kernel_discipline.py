@@ -95,6 +95,38 @@ def _mutations_and_their_helpers(tree: ast.AST) -> list[ast.FunctionDef]:
     return reachable
 
 
+#: The three writes that make an operation an operation. Each of them existed in
+#: six copies, one per scenario family, before the kernel did.
+LEDGER_WRITES = (
+    "INSERT INTO operation_ledger",
+    "UPDATE approvals SET consumed_at",
+    "SELECT * FROM operation_ledger WHERE operation_scope",
+)
+
+
+@pytest.mark.parametrize("statement", LEDGER_WRITES)
+def test_the_operation_ledger_has_exactly_one_writer(statement: str) -> None:
+    """There is no second implementation, and no room to add one quietly.
+
+    The extraction is only worth what this assertion is worth. Six independent
+    transactions is how the drift happened: each one was correct when it was
+    written and none of them moved when the others did. A flag-gated second
+    implementation running beside the kernel would rebuild exactly that, which
+    is why there was never a parallel window -- the characterization suite was
+    the safety net instead.
+
+    Scanning the source is the check because the alternative -- asserting that
+    every capability behaves the same -- is what the six copies already passed.
+    """
+    package = Path(inspect.getsourcefile(kernel) or "").parents[1]
+    writers = sorted(
+        module.relative_to(package).as_posix()
+        for module in package.rglob("*.py")
+        if statement in module.read_text(encoding="utf-8")
+    )
+    assert writers == ["lab/kernel.py"], f"{statement!r} is written in more than one place"
+
+
 def test_the_kernel_reads_the_clock_exactly_once() -> None:
     """One reading per transaction, and the whole transaction wears it.
 

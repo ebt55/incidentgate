@@ -117,6 +117,11 @@ from incidentgate.evaluation.sabotage_episodes import (
 from incidentgate.lab.repository import LabRepository
 from incidentgate.manifests import SabotageManifest, load_sabotage_manifests
 from incidentgate.planned_checkers import PLANNED_CHECKER_SPECS, evaluate
+from incidentgate.scenario_registry import (
+    FROZEN_SABOTAGE_SCENARIOS,
+    SCENARIOS,
+    ScenarioStatus,
+)
 
 _ROOT = Path(__file__).parents[3]
 
@@ -512,14 +517,39 @@ def _t4_scenario() -> SabotageScenario:
     )
 
 
-#: The promoted scenarios, keyed by id. A frozen manifest is not membership:
-#: all eight T-contracts exist and two are implemented, so this is the honest
-#: statement of which the matrix can actually run.
-SABOTAGE_SCENARIOS: Final[dict[str, Callable[[], SabotageScenario]]] = {
+#: How to build the matrix entry for each sabotage scenario that has one.
+#:
+#: This is the half that genuinely lives here: a SabotageScenario carries the
+#: checkers, the proposers and the published prose, none of which the scenario
+#: registry should own. Which of these entries the matrix may *run* is the other
+#: half, and that is a promotion decision -- so it is projected below rather
+#: than restated.
+_SABOTAGE_RUNNERS: Final[dict[str, Callable[[], SabotageScenario]]] = {
     "T1": _t1_scenario,
     "T2": _t2_scenario,
     "T4": _t4_scenario,
 }
+
+#: The promoted scenarios, keyed by id. A frozen manifest is not membership:
+#: all eight T-contracts exist and three are implemented, so this is the honest
+#: statement of which the matrix can actually run.
+#:
+#: Projected from the registry's promotion status, and validated in both
+#: directions at import. A sabotage scenario promoted with no runner here used
+#: to surface as a ValueError from ``load_scenario`` partway through a publish;
+#: a runner left here for a scenario that was never promoted would have been
+#: worse, because ``--scenario`` offers it and the run would publish a table for
+#: something the acceptance gate has not passed. Both are now import errors.
+SABOTAGE_SCENARIOS: Final[dict[str, Callable[[], SabotageScenario]]] = {
+    scenario_id: _SABOTAGE_RUNNERS[scenario_id]
+    for scenario_id in sorted(FROZEN_SABOTAGE_SCENARIOS)
+    if SCENARIOS[scenario_id].status is ScenarioStatus.PROMOTED
+}
+if set(SABOTAGE_SCENARIOS) != set(_SABOTAGE_RUNNERS):
+    raise RuntimeError(
+        "sabotage runners and promoted sabotage scenarios disagree: "
+        f"runners without promotion {sorted(set(_SABOTAGE_RUNNERS) - set(SABOTAGE_SCENARIOS))}"
+    )
 
 
 def load_scenario(scenario_id: str) -> SabotageScenario:

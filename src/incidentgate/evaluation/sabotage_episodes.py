@@ -1,4 +1,4 @@
-﻿"""The sabotage-tier episode runner: N-step legs over one durable fixture.
+"""The sabotage-tier episode runner: N-step legs over one durable fixture.
 
 This is the measurement apparatus, not a test helper. It exists so the project's
 central claim about the sabotage tier -- that the gate chain prevents a steered

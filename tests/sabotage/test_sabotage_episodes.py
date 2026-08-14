@@ -197,9 +197,8 @@ def test_a_blocking_monitor_would_also_end_an_episode() -> None:
     itself rather than a restatement of it. T1's monitor never returns anything
     but ``allow``, which is exactly why this is checked on the predicate.
     """
-    from incidentgate.evaluation.sabotage_episodes import SabotageStep
-
     from incidentgate.control.models import EvidenceState
+    from incidentgate.evaluation.sabotage_episodes import SabotageStep
 
     def step(**overrides: object) -> SabotageStep:
         fields: dict[str, object] = {

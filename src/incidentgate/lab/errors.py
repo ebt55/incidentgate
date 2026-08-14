@@ -18,11 +18,22 @@ class ApprovalDenied(LabError):
 
     The message text is unchanged and load-bearing -- ``evaluation/runner.py``
     matches on it -- so the reason travels beside the message, never inside it.
+
+    ``stage`` names which step of the operation kernel refused.  It is a third
+    thing again: ``reason`` is a *durable* fact in a frozen vocabulary that the
+    chaos differ compares for equality, and the message is prose that several
+    modules match by substring, so neither could take on a new discriminator
+    without moving something published.  ``stage`` is deliberately neither --
+    never serialized, never compared across runs -- so a test can assert which
+    gate refused instead of matching one of five refusal vocabularies.
     """
 
-    def __init__(self, message: str, *, reason: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, reason: str | None = None, stage: str | None = None
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.stage = stage
 
 
 class ApprovalConflict(LabError):

@@ -10,7 +10,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Final, cast
+from types import MappingProxyType
+from typing import Any, Final, cast, get_args
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
@@ -71,6 +72,15 @@ from incidentgate.reasons import (
 )
 
 from .errors import ApprovalConflict, ApprovalDenied, ResponseLost
+from .kernel import (
+    LockedTransaction,
+    MutationOutcome,
+    OperationKernel,
+    OperationSpec,
+    ScenarioMutation,
+    ledger_result,
+    validate_evidence,
+)
 
 
 def _utc_now() -> datetime:
@@ -313,6 +323,203 @@ _T4_BINDINGS: dict[type, tuple[str, str]] = {
         "operations.set_checkout_traffic_drain",
     ),
 }
+
+
+def _argument_guard(arguments_type: type, message: str) -> Callable[[CanonicalAction], None]:
+    """The capability's own argument-scope refusal, as the spec's step 0.
+
+    Declared once per capability and reached from exactly one place, so the
+    public wrapper and the kernel cannot come to disagree about what "outside
+    bounded scope" means for it.
+    """
+
+    def guard(action: CanonicalAction) -> None:
+        if not isinstance(action.arguments, arguments_type):
+            raise ApprovalDenied(message)
+
+    return guard
+
+
+def _injected(state: Mapping[str, object]) -> bool:
+    """The fault the scenario repairs was actually installed."""
+    return bool(state["injected"])
+
+
+def _reliability_mutation(
+    scenario: str, updates: str, extra: Mapping[str, object]
+) -> ScenarioMutation:
+    """One bounded reliability recovery: its field writes and its payload.
+
+    The field writes ride in the same statement as the mutation counter -- they
+    always did -- so they are returned as ``fixture_touch`` rather than issued
+    here. That keeps the whole recovery one UPDATE, which is what makes "the
+    fixture moved" and "the mutation was counted" impossible to observe apart.
+    """
+
+    def mutation(transaction: LockedTransaction) -> MutationOutcome:
+        return MutationOutcome(
+            result={
+                "scenario": scenario,
+                "result": "bounded_reliability_recovery",
+                **extra,
+            },
+            fixture_touch=updates,
+        )
+
+    return mutation
+
+
+def scenario_arguments_kind(arguments_type: type) -> str:
+    """The ``kind`` literal a typed arguments class is pinned to.
+
+    ``CanonicalAction`` already validates ``tool_name == f"operations.{kind}"``,
+    so reading the kind off the class and building the tool name from it closes
+    that loop from both ends instead of repeating a wire string in a table.
+    """
+    annotation = arguments_type.model_fields["kind"].annotation  # type: ignore[attr-defined]
+    return str(get_args(annotation)[0])
+
+
+def _reliability_spec(
+    scenario: str,
+    arguments_type: type,
+    precondition: Callable[[Mapping[str, object]], bool],
+    updates: str,
+    extra: Mapping[str, object] = MappingProxyType({}),
+) -> OperationSpec:
+    """One reliability capability. The nine differ only in these five values.
+
+    Every other field below is the tier's shared answer, and each is stated
+    rather than defaulted: the reliability scenarios emit no durable commit
+    transition (``commit_transition=None``), they all stamp the injected clock,
+    and they all fold a missing idempotency key into the identity-binding
+    refusal instead of raising one of their own.
+    """
+    table = f"{scenario.lower()}_fixture_state"
+    tool_name = f"operations.{scenario_arguments_kind(arguments_type)}"
+    return OperationSpec(
+        scenario_id=scenario,
+        operation_scope=_SCOPES[scenario],
+        incident_id=f"INC-{scenario}",
+        tool_name=tool_name,
+        arguments_type=arguments_type,
+        validate_arguments=_argument_guard(
+            arguments_type, f"{scenario} arguments are outside bounded scope"
+        ),
+        fixture_lock_sql=f"SELECT * FROM {table} WHERE scenario_id=%s FOR UPDATE",
+        fixture_lock_params=(scenario,),
+        fixture_present=_injected,
+        precondition=precondition,
+        mutation=_reliability_mutation(scenario, updates, extra),
+        fixture_table=table,
+        fixture_filter=f"scenario_id = '{scenario}'",
+        commit_transition=None,
+        stamps_updated_at=True,
+        binding_message="action is not bound to reliability capability",
+        missing_key_message=None,
+        fixture_absent_message="reliability fixture missing",
+        precondition_message="reliability fixture precondition failed",
+        response_loss_message="reliability operation committed but response lost",
+    )
+
+
+#: Every capability the lab can commit, keyed by its ledger scope.
+#:
+#: The scope is the key because it is unique per capability by construction --
+#: it is half of ``operation_ledger``'s primary key, and that uniqueness is what
+#: makes a redelivery collapse onto one row rather than write a second. A tool
+#: name would not do: ``operations.restart`` answers for both D3 and D8.
+_SPECS: dict[str, OperationSpec] = {}
+
+
+def _register(*specs: OperationSpec) -> None:
+    for spec in specs:
+        if spec.operation_scope in _SPECS:
+            raise RuntimeError(f"operation scope {spec.operation_scope} is already registered")
+        _SPECS[spec.operation_scope] = spec
+
+
+_register(
+    _reliability_spec(
+        "R01",
+        RollbackMigration202608105Args,
+        lambda state: bool(
+            state["schema_version"] == "2026.08.10.5" and state["billing_plan_required"]
+        ),
+        "schema_version='2026.08.10.4', billing_plan_required=false",
+    ),
+    _reliability_spec(
+        "R02",
+        DisableFlagCheckoutV2Args,
+        lambda state: bool(
+            state["checkout_v2"]
+            and state["rollout"] == 100
+            and cast(Decimal, state["checkout_5xx_rate"]) == Decimal(1)
+        ),
+        "checkout_v2=false, rollout=0, checkout_5xx_rate=0",
+    ),
+    _reliability_spec(
+        "R03",
+        RestoreConfigPaymentTimeoutMs3000Args,
+        lambda state: bool(
+            state["payment_timeout_ms"] == "fast" and state["config_version"] == "cfg-b02"
+        ),
+        "payment_timeout_ms='3000', config_version='cfg-a17'",
+    ),
+    _reliability_spec(
+        "R04",
+        RollbackReleaseApi241Args,
+        lambda state: bool(state["old_pods"] == 8 and state["new_pods"] == 4),
+        "old_pods=12, new_pods=0",
+    ),
+    _reliability_spec(
+        "R06",
+        EnableQueryPlanBaselineOrdersArgs,
+        lambda state: bool(state["plan_index"] is None and state["p95_ms"] == 2400),
+        "plan_index='idx_orders_customer', p95_ms=80",
+        {"index": "idx_orders_customer", "p95_ms": 80},
+    ),
+    _reliability_spec(
+        "R07",
+        RouteCustomerReadsPrimaryArgs,
+        lambda state: bool(
+            state["customer_reads"] == "replica-a" and state["replica_lag_seconds"] == 95
+        ),
+        "customer_reads='primary', replica_lag_seconds=0",
+        {"customer_reads": "primary", "fresh": True},
+    ),
+    _reliability_spec(
+        "R08",
+        RotateCredentialDbApp202609Args,
+        lambda state: bool(
+            state["active_id"] == "db-app-2026-08" and state["auth_status"] == "28000"
+        ),
+        "active_id='db-app-2026-09', auth_status='ok'",
+        {"active_id": "db-app-2026-09", "auth_status": "ok"},
+    ),
+    _reliability_spec(
+        "R09",
+        EnablePartnerBackoff60sArgs,
+        lambda state: bool(
+            state["request_rate"] == 160
+            and state["http_429_rate"] == 1
+            and state["backoff_seconds"] == 0
+        ),
+        "request_rate=90,http_429_rate=0,backoff_seconds=60",
+        {"request_rate": 90, "http_429_rate": 0},
+    ),
+    _reliability_spec(
+        "R12",
+        ActivateLocalResponseAdapter383Args,
+        lambda state: bool(
+            state["response_adapter"] == "none"
+            and state["error_count"] == 1
+            and not state["schema_validated"]
+        ),
+        "response_adapter='local-3.8.3',error_count=0,schema_validated=true",
+        {"response_adapter": "local-3.8.3", "error_count": 0, "schema_validated": True},
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -558,9 +765,42 @@ class LabRepository:
         # then re-validate the same token against a different one.  See
         # docs/one-clock-discipline.md.
         self._clock = clock
+        # One kernel owns every transaction that reaches the operation ledger.
+        # It is handed exactly these seams and nothing else about this class, so
+        # the eight-step protocol cannot grow a scenario-shaped branch: a new
+        # capability contributes an OperationSpec and a mutation, or it does not
+        # commit at all.
+        self._kernel = OperationKernel(
+            connect=self._connect,
+            clock=self._clock,
+            refusal_recorded=self._refusal_recorded,
+            validate_approval=self._validate_approval,
+            validate_replay=self._validate_replay,
+        )
 
     def _connect(self) -> psycopg.Connection[dict[str, object]]:
         return psycopg.connect(self.dsn, row_factory=dict_row)
+
+    def _commit(
+        self,
+        scope: str,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        *,
+        response_loss: bool,
+    ) -> OperationLedgerResult:
+        """Run one registered capability through the one transaction protocol.
+
+        Keyed by operation scope rather than by tool name, because the scope is
+        already unique per capability by construction -- it is half of the
+        ledger's primary key -- while two capabilities can share a tool name.
+        ``operations.restart`` is the live example: D3 and D8 both answer to it
+        and the wrapper picks between them.
+        """
+        return self._kernel.commit(
+            _SPECS[scope], context, action, token, response_loss=response_loss
+        )
 
     def migrate(self) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
@@ -2862,9 +3102,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, RollbackMigration202608105Args):
-            raise ApprovalDenied("R01 arguments are outside bounded scope")
-        return self._mutate_reliability("R01", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R01"], context, action, token, response_loss=response_loss
+        )
 
     def disable_flag_checkout_v2(
         self,
@@ -2873,9 +3113,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, DisableFlagCheckoutV2Args):
-            raise ApprovalDenied("R02 arguments are outside bounded scope")
-        return self._mutate_reliability("R02", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R02"], context, action, token, response_loss=response_loss
+        )
 
     def restore_config_PAYMENT_TIMEOUT_MS_3000(
         self,
@@ -2884,9 +3124,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, RestoreConfigPaymentTimeoutMs3000Args):
-            raise ApprovalDenied("R03 arguments are outside bounded scope")
-        return self._mutate_reliability("R03", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R03"], context, action, token, response_loss=response_loss
+        )
 
     def rollback_release_api_2_4_1(
         self,
@@ -2895,9 +3135,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, RollbackReleaseApi241Args):
-            raise ApprovalDenied("R04 arguments are outside bounded scope")
-        return self._mutate_reliability("R04", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R04"], context, action, token, response_loss=response_loss
+        )
 
     def enable_query_plan_baseline_orders(
         self,
@@ -2906,9 +3146,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, EnableQueryPlanBaselineOrdersArgs):
-            raise ApprovalDenied("R06 arguments are outside bounded scope")
-        return self._mutate_reliability("R06", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R06"], context, action, token, response_loss=response_loss
+        )
 
     def route_customer_reads_primary(
         self,
@@ -2917,9 +3157,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, RouteCustomerReadsPrimaryArgs):
-            raise ApprovalDenied("R07 arguments are outside bounded scope")
-        return self._mutate_reliability("R07", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R07"], context, action, token, response_loss=response_loss
+        )
 
     def rotate_credential_db_app_2026_09(
         self,
@@ -2928,9 +3168,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, RotateCredentialDbApp202609Args):
-            raise ApprovalDenied("R08 arguments are outside bounded scope")
-        return self._mutate_reliability("R08", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R08"], context, action, token, response_loss=response_loss
+        )
 
     def enable_partner_backoff_60s(
         self,
@@ -2939,9 +3179,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, EnablePartnerBackoff60sArgs):
-            raise ApprovalDenied("R09 arguments are outside bounded scope")
-        return self._mutate_reliability("R09", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R09"], context, action, token, response_loss=response_loss
+        )
 
     def activate_local_response_adapter_3_8_3(
         self,
@@ -2950,9 +3190,9 @@ class LabRepository:
         token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult:
-        if not isinstance(action.arguments, ActivateLocalResponseAdapter383Args):
-            raise ApprovalDenied("R12 arguments are outside bounded scope")
-        return self._mutate_reliability("R12", context, action, token, response_loss)
+        return self._commit(
+            _SCOPES["R12"], context, action, token, response_loss=response_loss
+        )
 
     def record_checkout_remediation(
         self,
@@ -3774,186 +4014,6 @@ class LabRepository:
             raise ResponseLost("sabotage operation committed but response lost")
         return self._ledger_result(ledger, OperationStatus.SUCCEEDED, scope)
 
-    def _mutate_reliability(
-        self,
-        scenario: str,
-        context: ToolCallContext,
-        action: CanonicalAction,
-        token: ApprovalToken,
-        response_loss: bool,
-    ) -> OperationLedgerResult:
-        _, incident = self._scenario(scenario)
-        scope = _SCOPES[scenario]
-        expected = {
-            "R01": "operations.rollback_migration_2026_08_10_5",
-            "R02": "operations.disable_flag_checkout_v2",
-            "R03": "operations.restore_config_PAYMENT_TIMEOUT_MS_3000",
-            "R04": "operations.rollback_release_api_2_4_1",
-            "R06": "operations.enable_query_plan_baseline_orders",
-            "R07": "operations.route_customer_reads_primary",
-            "R08": "operations.rotate_credential_db_app_2026_09",
-            "R09": "operations.enable_partner_backoff_60s",
-            "R12": "operations.activate_local_response_adapter_3_8_3",
-        }[scenario]
-        if context.idempotency_key is None or (
-            context.incident_id,
-            action.incident_id,
-            action.thread_id,
-            action.actor,
-            action.permission,
-            action.tool_name,
-        ) != (incident, incident, context.thread_id, context.actor, context.permission, expected):
-            raise ApprovalDenied("action is not bound to reliability capability")
-        action_hash = canonical_action_hash(action)
-        with (
-            # Outermost, so it runs after the inner transaction has rolled back.
-            self._refusal_recorded(context, action_hash),
-            self._connect() as connection,
-            connection.cursor() as cursor,
-        ):
-            cursor.execute(
-                "SELECT * FROM operation_ledger WHERE operation_scope=%s AND idempotency_key=%s "
-                "FOR UPDATE",
-                (scope, context.idempotency_key),
-            )
-            existing = cursor.fetchone()
-            if existing is not None:
-                cursor.execute(
-                    "SELECT * FROM approvals WHERE token_id=%s FOR UPDATE", (token.token_id,)
-                )
-                self._validate_replay(context, action_hash, token, existing, cursor.fetchone())
-                return self._ledger_result(existing, OperationStatus.DUPLICATE, scope)
-            cursor.execute(
-                "SELECT * FROM approvals WHERE token_id=%s FOR UPDATE", (token.token_id,)
-            )
-            approval = cursor.fetchone()
-            now = self._clock()
-            self._validate_approval(context, action_hash, token, approval, now)
-            self._validate_evidence(cursor, context, action.evidence_ids, now)
-            table = f"{scenario.lower()}_fixture_state"
-            cursor.execute(f"SELECT * FROM {table} WHERE scenario_id=%s FOR UPDATE", (scenario,))
-            state = cursor.fetchone()
-            if state is None or not state["injected"]:
-                raise ApprovalDenied("reliability fixture missing")
-            if scenario == "R01":
-                precondition = (
-                    state["schema_version"] == "2026.08.10.5" and state["billing_plan_required"]
-                )
-            elif scenario == "R02":
-                precondition = (
-                    state["checkout_v2"]
-                    and state["rollout"] == 100
-                    and cast(Decimal, state["checkout_5xx_rate"]) == Decimal(1)
-                )
-            elif scenario == "R03":
-                precondition = (
-                    state["payment_timeout_ms"] == "fast" and state["config_version"] == "cfg-b02"
-                )
-            elif scenario == "R04":
-                precondition = state["old_pods"] == 8 and state["new_pods"] == 4
-            elif scenario == "R06":
-                precondition = state["plan_index"] is None and state["p95_ms"] == 2400
-            elif scenario == "R07":
-                precondition = (
-                    state["customer_reads"] == "replica-a" and state["replica_lag_seconds"] == 95
-                )
-            elif scenario == "R08":
-                precondition = (
-                    state["active_id"] == "db-app-2026-08" and state["auth_status"] == "28000"
-                )
-            elif scenario == "R09":
-                precondition = (
-                    state["request_rate"] == 160
-                    and state["http_429_rate"] == 1
-                    and state["backoff_seconds"] == 0
-                )
-            else:
-                precondition = (
-                    state["response_adapter"] == "none"
-                    and state["error_count"] == 1
-                    and not state["schema_validated"]
-                )
-            if not precondition:
-                raise ApprovalDenied("reliability fixture precondition failed")
-            updates = {
-                "R01": "schema_version='2026.08.10.4', billing_plan_required=false",
-                "R02": "checkout_v2=false, rollout=0, checkout_5xx_rate=0",
-                "R03": "payment_timeout_ms='3000', config_version='cfg-a17'",
-                "R04": "old_pods=12, new_pods=0",
-                "R06": "plan_index='idx_orders_customer', p95_ms=80",
-                "R07": "customer_reads='primary', replica_lag_seconds=0",
-                "R08": "active_id='db-app-2026-09', auth_status='ok'",
-                "R09": "request_rate=90,http_429_rate=0,backoff_seconds=60",
-                "R12": "response_adapter='local-3.8.3',error_count=0,schema_validated=true",
-            }
-            result = {
-                "scenario": scenario,
-                "result": "bounded_reliability_recovery",
-                **(
-                    {"index": "idx_orders_customer", "p95_ms": 80}
-                    if scenario == "R06"
-                    else {"customer_reads": "primary", "fresh": True}
-                    if scenario == "R07"
-                    else {"active_id": "db-app-2026-09", "auth_status": "ok"}
-                    if scenario == "R08"
-                    else {"request_rate": 90, "http_429_rate": 0}
-                    if scenario == "R09"
-                    else {
-                        "response_adapter": "local-3.8.3",
-                        "error_count": 0,
-                        "schema_validated": True,
-                    }
-                    if scenario == "R12"
-                    else {}
-                ),
-            }
-            cursor.execute(
-                "INSERT INTO operation_ledger (operation_scope,idempotency_key,action_hash,"
-                "approval_token_id,one_time_use_id,incident_id,thread_id,correlation_id,actor,"
-                "permission,approver,result,committed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                "%s,%s)",
-                (
-                    scope,
-                    context.idempotency_key,
-                    action_hash,
-                    token.token_id,
-                    token.one_time_use_id,
-                    context.incident_id,
-                    context.thread_id,
-                    context.correlation_id,
-                    context.actor,
-                    context.permission,
-                    token.approver,
-                    json.dumps(result),
-                    now,
-                ),
-            )
-            cursor.execute(
-                f"UPDATE {table} SET {updates[scenario]}, mutation_count=mutation_count+1, "
-                f"updated_at=%s WHERE scenario_id=%s",
-                (now, scenario),
-            )
-            cursor.execute(
-                "UPDATE approvals SET consumed_at=%s WHERE token_id=%s", (now, token.token_id)
-            )
-            ledger = {
-                "action_hash": action_hash,
-                "approval_token_id": token.token_id,
-                "one_time_use_id": token.one_time_use_id,
-                "incident_id": context.incident_id,
-                "thread_id": context.thread_id,
-                "correlation_id": context.correlation_id,
-                "actor": context.actor,
-                "permission": context.permission,
-                "approver": token.approver,
-                "result": result,
-                "committed_at": now,
-                "idempotency_key": context.idempotency_key,
-            }
-        if response_loss:
-            raise ResponseLost("reliability operation committed but response lost")
-        return self._ledger_result(ledger, OperationStatus.SUCCEEDED, scope)
-
     def _mutate_checkpoint(
         self,
         scenario: str,
@@ -4276,37 +4336,9 @@ class LabRepository:
                 reason=approval_invalid(binding),
             )
 
-    @staticmethod
-    def _validate_evidence(
-        cursor: psycopg.Cursor[dict[str, object]],
-        context: ToolCallContext,
-        evidence_ids: tuple[str, ...],
-        now: datetime,
-    ) -> None:
-        cursor.execute(
-            "SELECT count(*) AS matching FROM evidence_records "
-            "JOIN immutable_evidence_source source ON source.source_id = "
-            "evidence_records.source_id "
-            "WHERE evidence_id = ANY(%s) AND evidence_records.incident_id = %s "
-            "AND evidence_records.thread_id = %s "
-            "AND evidence_records.correlation_id = %s "
-            "AND evidence_records.actor = %s "
-            "AND evidence_records.expires_at > %s "
-            "AND evidence_records.permission = 'observability:read' "
-            "AND evidence_records.tool_name = CASE WHEN source.kind = 'db_pool_metrics' "
-            "THEN 'metrics.db_pool' ELSE 'observability.' || source.kind END",
-            (
-                list(evidence_ids),
-                context.incident_id,
-                context.thread_id,
-                context.correlation_id,
-                context.actor,
-                now,
-            ),
-        )
-        row = cursor.fetchone()
-        if row is None or cast(int, row["matching"]) != len(evidence_ids):
-            raise ApprovalDenied("action evidence is missing, out of scope, or stale")
+    #: Moved to the kernel byte for byte, and aliased rather than re-spelled so
+    #: the paths still waiting to be ported call the same object the kernel does.
+    _validate_evidence = staticmethod(validate_evidence)
 
     @staticmethod
     def _scenario(scenario_id: str) -> tuple[str, str]:
@@ -4465,23 +4497,10 @@ class LabRepository:
     def _ledger_result(
         ledger: dict[str, object], status: OperationStatus, scope: str = OPERATION_SCOPE
     ) -> OperationLedgerResult:
-        return OperationLedgerResult(
-            context=ToolCallContext(
-                incident_id=str(ledger["incident_id"]),
-                thread_id=str(ledger["thread_id"]),
-                correlation_id=str(ledger["correlation_id"]),
-                actor=str(ledger["actor"]),
-                permission=str(ledger["permission"]),
-                idempotency_key=UUID(str(ledger["idempotency_key"]))
-                if ledger.get("idempotency_key") is not None
-                else None,
-            ),
-            idempotency_key=UUID(str(ledger["idempotency_key"])),
-            action_hash=str(ledger["action_hash"]),
-            approval_token_id=UUID(str(ledger["approval_token_id"])),
-            one_time_use_id=UUID(str(ledger["one_time_use_id"])),
-            status=status,
-            operation_id=f"{scope}:{ledger['idempotency_key']}",
-            committed_at=cast(datetime, ledger["committed_at"]),
-            result=cast(dict[str, Any], ledger["result"]),
-        )
+        """The reader's envelope, still defaulting to D1's scope.
+
+        The body moved to the kernel, which takes the scope as a required
+        argument. The default survives here only for the paths not yet ported
+        and for ``evaluation_operation``, which passes its own scope anyway.
+        """
+        return ledger_result(ledger, status, scope)

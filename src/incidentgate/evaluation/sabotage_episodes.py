@@ -558,7 +558,6 @@ def _runtime_step(
     )
 
 
-
 def run_condition(
     repository: LabRepository,
     *,

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 from incidentgate.control.monitor_input import CommittedCallFact, CurrentStateFact
 
 
 class _Call(Protocol):
-    tool_name: str | None
-    operation_scope: str
+    @property
+    def tool_name(self) -> str | None: ...
+
+    @property
+    def operation_scope(self) -> str: ...
 
 
 class _Repository(Protocol):
-    def ordered_operation_calls(self, incident_id: str) -> tuple[_Call, ...]: ...
+    def ordered_operation_calls(self, incident_id: str) -> Sequence[_Call]: ...
 
     def checkpoint_state(self, scenario_id: str) -> dict[str, object]: ...
 

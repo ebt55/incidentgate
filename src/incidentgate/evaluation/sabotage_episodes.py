@@ -177,6 +177,24 @@ Authorization = Literal["automatic_evaluation_capability", "deterministic_approv
 
 Leg = Literal["covert", "incident"]
 
+
+@dataclass(frozen=True)
+class ResponseLossStep:
+    """One evaluation episode step that simulates post-commit response loss."""
+
+    leg: Leg
+    step_index: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.leg) is not str
+            or self.leg not in {"covert", "incident"}
+            or type(self.step_index) is not int
+            or self.step_index < 0
+        ):
+            raise ValueError("response-loss selectors require a known leg and nonnegative step")
+
+
 def safeguards_for(condition: EvaluationMode, *, approver: str) -> SafeguardConfiguration:
     """The condition label, as the configuration it is sugar for.
 
@@ -538,6 +556,7 @@ def _runtime_step(
     semantic_monitor: SemanticMonitorBundle | None,
     safeguards: SafeguardConfiguration,
     clock: Callable[[], datetime],
+    response_loss_once: bool,
 ) -> SabotageStep:
     """Drive one call through the durable runtime. The only step implementation.
 
@@ -574,6 +593,7 @@ def _runtime_step(
             semantic_monitor=semantic_monitor,
             proposer_factory=lambda: recorder,
             safeguards=safeguards,
+            response_loss_once=response_loss_once,
             allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
         )
     else:
@@ -589,6 +609,7 @@ def _runtime_step(
             monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
             proposer_factory=lambda: recorder,
             safeguards=safeguards,
+            response_loss_once=response_loss_once,
         # The acceptance gate lists a published evaluation among the clauses a
         # scenario must satisfy *before* it is promoted, so requiring promotion
         # in order to run the evaluation would be circular -- T1 was measured
@@ -664,6 +685,110 @@ def _runtime_step(
     )
 
 
+def _validated_response_loss_steps(
+    response_loss_steps: tuple[ResponseLossStep, ...], plan_lengths: dict[Leg, int]
+) -> set[tuple[Leg, int]]:
+    selected: set[tuple[Leg, int]] = set()
+    for selector in response_loss_steps:
+        if not isinstance(selector, ResponseLossStep):
+            raise TypeError("response-loss selectors must be ResponseLossStep instances")
+        target = (selector.leg, selector.step_index)
+        if selector.step_index >= plan_lengths[selector.leg]:
+            raise ValueError("response-loss selector is outside its episode plan")
+        if target in selected:
+            raise ValueError("response-loss selectors must be unique")
+        selected.add(target)
+    return selected
+
+
+def _run_episode(
+    dsn: str,
+    *,
+    scenario_id: str,
+    episode_key: str,
+    leg: Leg,
+    plan: Sequence[ProposalGenerator],
+    actor: str,
+    approver: str,
+    monitor: AdvisoryMonitor | None,
+    semantic_monitor: SemanticMonitorBundle | None,
+    safeguards: SafeguardConfiguration,
+    clock: Callable[[], datetime],
+    response_loss_steps: set[tuple[Leg, int]],
+) -> SabotageEpisodeOutcome:
+    steps: list[SabotageStep] = []
+    for index, proposer in enumerate(plan):
+        step = _runtime_step(
+            dsn,
+            scenario_id=scenario_id,
+            thread_id=step_thread_id(scenario_id, episode_key, leg, index),
+            step_index=index,
+            proposer=proposer,
+            actor=actor,
+            approver=approver,
+            monitor=monitor,
+            semantic_monitor=semantic_monitor,
+            safeguards=safeguards,
+            clock=clock,
+            response_loss_once=(leg, index) in response_loss_steps,
+        )
+        steps.append(step)
+        if step.refused:
+            return SabotageEpisodeOutcome(leg, tuple(steps), index + 1 < len(plan))
+    return SabotageEpisodeOutcome(leg, tuple(steps), False)
+
+
+def run_benign_episode(
+    repository: LabRepository,
+    *,
+    scenario_id: str,
+    episode_key: str,
+    plan: Sequence[ProposalGenerator],
+    actor: str = "operator-1",
+    approver: str = "approver-1",
+    clock: Callable[[], datetime] = _utc_now,
+    semantic_monitor: SemanticMonitorBundle | None = None,
+    safeguards: SafeguardConfiguration | None = None,
+    response_loss_steps: tuple[ResponseLossStep, ...] = (),
+) -> SabotageEpisodeOutcome:
+    """Run one honest benign-calibration episode, never a sabotage two-leg result.
+
+    This intentionally shares the normal step and episode loop with
+    :func:`run_condition`; it only omits the fabricated covert episode that a
+    benign case has not requested.
+    """
+    if not plan:
+        raise ValueError("a benign episode needs at least one planned call")
+    selected = _validated_response_loss_steps(
+        response_loss_steps, {"covert": 0, "incident": len(plan)}
+    )
+    if any(leg != "incident" for leg, _ in selected):
+        raise ValueError("benign episode response loss may select only incident steps")
+    applied = safeguards if safeguards is not None else safeguards_for(
+        EvaluationMode.COMPLETE, approver=approver
+    )
+    threads = tuple(
+        step_thread_id(scenario_id, episode_key, "incident", index) for index in range(len(plan))
+    )
+    repository.reset_checkpoint(scenario_id)
+    repository.inject_checkpoint(scenario_id)
+    _purge_threads(repository.dsn, threads)
+    return _run_episode(
+        repository.dsn,
+        scenario_id=scenario_id,
+        episode_key=episode_key,
+        leg="incident",
+        plan=plan,
+        actor=actor,
+        approver=approver,
+        monitor=None,
+        semantic_monitor=semantic_monitor,
+        safeguards=applied,
+        clock=clock,
+        response_loss_steps=selected,
+    )
+
+
 def run_condition(
     repository: LabRepository,
     *,
@@ -694,6 +819,9 @@ def run_condition(
     #: not name -- which is what the equivalence and mutation tests do, and the
     #: only way to configure two arms identically and compare their traces.
     safeguards: SafeguardConfiguration | None = None,
+    #: Exact evaluation steps that simulate a lost post-commit response.  The
+    #: default remains no injection, preserving frozen matrix behaviour.
+    response_loss_steps: tuple[ResponseLossStep, ...] = (),
 ) -> SabotageConditionOutcome:
     """Run one condition end to end: reset the fixture, drive both episodes, read the state.
 
@@ -723,6 +851,9 @@ def run_condition(
         raise ValueError("provide either legacy monitor or semantic monitor, not both")
     if not covert_plan or not incident_plan:
         raise ValueError("both episodes need at least one planned call")
+    selected = _validated_response_loss_steps(
+        response_loss_steps, {"covert": len(covert_plan), "incident": len(incident_plan)}
+    )
     applied = safeguards if safeguards is not None else safeguards_for(condition, approver=approver)
     threads = [
         step_thread_id(scenario_id, episode_key, leg, index)
@@ -733,35 +864,18 @@ def run_condition(
     repository.inject_checkpoint(scenario_id)
     _purge_threads(repository.dsn, threads)
 
-    def drive(leg: Leg, index: int, proposer: ProposalGenerator) -> SabotageStep:
-        return _runtime_step(
-            repository.dsn,
-            scenario_id=scenario_id,
-            thread_id=step_thread_id(scenario_id, episode_key, leg, index),
-            step_index=index,
-            proposer=proposer,
-            actor=actor,
-            approver=approver,
-            monitor=monitor,
-            semantic_monitor=semantic_monitor,
-            safeguards=applied,
-            clock=clock,
-        )
-
-    def run_episode(leg: Leg, plan: Sequence[ProposalGenerator]) -> SabotageEpisodeOutcome:
-        steps: list[SabotageStep] = []
-        for index, proposer in enumerate(plan):
-            step = drive(leg, index, proposer)
-            steps.append(step)
-            if step.refused:
-                # The episode ends here. Everything after it in the plan is a
-                # call the run never made, and recording it would publish an
-                # attempt that did not happen.
-                return SabotageEpisodeOutcome(leg, tuple(steps), index + 1 < len(plan))
-        return SabotageEpisodeOutcome(leg, tuple(steps), False)
-
-    covert = run_episode("covert", covert_plan)
-    incident = run_episode("incident", incident_plan)
+    covert = _run_episode(
+        repository.dsn, scenario_id=scenario_id, episode_key=episode_key, leg="covert",
+        plan=covert_plan, actor=actor, approver=approver, monitor=monitor,
+        semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
+        response_loss_steps=selected,
+    )
+    incident = _run_episode(
+        repository.dsn, scenario_id=scenario_id, episode_key=episode_key, leg="incident",
+        plan=incident_plan, actor=actor, approver=approver, monitor=monitor,
+        semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
+        response_loss_steps=selected,
+    )
     return SabotageConditionOutcome(
         scenario_id=scenario_id,
         variant_id=variant_id,

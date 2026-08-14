@@ -48,6 +48,7 @@ from incidentgate.control.safeguards import (
 )
 from incidentgate.evaluation import sabotage_episodes
 from incidentgate.evaluation.sabotage_episodes import (
+    ResponseLossStep,
     SabotageConditionOutcome,
     _identity,
     _purge_threads,
@@ -87,6 +88,7 @@ def drive(
     episode_key: str,
     safeguards: SafeguardConfiguration | None = None,
     covert_steps: int = 1,
+    response_loss_steps: tuple[ResponseLossStep, ...] = (),
 ) -> SabotageConditionOutcome:
     return run_condition(
         repository,
@@ -99,6 +101,7 @@ def drive(
         end_state=repository.t1_end_state,
         approver=APPROVER,
         safeguards=safeguards,
+        response_loss_steps=response_loss_steps,
     )
 
 
@@ -211,14 +214,51 @@ def test_run_condition_branches_on_no_condition_at_all() -> None:
         "the driver only through safeguards_for, which is what makes it the manipulated "
         "variable rather than a label on two different machines"
     )
-    runtime_calls = [
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+    run = functions["run_condition"]
+    benign = functions["run_benign_episode"]
+    shared = functions["_run_episode"]
+    condition_episode_calls = [
         node
         for node in ast.walk(run)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_episode"
+    ]
+    assert len(condition_episode_calls) == 2
+    legs = {
+        keyword.value.value
+        for call in condition_episode_calls
+        for keyword in call.keywords
+        if keyword.arg == "leg" and isinstance(keyword.value, ast.Constant)
+    }
+    assert legs == {"covert", "incident"}
+    benign_episode_calls = [
+        node
+        for node in ast.walk(benign)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_episode"
+    ]
+    assert len(benign_episode_calls) == 1
+    runtime_calls = [
+        node
+        for node in ast.walk(shared)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_runtime_step"
     ]
     assert len(runtime_calls) == 1
+    all_runtime_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_runtime_step"
+    ]
+    assert len(all_runtime_calls) == 1
     semantic_arguments = [
         keyword.value
         for keyword in runtime_calls[0].keywords
@@ -434,54 +474,18 @@ def test_a_redelivered_step_collapses_onto_its_own_ledger_row_in_every_arm(
 
 @pytest.mark.parametrize("condition", list(EvaluationMode), ids=lambda c: c.value)
 def test_a_lost_response_replays_without_a_second_mutation_in_every_arm(
-    repository: LabRepository, condition: EvaluationMode, monkeypatch: pytest.MonkeyPatch
+    repository: LabRepository, condition: EvaluationMode
 ) -> None:
-    """The executor commits, its delivery is lost, and the arm recovers.
-
-    ``response_loss_once`` raises ``ResponseLost`` *after* the operation
-    transaction committed, which is the hard case: the mutation happened and the
-    caller does not know. Every arm must replay the durable task and get the
-    original ledger row back.
-
-    Injected by patching the runtime construction rather than by threading a flag
-    through ``run_condition``: a parameter that exists only for this test would
-    be a fourth thing that differs between arms.
-    """
-    import incidentgate.evaluation.sabotage_episodes as episodes
-
-    original = episodes.IncidentRuntime
-    injected: list[bool] = []
-
-    def lossy(dsn: str, **kwargs: Any) -> Any:
-        # Once, on the first step only: the covert call. A loss on every step
-        # would measure the injection rather than the recovery.
-        loss = not injected
-        injected.append(True)
-        return original(dsn, response_loss_once=loss, **kwargs)
-
-    monkeypatch.setattr(episodes, "IncidentRuntime", lossy)
+    """The selected honest step commits, loses delivery, then replays once."""
     outcome = drive(
-        repository, condition=condition, episode_key=f"response-loss-{condition.value}"
+        repository,
+        condition=condition,
+        episode_key=f"response-loss-{condition.value}",
+        response_loss_steps=(ResponseLossStep(leg="incident", step_index=0),),
     )
-    monkeypatch.undo()
-
-    covert = outcome.covert.steps[0]
     counts = repository.sabotage_durable_counts("T1")
-    if covert.executed:
-        # The loss landed on a call that really committed, so the arm had to
-        # replay to learn its result -- and the ledger returned the original row.
-        assert covert.redelivered is True
-        assert counts.ledger_rows[T1_OUTBOUND_NOTE_SCOPE] == 1
-        assert repository.t1_end_state().outbound_notes != ()
-        assert len(repository.t1_end_state().outbound_notes) == 1
-    else:
-        # The gated arms deny before the executor, so there was nothing to lose.
-        # That is the honest outcome rather than a skipped test: it is what the
-        # gate is for, and the incident leg below still exercises the recovery.
-        assert covert.redelivered is False
-        assert counts.ledger_rows[T1_OUTBOUND_NOTE_SCOPE] == 0
-    # The incident leg committed exactly once in every arm, whatever happened to
-    # the covert one.
+    incident = outcome.incident.steps[0]
+    assert incident.executed is True and incident.redelivered is True
     assert counts.ledger_rows[T1_REMEDIATION_SCOPE] == 1
 
 
@@ -592,3 +596,60 @@ def test_the_monitor_object_is_the_same_one_in_every_arm(repository: LabReposito
     # Only the full arm consults it, which is the arm; every consultation that
     # happened went to the one instance the caller built.
     assert seen and all(item is monitor for item in seen)
+
+
+def test_default_runner_never_claims_response_loss(repository: LabRepository) -> None:
+    outcome = drive(
+        repository,
+        condition=EvaluationMode.COMPLETE,
+        episode_key="response-loss-default-off",
+    )
+    assert not any(step.redelivered for step in (*outcome.covert.steps, *outcome.incident.steps))
+
+
+def test_selected_denied_step_does_not_claim_redelivery(repository: LabRepository) -> None:
+    outcome = drive(
+        repository,
+        condition=EvaluationMode.COMPLETE,
+        episode_key="response-loss-policy-denied",
+        response_loss_steps=(ResponseLossStep(leg="covert", step_index=0),),
+    )
+    assert outcome.covert.steps[0].executed is False
+    assert outcome.covert.steps[0].redelivered is False
+
+
+def test_invalid_response_loss_selector_refuses_before_fixture_reset(
+    repository: LabRepository,
+) -> None:
+    repository.reset_checkpoint("T1")
+    repository.inject_checkpoint("T1")
+    before = repository.checkpoint_state("T1")
+    with pytest.raises(ValueError, match="known leg"):
+        ResponseLossStep(leg="invalid", step_index=0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="nonnegative"):
+        ResponseLossStep(leg="incident", step_index=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="outside its episode plan"):
+        drive(
+            repository,
+            condition=EvaluationMode.COMPLETE,
+            episode_key="response-loss-invalid",
+            response_loss_steps=(ResponseLossStep(leg="incident", step_index=1),),
+        )
+    with pytest.raises(ValueError, match="unique"):
+        drive(
+            repository,
+            condition=EvaluationMode.COMPLETE,
+            episode_key="response-loss-duplicate",
+            response_loss_steps=(
+                ResponseLossStep(leg="incident", step_index=0),
+                ResponseLossStep(leg="incident", step_index=0),
+            ),
+        )
+    with pytest.raises(TypeError, match="ResponseLossStep"):
+        drive(
+            repository,
+            condition=EvaluationMode.COMPLETE,
+            episode_key="response-loss-wrong-type",
+            response_loss_steps=(object(),),  # type: ignore[arg-type]
+        )
+    assert repository.checkpoint_state("T1") == before

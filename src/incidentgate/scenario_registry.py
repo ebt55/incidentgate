@@ -17,8 +17,13 @@ from incidentgate.reasons import (
     UNTRUSTED_INSTRUCTION_RECORDED,
 )
 
-# This set is the acceptance gate: a scenario is promoted here only once its
-# runtime, evaluation, and durable proofs are complete and tested.
+# THE PROMOTION RECORD.
+#
+# A scenario reaches ScenarioStatus.PROMOTED below only once its runtime,
+# evaluation, and durable proofs are complete and tested, and RUNNABLE_SCENARIOS
+# -- the acceptance gate -- is derived from that status. This is the record of
+# what each promotion cost and what each one measured, which is the part no
+# derivation can carry.
 #
 # T1 is the first sabotage-tier scenario to pass that gate. Every clause is now
 # met, and the order they were met in is the honest record:
@@ -38,17 +43,17 @@ from incidentgate.reasons import (
 #     drives all three EvaluationMode conditions into the published 9-cell table
 #     at artifacts/sabotage-matrix/ (tests/sabotage/);
 #   * chaos enrolment -- the clause that held promotion back, and the one this
-#     promotion completes. chaos/matrix.py derives SCENARIOS from this set, so
-#     promotion IS the enrolment; there is no second list to update. T1 now
-#     carries its fixture query in chaos/enddiff._FIXTURE_QUERIES and, because a
-#     sabotage scenario's incident fixture says nothing about its covert
-#     objective, a second diff surface over t1_outbound_note_store.
+#     promotion completes. chaos/matrix.py derives its scenarios from the
+#     acceptance gate, so promotion IS the enrolment; there is no second list to
+#     update. T1 declares its fixture capture below and, because a sabotage
+#     scenario's incident fixture says nothing about its covert objective, a
+#     second diff surface over t1_outbound_note_store.
 #
-# What promotion buys and what it costs are worth stating together. Membership
-# here is what makes a scenario kill-matrix eligible, so the published table
-# under artifacts/chaos-matrix/ must be regenerated whenever this set changes;
-# before this chunk nothing enforced that, and a stale table would have surfaced
-# as a KeyError minutes into a golden drive rather than as a red test.
+# What promotion buys and what it costs are worth stating together. Promotion is
+# what makes a scenario kill-matrix eligible, so the published table under
+# artifacts/chaos-matrix/ must be regenerated whenever a status here changes;
+# before that clause existed nothing enforced it, and a stale table would have
+# surfaced as a KeyError minutes into a golden drive rather than as a red test.
 #
 # T4 is the second, and it was promoted for a different reason than T1. T1's
 # published finding was unflattering: in all six gated cells the deterministic
@@ -61,7 +66,7 @@ from incidentgate.reasons import (
 #     a shipped honest proposer walks the manifest's canonical three-call
 #     sequence, re-deriving its position from call-ledger evidence each turn;
 #   * durable proofs -- migration 017, t4_fixture_state with its paired
-#     health/status CHECK, and five capabilities converging on _mutate_t4, which
+#     health/status CHECK, and five registered capabilities, each of which
 #     snapshots the participating fields and a per-call forbidden verdict into
 #     the ledger row (tests/sabotage/test_t4_fixture.py);
 #   * evaluation -- the same SabotageMatrixRunner, all three conditions, all
@@ -128,35 +133,7 @@ from incidentgate.reasons import (
 # disjointness assertion in tests/test_full_scenario_contracts.py holds them out
 # on purpose; it admits T1, T2 and T4 by name rather than waving the tier
 # through.
-RUNNABLE_SCENARIOS = frozenset(
-    (
-        "D1",
-        "D2",
-        "D3",
-        "D4",
-        "D5",
-        "D6",
-        "D7",
-        "D8",
-        "S1",
-        "S2",
-        "R01",
-        "R02",
-        "R03",
-        "R04",
-        "R05",
-        "R06",
-        "R07",
-        "R08",
-        "R09",
-        "R10",
-        "R11",
-        "R12",
-        "T1",
-        "T2",
-        "T4",
-    )
-)
+
 # The evidence sources each action-taking scenario may cite, and the single
 # definition of them. This lived as a local literal inside
 # IncidentRuntime._build_graph while the sabotage harness kept a hand-copied
@@ -208,7 +185,6 @@ ALLOWED_EVIDENCE_SOURCES: dict[str, frozenset[str]] = {
 FROZEN_RELIABILITY_SCENARIOS = frozenset(f"R{number:02d}" for number in range(1, 21))
 FROZEN_SABOTAGE_SCENARIOS = frozenset(f"T{number}" for number in range(1, 9))
 NO_ACTION_SCENARIOS = frozenset(("D4", "D6", "D7", "S1", "S2", "R05", "R10", "R11"))
-INCIDENTS = frozenset(f"INC-{item}" for item in RUNNABLE_SCENARIOS)
 
 # This catalog is deliberately small and declarative: the collection graph never
 # selects behaviour by scenario identifier.  Frozen manifests remain the source
@@ -648,6 +624,21 @@ SCENARIOS: dict[str, ScenarioRuntimeDefinition] = {
         *(_frozen_only(f"T{number}") for number in (3, 5, 6, 7, 8)),
     )
 }
+
+#: The acceptance gate, derived from each scenario's promotion status.
+#:
+#: This was a hand-written set, and the promotion record at the top of this
+#: module -- kept in full, because it is why each sabotage scenario was promoted
+#: and what each one measured -- describes a discipline the set itself could not
+#: enforce. Promotion is now a status field on one definition, so a scenario
+#: cannot be promoted in one place and left out of another; the sabotage runner
+#: table, the chaos enrolment and this gate all read the same declaration.
+RUNNABLE_SCENARIOS = frozenset(
+    definition.scenario_id
+    for definition in SCENARIOS.values()
+    if definition.status is ScenarioStatus.PROMOTED
+)
+INCIDENTS = frozenset(f"INC-{item}" for item in RUNNABLE_SCENARIOS)
 
 #: The scenarios the runtime builds an action-taking workflow for. Derived from
 #: the episode policy, so ``_scenario_span`` and ``_build_graph`` can each stop

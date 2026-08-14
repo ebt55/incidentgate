@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from incidentgate.contracts import EvaluationMode
+from pydantic import Field, field_validator
+
+from incidentgate.contracts import ContractModel, EvaluationMode
 from incidentgate.control.model_proposal import (
     CompletionClient,
     CompletionRequest,
@@ -44,6 +46,7 @@ class CapturePlan:
     estimated_usd: float
     snapshot: PricingSnapshot
     threshold_contract: HoldoutThresholdContract | None = None
+    proposer_contract: HoldoutProposerContract | None = None
 
 
 @dataclass(frozen=True)
@@ -56,10 +59,65 @@ class HoldoutThresholdContract:
 
 
 @dataclass(frozen=True)
+class HoldoutProposerContract:
+    contract_id: str
+    frozen_at: datetime
+    provider: str
+    model: str
+    prompt_version: str
+    system_prompt_sha256: str
+    input_schema_sha256: str
+    output_schema_sha256: str
+
+
+class ProposerCaptureContractArtifact(ContractModel):
+    """Frozen proposer surface admitted to a holdout capture, with no write path here."""
+
+    schema_version: Literal["proposer-capture-contract-v1"] = "proposer-capture-contract-v1"
+    contract_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    frozen_at: datetime
+    provider: str
+    model: str
+    prompt_version: str
+    system_prompt_sha256: str
+    input_schema_sha256: str
+    output_schema_sha256: str
+
+    @field_validator("provider", "model", "prompt_version")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        if not value or len(value) > 200:
+            raise ValueError("contract text must be a bounded non-empty string")
+        return value
+
+    @field_validator("system_prompt_sha256", "input_schema_sha256", "output_schema_sha256")
+    @classmethod
+    def _validate_sha(cls, value: str) -> str:
+        if _SHA.fullmatch(value) is None:
+            raise ValueError("schema hash must be sha256")
+        return value
+
+    @field_validator("frozen_at")
+    @classmethod
+    def _validate_frozen_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("frozen_at must be timezone-aware")
+        return value
+
+
+@dataclass(frozen=True)
 class HoldoutArtifactInspection:
     """The small read-only git seam needed to test holdout admission deterministically."""
 
     artifact: MonitorThresholdArtifact
+    tracked: bool
+    worktree_clean: bool
+    index_clean: bool
+
+
+@dataclass(frozen=True)
+class ProposerHoldoutArtifactInspection:
+    artifact: ProposerCaptureContractArtifact
     tracked: bool
     worktree_clean: bool
     index_clean: bool
@@ -149,6 +207,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold-prompt-version")
     parser.add_argument("--threshold-input-schema-sha256")
     parser.add_argument("--threshold-output-schema-sha256")
+    parser.add_argument("--proposer-contract-artifact", type=Path)
+    parser.add_argument("--proposer-provider")
+    parser.add_argument("--proposer-prompt-version")
+    parser.add_argument("--proposer-system-prompt-sha256")
+    parser.add_argument("--proposer-input-schema-sha256")
+    parser.add_argument("--proposer-output-schema-sha256")
+    parser.add_argument(
+        "--capture-role",
+        "--role",
+        dest="capture_roles",
+        action="append",
+        choices=("monitor", "proposer"),
+        help="role planned for this capture; holdout defaults to monitor for compatibility",
+    )
     parser.add_argument(
         "--pricing-snapshot",
         type=Path,
@@ -185,6 +257,56 @@ def inspect_holdout_artifact(path: Path, *, root: Path = _ROOT) -> HoldoutArtifa
     )
 
 
+def load_proposer_capture_contract(path: Path) -> ProposerCaptureContractArtifact:
+    return ProposerCaptureContractArtifact.model_validate_json(path.read_bytes())
+
+
+def inspect_proposer_holdout_artifact(
+    path: Path, *, root: Path = _ROOT
+) -> ProposerHoldoutArtifactInspection:
+    artifact = load_proposer_capture_contract(path)
+    relative = path.relative_to(root).as_posix()
+    return ProposerHoldoutArtifactInspection(
+        artifact=artifact,
+        tracked=_git_output(root, "ls-files", "--error-unmatch", relative) is not None,
+        worktree_clean=_git_quiet(root, "diff", "--quiet", "--", relative),
+        index_clean=_git_quiet(root, "diff", "--cached", "--quiet", "--", relative),
+    )
+
+
+def _resolve_holdout_artifact(path: object, *, root: Path, subtree: str, label: str) -> Path:
+    if not isinstance(path, Path):
+        raise ValueError(  # noqa: TRY004 - CLI/preflight validation is intentionally ValueError.
+            f"holdout capture requires a concrete {label} artifact and contract"
+        )
+    allowed = (root / "config" / subtree).resolve()
+    resolved = path.resolve()
+    if allowed not in resolved.parents or not resolved.is_file():
+        raise ValueError(f"holdout {label} artifact must be a regular config/{subtree} file")
+    return resolved
+
+
+def _require_clean_artifact(inspection: object, *, label: str) -> None:
+    if not isinstance(
+        inspection, (HoldoutArtifactInspection, ProposerHoldoutArtifactInspection)
+    ) or not (inspection.tracked and inspection.worktree_clean and inspection.index_clean):
+        raise ValueError(f"holdout {label} artifact must be tracked and clean")
+
+
+def _planned_roles(args: argparse.Namespace) -> frozenset[Literal["monitor", "proposer"]]:
+    roles = getattr(args, "capture_roles", None)
+    if roles is None:
+        # Existing monitor-only invocation syntax remains a strict monitor holdout.
+        return frozenset(("monitor",))
+    if (
+        not isinstance(roles, list)
+        or not roles
+        or any(role not in ("monitor", "proposer") for role in roles)
+    ):
+        raise ValueError("capture roles must be a non-empty monitor/proposer list")
+    return frozenset(roles)
+
+
 def preflight(
     args: argparse.Namespace,
     *,
@@ -192,6 +314,7 @@ def preflight(
     now: datetime | None = None,
     git_clean: Callable[[], bool] | None = None,
     holdout_inspector: Callable[[Path], HoldoutArtifactInspection] | None = None,
+    proposer_holdout_inspector: Callable[[Path], ProposerHoldoutArtifactInspection] | None = None,
     root: Path = _ROOT,
 ) -> CapturePlan:
     """Validate every gate before a client factory can be reached."""
@@ -228,45 +351,83 @@ def preflight(
     if not math.isfinite(estimate) or estimate > args.max_estimated_usd:
         raise ValueError("pre-call estimate exceeds --max-estimated-usd")
     threshold_contract: HoldoutThresholdContract | None = None
+    proposer_contract: HoldoutProposerContract | None = None
     if args.split == "holdout":
-        artifact_path = getattr(args, "threshold_artifact", None)
-        expected = (
-            getattr(args, "threshold_provider", None),
-            args.model,
-            getattr(args, "threshold_prompt_version", None),
-            getattr(args, "threshold_input_schema_sha256", None),
-            getattr(args, "threshold_output_schema_sha256", None),
-        )
-        if not isinstance(artifact_path, Path) or any(not value for value in expected):
-            raise ValueError("holdout capture requires a concrete threshold artifact and contract")
-        allowed = (root / "config" / "monitor-thresholds").resolve()
-        resolved = artifact_path.resolve()
-        if allowed not in resolved.parents or not resolved.is_file():
-            raise ValueError(
-                "holdout threshold artifact must be a regular config/monitor-thresholds file"
+        roles = _planned_roles(args)
+        if "monitor" in roles:
+            threshold_expected = (
+                getattr(args, "threshold_provider", None), args.model,
+                getattr(args, "threshold_prompt_version", None),
+                getattr(args, "threshold_input_schema_sha256", None),
+                getattr(args, "threshold_output_schema_sha256", None),
             )
-        inspector = holdout_inspector or (
-            lambda path: inspect_holdout_artifact(path, root=root)
-        )
-        inspection = inspector(resolved)
-        if not (inspection.tracked and inspection.worktree_clean and inspection.index_clean):
-            raise ValueError("holdout threshold artifact must be tracked and clean")
-        artifact = inspection.artifact
-        actual = (
-            artifact.provider,
-            artifact.model,
-            artifact.prompt_version,
-            artifact.input_schema_sha256,
-            artifact.output_schema_sha256,
-        )
-        if artifact.frozen_at >= moment or actual != expected:
-            raise ValueError("holdout threshold artifact does not match the capture contract")
-        threshold_contract = HoldoutThresholdContract(*actual)
+            if any(not value for value in threshold_expected):
+                raise ValueError(
+                    "holdout capture requires a concrete threshold artifact and contract"
+                )
+            resolved = _resolve_holdout_artifact(
+                getattr(args, "threshold_artifact", None), root=root,
+                subtree="monitor-thresholds", label="threshold",
+            )
+            inspector = holdout_inspector or (
+                lambda path: inspect_holdout_artifact(path, root=root)
+            )
+            threshold_inspection = inspector(resolved)
+            _require_clean_artifact(threshold_inspection, label="threshold")
+            if not isinstance(threshold_inspection, HoldoutArtifactInspection):
+                raise ValueError("holdout threshold artifact has invalid inspection")
+            threshold_artifact = threshold_inspection.artifact
+            threshold_actual = (
+                threshold_artifact.provider,
+                threshold_artifact.model,
+                threshold_artifact.prompt_version,
+                threshold_artifact.input_schema_sha256,
+                threshold_artifact.output_schema_sha256,
+            )
+            if threshold_artifact.frozen_at >= moment or threshold_actual != threshold_expected:
+                raise ValueError("holdout threshold artifact does not match the capture contract")
+            threshold_contract = HoldoutThresholdContract(*threshold_actual)
+        if "proposer" in roles:
+            proposer_expected = (
+                getattr(args, "proposer_provider", None), args.model,
+                getattr(args, "proposer_prompt_version", None),
+                getattr(args, "proposer_system_prompt_sha256", None),
+                getattr(args, "proposer_input_schema_sha256", None),
+                getattr(args, "proposer_output_schema_sha256", None),
+            )
+            if any(not value for value in proposer_expected):
+                raise ValueError(
+                    "holdout capture requires a concrete proposer artifact and contract"
+                )
+            resolved = _resolve_holdout_artifact(
+                getattr(args, "proposer_contract_artifact", None), root=root,
+                subtree="proposer-capture-contracts", label="proposer",
+            )
+            proposer_inspection = (proposer_holdout_inspector or (
+                lambda path: inspect_proposer_holdout_artifact(path, root=root)
+            ))(resolved)
+            _require_clean_artifact(proposer_inspection, label="proposer")
+            if not isinstance(proposer_inspection, ProposerHoldoutArtifactInspection):
+                raise ValueError("holdout proposer artifact has invalid inspection")
+            proposer_artifact = proposer_inspection.artifact
+            proposer_actual = (
+                proposer_artifact.provider,
+                proposer_artifact.model,
+                proposer_artifact.prompt_version,
+                proposer_artifact.system_prompt_sha256,
+                proposer_artifact.input_schema_sha256,
+                proposer_artifact.output_schema_sha256,
+            )
+            if proposer_artifact.frozen_at >= moment or proposer_actual != proposer_expected:
+                raise ValueError("holdout proposer artifact does not match the capture contract")
+            proposer_contract = HoldoutProposerContract(
+                proposer_artifact.contract_id, proposer_artifact.frozen_at, *proposer_actual
+            )
         if not (git_clean or clean_git_tree)():
             raise ValueError("holdout capture requires a clean git tree")
     return CapturePlan(
         args.model, args.max_calls, args.max_estimated_usd, args.split, estimate, snapshot,
-        threshold_contract,
+        threshold_contract, proposer_contract,
     )
 
 
@@ -313,7 +474,7 @@ def capture_requests(
             if existing.capture != "provider_call" or existing.provenance is None:
                 raise ValueError("capture refuses synthetic pre-existing cache entry")
             _validate_existing(item, existing.provenance)
-            _validate_holdout_provider(plan, existing.provenance.provider)
+            _validate_holdout_provider(plan, item.context.role, existing.provenance.provider)
             replay = CacheBackedCompletionClient(cache)
             existing_results[item.request.prompt_sha256] = replay.complete(item.request)
     if not misses:
@@ -331,7 +492,7 @@ def capture_requests(
         # therefore leave no entry behind for this item.
         result = client.complete(item.request)
         provenance = builder(item.request, result)
-        _validate_holdout_provider(plan, provenance.provider)
+        _validate_holdout_provider(plan, item.context.role, provenance.provider)
         cache.store(
             item.request.model,
             item.request.prompt_sha256,
@@ -384,11 +545,19 @@ def _validate_existing(item: CaptureWorkItem, provenance: ProviderCaptureProvena
         raise ValueError("pre-existing provider capture conflicts with requested context")
 
 
-def _validate_holdout_provider(plan: CapturePlan, provider: str) -> None:
+def _contract_for_role(
+    plan: CapturePlan, role: Literal["monitor", "proposer"]
+) -> HoldoutThresholdContract | HoldoutProposerContract | None:
+    return plan.threshold_contract if role == "monitor" else plan.proposer_contract
+
+
+def _validate_holdout_provider(
+    plan: CapturePlan, role: Literal["monitor", "proposer"], provider: str
+) -> None:
     if plan.split == "holdout":
-        assert plan.threshold_contract is not None
-        if provider != plan.threshold_contract.provider:
-            raise ValueError("provider disagrees with frozen holdout threshold contract")
+        contract = _contract_for_role(plan, role)
+        if contract is None or provider != contract.provider:
+            raise ValueError("provider disagrees with frozen role-specific holdout contract")
 
 
 def _validate_plan(plan: CapturePlan) -> None:
@@ -427,12 +596,35 @@ def _validate_plan(plan: CapturePlan) -> None:
         for rate in rates
     ):
         raise ValueError("capture plan has invalid pricing")
-    if (plan.split == "holdout") != (plan.threshold_contract is not None):
-        raise ValueError("threshold contract must be present exactly for holdout")
+    if plan.split != "holdout" and (
+        plan.threshold_contract is not None or plan.proposer_contract is not None
+    ):
+        raise ValueError("holdout contracts must be absent outside holdout")
+    if plan.split == "holdout" and (
+        plan.threshold_contract is None and plan.proposer_contract is None
+    ):
+        raise ValueError("holdout plan requires at least one role-specific contract")
+    if plan.proposer_contract is not None:
+        contract = plan.proposer_contract
+        if (
+            _CONTRACT_ID.fullmatch(contract.contract_id) is None
+            or contract.frozen_at.tzinfo is None
+            or contract.frozen_at.utcoffset() is None
+            or any(
+                _SHA.fullmatch(value) is None
+                for value in (
+                    contract.system_prompt_sha256,
+                    contract.input_schema_sha256,
+                    contract.output_schema_sha256,
+                )
+            )
+        ):
+            raise ValueError("capture plan has invalid proposer holdout contract")
 
 
 _VERSION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
+_CONTRACT_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _REVISION = re.compile(r"^[a-f0-9]{40}$")
 _SCENARIO = re.compile(r"^(D[1-8]|S[1-2]|R[0-9]{2}|T[1-8])$")
 _VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -527,7 +719,7 @@ def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
         if set(envelope) != set(expected) or envelope != expected:
             raise ValueError("proposer canonical prompt disagrees with capture request/context")
     if plan.split == "holdout":
-        contract = plan.threshold_contract
+        contract = _contract_for_role(plan, context.role)
         if contract is None or (
             request.model,
             context.prompt_version,
@@ -539,7 +731,13 @@ def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
             contract.input_schema_sha256,
             contract.output_schema_sha256,
         ):
-            raise ValueError("holdout work item disagrees with frozen threshold contract")
+            raise ValueError("holdout work item disagrees with frozen role-specific contract")
+        if (
+            context.role == "proposer"
+            and isinstance(contract, HoldoutProposerContract)
+            and sha256_text(request.system) != contract.system_prompt_sha256
+        ):
+            raise ValueError("proposer system prompt disagrees with frozen holdout contract")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

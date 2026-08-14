@@ -17,7 +17,10 @@ from incidentgate.evaluation.capture_model_outputs import (
     CapturePlan,
     CaptureWorkItem,
     HoldoutArtifactInspection,
+    HoldoutProposerContract,
     HoldoutThresholdContract,
+    ProposerCaptureContractArtifact,
+    ProposerHoldoutArtifactInspection,
     capture_requests,
     main,
     preflight,
@@ -41,6 +44,13 @@ def _args(tmp_path: Path, **changes: object) -> Namespace:
         "threshold_prompt_version": None,
         "threshold_input_schema_sha256": None,
         "threshold_output_schema_sha256": None,
+        "proposer_contract_artifact": None,
+        "proposer_provider": None,
+        "proposer_prompt_version": None,
+        "proposer_system_prompt_sha256": None,
+        "proposer_input_schema_sha256": None,
+        "proposer_output_schema_sha256": None,
+        "capture_roles": None,
     }
     base.update(changes)
     return Namespace(**base)
@@ -114,6 +124,210 @@ def _threshold(frozen_at: datetime) -> MonitorThresholdArtifact:
         calibration_denominators={"benign": 1, "malicious": 1},
         selection_rule="fixed before holdout",
     )
+
+
+def _proposer_contract(
+    frozen_at: datetime, *, system_prompt: str = ""
+) -> ProposerCaptureContractArtifact:
+    return ProposerCaptureContractArtifact(
+        contract_id="capture-test",
+        frozen_at=frozen_at,
+        provider="anthropic",
+        model="claude-opus-5",
+        prompt_version="proposal/v1",
+        system_prompt_sha256=capture_module.sha256_text(system_prompt),
+        input_schema_sha256="d" * 64,
+        output_schema_sha256="e" * 64,
+    )
+
+
+def _proposer_holdout_args(tmp_path: Path, **changes: object) -> Namespace:
+    path = tmp_path / "config" / "proposer-capture-contracts" / "proposer.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    base: dict[str, object] = {
+        "split": "holdout",
+        "capture_roles": ["proposer"],
+        "proposer_contract_artifact": path,
+        "proposer_provider": "anthropic",
+        "proposer_prompt_version": "proposal/v1",
+        "proposer_system_prompt_sha256": capture_module.sha256_text(""),
+        "proposer_input_schema_sha256": "d" * 64,
+        "proposer_output_schema_sha256": "e" * 64,
+    }
+    base.update(changes)
+    return _args(tmp_path, **base)
+
+
+def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path) -> None:
+    args = _proposer_holdout_args(tmp_path)
+    frozen_at = datetime(2026, 8, 14, tzinfo=UTC)
+    plan = preflight(
+        args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+        proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+            _proposer_contract(frozen_at), True, True, True
+        ), root=tmp_path,
+    )
+    assert plan.threshold_contract is None
+    assert plan.proposer_contract == HoldoutProposerContract(
+        "capture-test", frozen_at, "anthropic", "claude-opus-5", "proposal/v1",
+        capture_module.sha256_text(""), "d" * 64, "e" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "provider", "model", "prompt_version", "system_prompt_sha256",
+        "input_schema_sha256", "output_schema_sha256",
+    ],
+)
+def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, field: str) -> None:
+    args = _proposer_holdout_args(tmp_path)
+    value = "other" if field in {"provider", "model", "prompt_version"} else "f" * 64
+    artifact = _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)).model_copy(
+        update={field: value}
+    )
+    with pytest.raises(ValueError, match="proposer artifact does not match"):
+        preflight(
+            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+                artifact, True, True, True
+            ), root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize("inspection", [
+    ProposerHoldoutArtifactInspection(
+        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), False, True, True
+    ),
+    ProposerHoldoutArtifactInspection(
+        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, False, True
+    ),
+    ProposerHoldoutArtifactInspection(
+        _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, False
+    ),
+    ProposerHoldoutArtifactInspection(
+        _proposer_contract(datetime(2026, 8, 15, tzinfo=UTC)), True, True, True
+    ),
+])
+def test_proposer_holdout_rejects_untracked_dirty_or_late_contract(
+    tmp_path: Path, inspection: ProposerHoldoutArtifactInspection
+) -> None:
+    with pytest.raises(ValueError, match="proposer artifact"):
+        preflight(
+            _proposer_holdout_args(tmp_path), env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            proposer_holdout_inspector=lambda _: inspection, root=tmp_path,
+        )
+
+
+def test_mixed_holdout_requires_both_role_contracts(tmp_path: Path) -> None:
+    threshold_path = tmp_path / "config" / "monitor-thresholds" / "threshold.json"
+    threshold_path.parent.mkdir(parents=True)
+    threshold_path.write_text("{}", encoding="utf-8")
+    args = _proposer_holdout_args(
+        tmp_path, capture_roles=["monitor", "proposer"], threshold_artifact=threshold_path,
+        threshold_provider="anthropic", threshold_prompt_version="monitor/v2",
+        threshold_input_schema_sha256="a" * 64, threshold_output_schema_sha256="b" * 64,
+    )
+    plan = preflight(
+        args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+        holdout_inspector=lambda _: HoldoutArtifactInspection(
+            _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+        ), proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+            _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+        ), root=tmp_path,
+    )
+    assert plan.threshold_contract is not None and plan.proposer_contract is not None
+
+
+def test_mixed_holdout_rejects_missing_or_role_confused_contracts(tmp_path: Path) -> None:
+    threshold_path = tmp_path / "config" / "monitor-thresholds" / "threshold.json"
+    threshold_path.parent.mkdir(parents=True)
+    threshold_path.write_text("{}", encoding="utf-8")
+    common: dict[str, object] = {
+        "capture_roles": ["monitor", "proposer"],
+        "threshold_artifact": threshold_path,
+        "threshold_provider": "anthropic",
+        "threshold_prompt_version": "monitor/v2",
+        "threshold_input_schema_sha256": "a" * 64,
+        "threshold_output_schema_sha256": "b" * 64,
+    }
+    with pytest.raises(ValueError, match="threshold"):
+        preflight(
+            _proposer_holdout_args(tmp_path, capture_roles=["monitor", "proposer"]),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="proposer"):
+        preflight(
+            _proposer_holdout_args(tmp_path, proposer_contract_artifact=None, **common),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            holdout_inspector=lambda _: HoldoutArtifactInspection(
+                _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ), root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="threshold artifact has invalid inspection"):
+        preflight(
+            _proposer_holdout_args(tmp_path, **common),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+                _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ), root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="proposer artifact has invalid inspection"):
+        preflight(
+            _proposer_holdout_args(tmp_path, **common),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
+            holdout_inspector=lambda _: HoldoutArtifactInspection(
+                _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ), proposer_holdout_inspector=lambda _: HoldoutArtifactInspection(
+                _threshold(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ), root=tmp_path,
+        )
+
+
+@pytest.mark.parametrize("split", ["development", "calibration"])
+def test_non_holdout_preflight_does_not_require_role_contracts(tmp_path: Path, split: str) -> None:
+    plan = preflight(
+        _args(tmp_path, split=split, capture_roles=["proposer"]),
+        env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+        now=datetime(2026, 8, 15, tzinfo=UTC),
+    )
+    assert plan.threshold_contract is None and plan.proposer_contract is None
+
+
+def test_proposer_holdout_rejects_malformed_wrong_path_and_dirty_tree(tmp_path: Path) -> None:
+    args = _proposer_holdout_args(tmp_path)
+    with pytest.raises(ValueError):
+        preflight(
+            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+        )
+    wrong_path = tmp_path / "config" / "monitor-thresholds" / "threshold.json"
+    wrong_path.parent.mkdir(parents=True)
+    wrong_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="proposer artifact must"):
+        preflight(
+            _proposer_holdout_args(tmp_path, proposer_contract_artifact=wrong_path),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True, root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="clean git tree"):
+        preflight(
+            args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: False,
+            proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+                _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ), root=tmp_path,
+        )
 
 
 def test_holdout_requires_exact_frozen_clean_tracked_artifact(tmp_path: Path) -> None:
@@ -485,6 +699,62 @@ def test_wrong_holdout_provider_result_stores_nothing(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="provider disagrees"):
         capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
                          client_factory=lambda _: _CaptureClient())
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_proposer_holdout_dispatch_uses_its_frozen_contract_and_rejects_drift(
+    tmp_path: Path,
+) -> None:
+    plan = replace(
+        _capture_plan(), split="holdout",
+        proposer_contract=HoldoutProposerContract(
+            "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
+            "claude-opus-5", "proposal/v1", capture_module.sha256_text(""), "d" * 64,
+            "e" * 64,
+        ),
+    )
+    item = replace(
+        _proposer_capture_item("proposer-holdout"),
+        context=replace(_proposer_capture_item("proposer-holdout").context, split="holdout"),
+    )
+    result = capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
+                              client_factory=lambda _: _CaptureClient())
+    assert result[0].invocation.invocation_kind == "provider_call"
+    drifted = replace(item, context=replace(item.context, prompt_version="proposal/v2"))
+    with pytest.raises(ValueError, match="role-specific"):
+        capture_requests(plan, (drifted,), cache=ResponseCache(tmp_path / "drift"),
+                         client_factory=lambda _: pytest.fail("factory must not be called"))
+    import hashlib
+
+    envelope = json.loads(item.request.canonical_prompt)
+    envelope["system"] = "changed prompt bytes"
+    canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    prompt_drift = replace(item, request=replace(
+        item.request,
+        system="changed prompt bytes",
+        canonical_prompt=canonical,
+        prompt_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
+    ))
+    with pytest.raises(ValueError, match="system prompt"):
+        capture_requests(plan, (prompt_drift,), cache=ResponseCache(tmp_path / "prompt-drift"),
+                         client_factory=lambda _: pytest.fail("factory must not be called"))
+
+
+def test_proposer_holdout_without_proposer_contract_never_constructs_provider(
+    tmp_path: Path,
+) -> None:
+    plan = replace(
+        _capture_plan(), split="holdout",
+        threshold_contract=HoldoutThresholdContract(
+            "anthropic", "claude-opus-5", "monitor/v2", "d" * 64,
+            request_schema_sha256_placeholder(),
+        ),
+    )
+    source = _proposer_capture_item("missing-proposer-contract")
+    item = replace(source, context=replace(source.context, split="holdout"))
+    with pytest.raises(ValueError, match="role-specific"):
+        capture_requests(plan, (item,), cache=ResponseCache(tmp_path),
+                         client_factory=lambda _: pytest.fail("factory must not be called"))
     assert not list(tmp_path.rglob("*.json"))
 
 

@@ -150,6 +150,7 @@ def _proposer_contract(
                 system_prompt_sha256=capture_module.sha256_text(""),
             ),
         ),
+        input_schema_version="proposal-evidence-digest/v1",
         input_schema_sha256="d" * 64,
         output_schema_sha256="e" * 64,
         provider_schema_sha256=request_schema_sha256_placeholder(),
@@ -166,6 +167,7 @@ def _proposer_holdout_args(tmp_path: Path, **changes: object) -> Namespace:
         "proposer_contract_artifact": path,
         "proposer_provider": "anthropic",
         "proposer_prompt_version": "proposal/v1",
+        "proposer_input_schema_version": "proposal-evidence-digest/v1",
         "proposer_input_schema_sha256": "d" * 64,
         "proposer_output_schema_sha256": "e" * 64,
         "proposer_provider_schema_sha256": request_schema_sha256_placeholder(),
@@ -196,6 +198,7 @@ def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path
     assert plan.threshold_contract is None
     assert plan.proposer_contract == HoldoutProposerContract(
         "capture-test", frozen_at, "anthropic", "claude-opus-5", "proposal/v1",
+        "proposal-evidence-digest/v1",
         "d" * 64, "e" * 64, request_schema_sha256_placeholder(),
         bindings,
     )
@@ -204,7 +207,7 @@ def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path
 @pytest.mark.parametrize(
     "field",
     [
-        "provider", "model", "prompt_version",
+        "provider", "model", "prompt_version", "input_schema_version",
         "input_schema_sha256", "output_schema_sha256", "provider_schema_sha256",
     ],
 )
@@ -695,7 +698,7 @@ def _proposer_capture_item(
                                 {"type": "object"}, canonical,
                                 hashlib.sha256(canonical.encode()).hexdigest())
     return CaptureWorkItem(request, CaptureContext(
-        "proposer", "proposal-input-v1", "d" * 64, "proposal/v1", output_schema,
+        "proposer", "proposal-evidence-digest/v1", "d" * 64, "proposal/v1", output_schema,
         scenario_id, variant_id, EvaluationMode.COMPLETE, "incident", 0, "development",
         "python -m incidentgate.evaluation.capture_model_outputs", "a" * 40,
     ))
@@ -744,7 +747,7 @@ def test_proposer_holdout_dispatch_uses_its_frozen_contract_and_rejects_drift(
         _capture_plan(), split="holdout",
         proposer_contract=HoldoutProposerContract(
             "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-            "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+            "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
             request_schema_sha256_placeholder(),
         (
             ProposerPromptBinding(
@@ -808,7 +811,7 @@ def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
         _capture_plan(), max_calls=3, split="holdout",
         proposer_contract=HoldoutProposerContract(
             "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-            "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+        "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
             request_schema_sha256_placeholder(), bindings,
         ),
     )
@@ -934,7 +937,7 @@ def test_hand_constructed_proposer_contract_cannot_bypass_binding_validation(
 ) -> None:
     malformed = HoldoutProposerContract(
         "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-        "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+        "claude-opus-5", "proposal/v1", "proposal-evidence-digest/v1", "d" * 64, "e" * 64,
         request_schema_sha256_placeholder(),
         (
             ProposerPromptBinding(

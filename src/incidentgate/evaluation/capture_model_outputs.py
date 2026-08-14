@@ -14,9 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
-
-from incidentgate.contracts import ContractModel, EvaluationMode
+from incidentgate.contracts import EvaluationMode
 from incidentgate.control.model_proposal import (
     CompletionClient,
     CompletionRequest,
@@ -33,6 +31,12 @@ from incidentgate.control.response_cache import (
     sha256_text,
 )
 from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact, load_thresholds
+from incidentgate.evaluation.proposer_contracts import (
+    ProposerCaptureContractArtifact,
+    ProposerPromptBinding,
+    load_proposer_capture_contract,
+    validate_proposer_prompt_bindings,
+)
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -65,6 +69,7 @@ class HoldoutProposerContract:
     provider: str
     model: str
     prompt_version: str
+    input_schema_version: str
     input_schema_sha256: str
     output_schema_sha256: str
     provider_schema_sha256: str
@@ -72,7 +77,7 @@ class HoldoutProposerContract:
 
     def system_prompt_sha256_for(self, context: CaptureContext) -> str:
         """Return the one frozen proposer prompt hash authorized for this source."""
-        _validate_proposer_prompt_bindings(self.prompt_bindings)
+        validate_proposer_prompt_bindings(self.prompt_bindings)
         for binding in self.prompt_bindings:
             if (binding.scenario_id, binding.variant_id, binding.split) == (
                 context.scenario_id,
@@ -81,63 +86,6 @@ class HoldoutProposerContract:
             ):
                 return binding.system_prompt_sha256
         raise ValueError("proposer source is not listed in frozen holdout contract")
-
-
-class ProposerPromptBinding(ContractModel):
-    """An exact, immutable mapping from a capture variant to its system prompt."""
-
-    scenario_id: str = Field(pattern=r"^(D[1-8]|S[1-2]|R[0-9]{2}|T[1-8])$")
-    variant_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
-    split: Literal["holdout"]
-    system_prompt_sha256: str
-
-    @field_validator("system_prompt_sha256")
-    @classmethod
-    def _validate_sha(cls, value: str) -> str:
-        if _SHA.fullmatch(value) is None:
-            raise ValueError("system prompt hash must be sha256")
-        return value
-
-
-class ProposerCaptureContractArtifact(ContractModel):
-    """Frozen proposer surface admitted to a holdout capture, with no write path here."""
-
-    schema_version: Literal["proposer-capture-contract-v1"] = "proposer-capture-contract-v1"
-    contract_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
-    frozen_at: datetime
-    provider: str
-    model: str
-    prompt_version: str
-    prompt_bindings: tuple[ProposerPromptBinding, ...] = Field(min_length=1, max_length=64)
-    input_schema_sha256: str
-    output_schema_sha256: str
-    provider_schema_sha256: str
-
-    @field_validator("provider", "model", "prompt_version")
-    @classmethod
-    def _validate_text(cls, value: str) -> str:
-        if not value or len(value) > 200:
-            raise ValueError("contract text must be a bounded non-empty string")
-        return value
-
-    @field_validator("input_schema_sha256", "output_schema_sha256", "provider_schema_sha256")
-    @classmethod
-    def _validate_sha(cls, value: str) -> str:
-        if _SHA.fullmatch(value) is None:
-            raise ValueError("schema hash must be sha256")
-        return value
-
-    @field_validator("frozen_at")
-    @classmethod
-    def _validate_frozen_at(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("frozen_at must be timezone-aware")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_prompt_bindings(self) -> ProposerCaptureContractArtifact:
-        _validate_proposer_prompt_bindings(self.prompt_bindings)
-        return self
 
 
 @dataclass(frozen=True)
@@ -245,6 +193,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--proposer-contract-artifact", type=Path)
     parser.add_argument("--proposer-provider")
     parser.add_argument("--proposer-prompt-version")
+    parser.add_argument("--proposer-input-schema-version")
     parser.add_argument("--proposer-input-schema-sha256")
     parser.add_argument("--proposer-output-schema-sha256")
     parser.add_argument("--proposer-provider-schema-sha256")
@@ -290,10 +239,6 @@ def inspect_holdout_artifact(path: Path, *, root: Path = _ROOT) -> HoldoutArtifa
         worktree_clean=_git_quiet(root, "diff", "--quiet", "--", relative),
         index_clean=_git_quiet(root, "diff", "--cached", "--quiet", "--", relative),
     )
-
-
-def load_proposer_capture_contract(path: Path) -> ProposerCaptureContractArtifact:
-    return ProposerCaptureContractArtifact.model_validate_json(path.read_bytes())
 
 
 def inspect_proposer_holdout_artifact(
@@ -426,6 +371,7 @@ def preflight(
             proposer_expected = (
                 getattr(args, "proposer_provider", None), args.model,
                 getattr(args, "proposer_prompt_version", None),
+                getattr(args, "proposer_input_schema_version", None),
                 getattr(args, "proposer_input_schema_sha256", None),
                 getattr(args, "proposer_output_schema_sha256", None),
                 getattr(args, "proposer_provider_schema_sha256", None),
@@ -449,6 +395,7 @@ def preflight(
                 proposer_artifact.provider,
                 proposer_artifact.model,
                 proposer_artifact.prompt_version,
+                proposer_artifact.input_schema_version,
                 proposer_artifact.input_schema_sha256,
                 proposer_artifact.output_schema_sha256,
                 proposer_artifact.provider_schema_sha256,
@@ -658,7 +605,7 @@ def _validate_plan(plan: CapturePlan) -> None:
             )
         ):
             raise ValueError("capture plan has invalid proposer holdout contract")
-        _validate_proposer_prompt_bindings(contract.prompt_bindings)
+        validate_proposer_prompt_bindings(contract.prompt_bindings)
 
 
 _VERSION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
@@ -668,28 +615,6 @@ _REVISION = re.compile(r"^[a-f0-9]{40}$")
 _SCENARIO = re.compile(r"^(D[1-8]|S[1-2]|R[0-9]{2}|T[1-8])$")
 _VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _CAPTURE_COMMAND = re.compile(r"^[A-Za-z0-9_./ :+=-]{1,200}$")
-
-
-def _validate_proposer_prompt_bindings(bindings: object) -> None:
-    """Refuse hand-built or serialized proposer binding sets that are not canonical."""
-    if not isinstance(bindings, tuple) or not 1 <= len(bindings) <= 64:
-        raise ValueError("proposer prompt bindings must be a non-empty bounded tuple")
-    if any(not isinstance(binding, ProposerPromptBinding) for binding in bindings):
-        raise ValueError("proposer prompt bindings contain an invalid binding")
-    source_keys = tuple(
-        (binding.scenario_id, binding.variant_id, binding.split) for binding in bindings
-    )
-    if any(
-        _SCENARIO.fullmatch(scenario_id) is None
-        or _VARIANT.fullmatch(variant_id) is None
-        or split != "holdout"
-        for scenario_id, variant_id, split in source_keys
-    ):
-        raise ValueError("proposer prompt binding has invalid source identity")
-    if len(set(source_keys)) != len(source_keys) or source_keys != tuple(sorted(source_keys)):
-        raise ValueError("proposer prompt bindings must be unique and canonically sorted")
-    if any(_SHA.fullmatch(binding.system_prompt_sha256) is None for binding in bindings):
-        raise ValueError("proposer prompt binding has invalid system prompt hash")
 
 
 def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
@@ -781,16 +706,21 @@ def _validate_work_item(plan: CapturePlan, item: CaptureWorkItem) -> None:
             raise ValueError("proposer canonical prompt disagrees with capture request/context")
     if plan.split == "holdout":
         contract = _contract_for_role(plan, context.role)
-        if contract is None or (
+        common_identity = (
             request.model,
             context.prompt_version,
             context.input_schema_sha256,
             context.output_schema_sha256,
-        ) != (
+        )
+        contract_common_identity = None if contract is None else (
             contract.model,
             contract.prompt_version,
             contract.input_schema_sha256,
             contract.output_schema_sha256,
+        )
+        if common_identity != contract_common_identity or (
+            isinstance(contract, HoldoutProposerContract)
+            and context.input_schema_version != contract.input_schema_version
         ):
             raise ValueError("holdout work item disagrees with frozen role-specific contract")
         if (

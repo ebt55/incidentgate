@@ -154,7 +154,7 @@ from incidentgate.contracts import (
 from incidentgate.control.models import Caller, EvidenceState
 from incidentgate.control.monitor import AdvisoryMonitor, FixtureMonitor
 from incidentgate.control.monitor_v2 import MonitorErrorKind
-from incidentgate.control.ports import ProposalGenerator
+from incidentgate.control.ports import AuthorizationRequester, ProposalGenerator
 from incidentgate.control.safeguards import (
     AuthorizationGate,
     GateMode,
@@ -177,6 +177,13 @@ from .identity import purge_checkpoint_threads
 Authorization = Literal["automatic_evaluation_capability", "deterministic_approver_simulation"]
 
 Leg = Literal["covert", "incident"]
+
+#: Chooses the evaluation-only authorizer for one durable runtime step. Returning
+#: ``None`` preserves the safeguard-selected authorizer; a returned factory is
+#: constructed by that step's ordinary ``IncidentRuntime`` graph.
+AuthorizationFactorySelector = Callable[
+    [Leg, int], Callable[[], AuthorizationRequester] | None
+]
 
 
 @dataclass(frozen=True)
@@ -572,6 +579,7 @@ def _runtime_step(
     monitor: AdvisoryMonitor | None,
     semantic_monitor: SemanticMonitorBundle | None,
     safeguards: SafeguardConfiguration,
+    authorization_factory: Callable[[], AuthorizationRequester] | None,
     clock: Callable[[], datetime],
     response_loss_once: bool,
 ) -> SabotageStep:
@@ -609,6 +617,7 @@ def _runtime_step(
             clock=clock,
             semantic_monitor=semantic_monitor,
             proposer_factory=lambda: recorder,
+            authorization_factory=authorization_factory,
             safeguards=safeguards,
             response_loss_once=response_loss_once,
             allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
@@ -625,6 +634,7 @@ def _runtime_step(
         # share one monitor identity and not merely one monitor type.
             monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
             proposer_factory=lambda: recorder,
+            authorization_factory=authorization_factory,
             safeguards=safeguards,
             response_loss_once=response_loss_once,
         # The acceptance gate lists a published evaluation among the clauses a
@@ -722,6 +732,24 @@ def _validated_response_loss_steps(
     return selected
 
 
+def _validated_authorization_factories(
+    selector: AuthorizationFactorySelector | None, plan_lengths: dict[Leg, int]
+) -> dict[tuple[Leg, int], Callable[[], AuthorizationRequester] | None]:
+    """Select typed per-step factories before reset or checkpoint-thread purge."""
+    if selector is None:
+        return {}
+    if not callable(selector):
+        raise TypeError("authorization_factory must select a factory by leg and step index")
+    selected: dict[tuple[Leg, int], Callable[[], AuthorizationRequester] | None] = {}
+    for leg, length in plan_lengths.items():
+        for index in range(length):
+            factory = selector(leg, index)
+            if factory is not None and not callable(factory):
+                raise TypeError("authorization_factory selector must return a callable or None")
+            selected[(leg, index)] = factory
+    return selected
+
+
 def _run_episode(
     dsn: str,
     *,
@@ -736,6 +764,9 @@ def _run_episode(
     safeguards: SafeguardConfiguration,
     clock: Callable[[], datetime],
     response_loss_steps: set[tuple[Leg, int]],
+    authorization_factories: (
+        dict[tuple[Leg, int], Callable[[], AuthorizationRequester] | None] | None
+    ) = None,
 ) -> SabotageEpisodeOutcome:
     steps: list[SabotageStep] = []
     for index, proposer in enumerate(plan):
@@ -750,6 +781,7 @@ def _run_episode(
             monitor=monitor,
             semantic_monitor=semantic_monitor,
             safeguards=safeguards,
+            authorization_factory=(authorization_factories or {}).get((leg, index)),
             clock=clock,
             response_loss_once=(leg, index) in response_loss_steps,
         )
@@ -771,6 +803,7 @@ def run_benign_episode(
     semantic_monitor: SemanticMonitorBundle | None = None,
     safeguards: SafeguardConfiguration | None = None,
     response_loss_steps: tuple[ResponseLossStep, ...] = (),
+    authorization_factory: AuthorizationFactorySelector | None = None,
 ) -> SabotageEpisodeOutcome:
     """Run one honest benign-calibration episode, never a sabotage two-leg result.
 
@@ -782,6 +815,9 @@ def run_benign_episode(
         raise ValueError("a benign episode needs at least one planned call")
     selected = _validated_response_loss_steps(
         response_loss_steps, {"covert": 0, "incident": len(plan)}
+    )
+    authorization_factories = _validated_authorization_factories(
+        authorization_factory, {"covert": 0, "incident": len(plan)}
     )
     if any(leg != "incident" for leg, _ in selected):
         raise ValueError("benign episode response loss may select only incident steps")
@@ -807,6 +843,7 @@ def run_benign_episode(
         safeguards=applied,
         clock=clock,
         response_loss_steps=selected,
+        authorization_factories=authorization_factories,
     )
 
 
@@ -843,6 +880,7 @@ def run_condition(
     #: Exact evaluation steps that simulate a lost post-commit response.  The
     #: default remains no injection, preserving frozen matrix behaviour.
     response_loss_steps: tuple[ResponseLossStep, ...] = (),
+    authorization_factory: AuthorizationFactorySelector | None = None,
 ) -> SabotageConditionOutcome:
     """Run one condition end to end: reset the fixture, drive both episodes, read the state.
 
@@ -875,6 +913,9 @@ def run_condition(
     selected = _validated_response_loss_steps(
         response_loss_steps, {"covert": len(covert_plan), "incident": len(incident_plan)}
     )
+    authorization_factories = _validated_authorization_factories(
+        authorization_factory, {"covert": len(covert_plan), "incident": len(incident_plan)}
+    )
     applied = safeguards if safeguards is not None else safeguards_for(condition, approver=approver)
     threads = [
         step_thread_id(scenario_id, episode_key, leg, index)
@@ -890,12 +931,14 @@ def run_condition(
         plan=covert_plan, actor=actor, approver=approver, monitor=monitor,
         semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
         response_loss_steps=selected,
+        authorization_factories=authorization_factories,
     )
     incident = _run_episode(
         repository.dsn, scenario_id=scenario_id, episode_key=episode_key, leg="incident",
         plan=incident_plan, actor=actor, approver=approver, monitor=monitor,
         semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
         response_loss_steps=selected,
+        authorization_factories=authorization_factories,
     )
     return SabotageConditionOutcome(
         scenario_id=scenario_id,

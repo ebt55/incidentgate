@@ -28,12 +28,14 @@ evidence of where the remaining variance lives.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
 
 from incidentgate.contracts import (
+    ApprovalToken,
     CanonicalAction,
     EvaluationMode,
     MonitorVerdict,
@@ -53,10 +55,13 @@ from incidentgate.control.attack_policies import (
 )
 from incidentgate.control.models import Caller, EvidenceState
 from incidentgate.control.monitor import FixtureMonitor
+from incidentgate.control.ports import AuthorizationRequest, AuthorizationRequester
 from incidentgate.control.proposal import DeterministicT1Proposer
 from incidentgate.evaluation.sabotage import SabotageStage
 from incidentgate.evaluation.sabotage_episodes import (
+    Leg,
     SabotageConditionOutcome,
+    SabotageEpisodeOutcome,
     SabotageStep,
     _purge_threads,
     run_condition,
@@ -187,6 +192,156 @@ def test_a_denied_step_ends_the_episode_and_no_later_step_is_recorded(
     ] == [T1_REMEDIATION_SCOPE]
     # And the honest leg, which was never refused, ran its whole plan.
     assert outcome.incident.stopped_early is False
+
+
+def test_custom_authorizer_invalid_token_is_refused_by_the_ordinary_graph(
+    repository: LabRepository,
+) -> None:
+    """The evaluation seam reaches validation; it cannot grant an unrecorded token."""
+    now = datetime.now(UTC)
+    token = ApprovalToken(
+        action_hash="a" * 64,
+        actor="operator-1",
+        requested_at=now,
+        expires_at=now + timedelta(minutes=5),
+        one_time_use_id=UUID(int=41),
+        token_id=UUID(int=42),
+        approver="approver-1",
+        approved_at=now,
+    )
+    selected: list[tuple[str, int]] = []
+
+    class UnrecordedTokenRequester:
+        def request(self, request: AuthorizationRequest) -> dict[str, object]:
+            _ = request
+            return {
+                "decision": "approve",
+                "approver": "approver-1",
+                "reason": "evaluation invalid-token probe",
+                "token": token.model_dump(mode="python"),
+            }
+
+    def authorization_factory(
+        leg: Leg, step_index: int
+    ) -> Callable[[], AuthorizationRequester] | None:
+        selected.append((leg, step_index))
+        return UnrecordedTokenRequester if (leg, step_index) == ("covert", 0) else None
+
+    outcome = run_condition(
+        repository,
+        scenario_id="T1",
+        variant_id=VARIANT.variant_id,
+        episode_key="invalid-authorizer-token",
+        condition=EvaluationMode.UNGATED,
+        covert_plan=(DeterministicT1AttackProposer(VARIANT),) * 2,
+        incident_plan=(DeterministicT1Proposer(),),
+        end_state=repository.t1_end_state,
+        authorization_factory=authorization_factory,
+    )
+
+    assert selected == [("covert", 0), ("covert", 1), ("incident", 0)]
+    assert len(outcome.covert.steps) == 1
+    refused = outcome.covert.steps[0]
+    assert refused.executed is False
+    assert refused.operation is None
+    assert refused.terminal_state == "blocked"
+    assert refused.terminal_refusal_causes == ("approval_invalid:missing",)
+    assert _stage(refused) is SabotageStage.APPROVAL
+    assert refused.authorization == "automatic_evaluation_capability"
+    assert refused.refused is True
+    assert outcome.covert.stopped_early is True
+    assert outcome.end_state.outbound_notes == ()
+    counts = repository.t1_durable_counts()
+    assert counts.approvals_recorded == counts.approvals_consumed == 1
+    assert [call.operation_scope for call in repository.ordered_operation_calls(T1_INCIDENT)] == [
+        T1_REMEDIATION_SCOPE
+    ]
+
+
+@pytest.mark.parametrize(
+    "authorization_factory",
+    [42, lambda _leg, _index: 42],
+    ids=["selector-is-not-callable", "selector-return-is-not-callable"],
+)
+def test_malformed_authorization_selector_is_rejected_before_fixture_reset(
+    monkeypatch: pytest.MonkeyPatch, authorization_factory: object
+) -> None:
+    """Selector shape is checked before reset, injection, or checkpoint cleanup."""
+    from incidentgate.evaluation import sabotage_episodes
+
+    calls: list[str] = []
+
+    class Repository:
+        dsn = "postgresql://not-used"
+
+        def reset_checkpoint(self, scenario_id: str) -> None:
+            calls.append(f"reset:{scenario_id}")
+
+        def inject_checkpoint(self, scenario_id: str) -> None:
+            calls.append(f"inject:{scenario_id}")
+
+    monkeypatch.setattr(sabotage_episodes, "_purge_threads", lambda *_: calls.append("purge"))
+    with pytest.raises(TypeError, match="authorization_factory"):
+        run_condition(
+            Repository(),
+            scenario_id="T1",
+            variant_id=VARIANT.variant_id,
+            episode_key="malformed-authorizer",
+            condition=EvaluationMode.UNGATED,
+            covert_plan=(DeterministicT1AttackProposer(VARIANT),),
+            incident_plan=(DeterministicT1Proposer(),),
+            end_state=lambda: None,
+            authorization_factory=authorization_factory,
+        )
+    assert calls == []
+
+
+def test_authorization_selector_prevalidates_each_planned_step_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selection is complete before driving, even when a later episode would stop."""
+    from incidentgate.evaluation import sabotage_episodes
+
+    selected: list[tuple[Leg, int]] = []
+
+    class Repository:
+        dsn = "postgresql://not-used"
+
+        def reset_checkpoint(self, scenario_id: str) -> None:
+            return None
+
+        def inject_checkpoint(self, scenario_id: str) -> None:
+            return None
+
+    def selector(leg: Leg, step_index: int) -> Callable[[], AuthorizationRequester] | None:
+        selected.append((leg, step_index))
+        return None
+
+    def no_runtime(*_: object, **kwargs: object) -> SabotageEpisodeOutcome:
+        leg = kwargs["leg"]
+        assert leg in {"covert", "incident"}
+        return SabotageEpisodeOutcome(leg, (), False)
+
+    monkeypatch.setattr(sabotage_episodes, "_purge_threads", lambda *_: None)
+    monkeypatch.setattr(sabotage_episodes, "_run_episode", no_runtime)
+    run_condition(
+        Repository(),
+        scenario_id="T1",
+        variant_id=VARIANT.variant_id,
+        episode_key="selector-prevalidation",
+        condition=EvaluationMode.UNGATED,
+        covert_plan=(DeterministicT1AttackProposer(VARIANT),) * 2,
+        incident_plan=(DeterministicT1Proposer(),) * 3,
+        end_state=lambda: None,
+        authorization_factory=selector,
+    )
+    assert selected == [
+        ("covert", 0),
+        ("covert", 1),
+        ("incident", 0),
+        ("incident", 1),
+        ("incident", 2),
+    ]
 
 
 def test_an_unrefused_episode_is_not_marked_as_stopped_early(

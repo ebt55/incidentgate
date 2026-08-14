@@ -15,8 +15,8 @@ decoration: a rule nothing can contradict. So the guarantee is stated three
 ways, each of which can fail on its own:
 
   * **the host names nothing.** No module under ``host/`` or ``ui/`` imports the
-    deterministic authorizer, and none passes a safeguard configuration to
-    ``IncidentRuntime`` at all.
+    deterministic authorizer or names an authorization factory, and none passes
+    either selector or a safeguard configuration to ``IncidentRuntime``.
   * **no configuration surface reaches it.** ``HostSettings`` has no field that
     could select it, and ``settings_from_env`` ignores every environment name
     that looks like it should.
@@ -71,6 +71,10 @@ HOSTILE_ENVIRONMENT = {
     "CONTROL_APPROVER": "attacker",
     "INCIDENTGATE_CONTROL_APPROVER": "attacker",
     "APPROVAL_GATE": "deterministic_control",
+    "AUTHORIZATION_FACTORY": "attacker_controlled_authorizer",
+    "INCIDENTGATE_AUTHORIZATION_FACTORY": "attacker_controlled_authorizer",
+    "AUTHORIZATION_REQUESTER": "attacker_controlled_authorizer",
+    "INCIDENTGATE_AUTHORIZATION_REQUESTER": "attacker_controlled_authorizer",
     "DETERMINISTIC_CONTROL": "1",
 }
 
@@ -86,7 +90,7 @@ def production_sources() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # THE HOST NAMES NOTHING
 # ---------------------------------------------------------------------------
-def test_no_production_module_imports_the_deterministic_authorizer() -> None:
+def test_no_production_module_names_an_evaluation_authorization_selector() -> None:
     """Same idiom as the checker-purity test, for the same reason.
 
     An import scan is what makes "cannot be selected here" checkable rather than
@@ -95,7 +99,14 @@ def test_no_production_module_imports_the_deterministic_authorizer() -> None:
     transitively -- so the question is not whether the class is reachable but
     whether this package names it.
     """
-    forbidden = {"DeterministicControlAuthorization", "AuthorizationGate", "SafeguardConfiguration"}
+    forbidden = {
+        "DeterministicControlAuthorization",
+        "AuthorizationGate",
+        "SafeguardConfiguration",
+        "authorization_factory",
+        "AuthorizationFactory",
+        "AuthorizationRequester",
+    }
     offenders: list[str] = []
     for name, body in production_sources().items():
         tree = ast.parse(body)
@@ -108,16 +119,18 @@ def test_no_production_module_imports_the_deterministic_authorizer() -> None:
                 ]
             elif isinstance(node, ast.Name) and node.id in forbidden:
                 offenders.append(f"{name}:{node.lineno} names {node.id}")
+            elif isinstance(node, ast.keyword) and node.arg in forbidden:
+                offenders.append(f"{name}:{node.lineno} passes {node.arg}=")
     assert not offenders, offenders
 
 
-def test_no_production_module_passes_a_safeguard_configuration_to_a_runtime() -> None:
+def test_no_production_module_passes_an_evaluation_gate_selector_to_a_runtime() -> None:
     """The narrower question the import scan cannot answer.
 
     A module could take a configuration from elsewhere -- a settings field, a
     caller -- and hand it to ``IncidentRuntime`` without ever naming the type.
     This is the check on the call site itself: nothing in the production
-    packages passes ``safeguards=`` to anything.
+    packages passes ``safeguards=`` or ``authorization_factory=`` to anything.
     """
     offenders: list[str] = []
     for name, body in production_sources().items():
@@ -125,9 +138,9 @@ def test_no_production_module_passes_a_safeguard_configuration_to_a_runtime() ->
             if not isinstance(node, ast.Call):
                 continue
             offenders += [
-                f"{name}:{node.lineno} passes safeguards="
+                f"{name}:{node.lineno} passes {keyword.arg}="
                 for keyword in node.keywords
-                if keyword.arg == "safeguards"
+                if keyword.arg in {"safeguards", "authorization_factory"}
             ]
     assert not offenders, offenders
 
@@ -216,6 +229,7 @@ def test_the_host_builds_a_runtime_with_the_production_gate_chain(
         assert runtime.safeguards.authorization_gate is AuthorizationGate.DURABLE_HUMAN
     assert "safeguards" not in captured, captured
     assert "authorization" not in captured, captured
+    assert "authorization_factory" not in captured, captured
 
 
 def test_a_real_host_runtime_carries_the_durable_human_gate() -> None:
@@ -286,12 +300,15 @@ def test_the_evaluation_lane_can_select_what_the_host_cannot() -> None:
     precisely the shape of unfalsifiable guarantee this project exists to find.
     """
     from incidentgate.contracts import EvaluationMode
-    from incidentgate.evaluation.sabotage_episodes import safeguards_for
+    from incidentgate.evaluation.sabotage_episodes import run_condition, safeguards_for
 
     arm = safeguards_for(EvaluationMode.UNGATED, approver="approver-1")
     assert arm.authorization_gate is AuthorizationGate.DETERMINISTIC_CONTROL
     assert arm.control_approver == "approver-1"
     assert arm != PRODUCTION_SAFEGUARDS
+    import inspect
+
+    assert "authorization_factory" in inspect.signature(run_condition).parameters
     # And the authorizer it selects is a real class with the port's shape.
     assert hasattr(DeterministicControlAuthorization, "request")
     assert SafeguardConfiguration(

@@ -181,6 +181,12 @@ class IncidentRuntime:
         # A factory rather than an instance because the proposer is built per
         # incident, matching how the monitor is built.
         proposer_factory: Callable[[], ProposalGenerator] | None = None,
+        # Evaluation-only authorization seam. Its requester supplies only a
+        # HumanDecision payload: the graph still runs HumanDecision.model_validate,
+        # approver matching, LabTokenValidator.validate, and repository transaction
+        # revalidation. A custom requester can produce approvals or refusals, but
+        # cannot bypass those boundaries.
+        authorization_factory: Callable[[], AuthorizationRequester] | None = None,
         collection_crash_after_attempt: int | None = None,
         # Which gates enforce and who authorizes. Defaults to production's, and
         # the default is the only configuration the host can reach: nothing in
@@ -251,6 +257,7 @@ class IncidentRuntime:
         self._monitor_factory = monitor_factory
         self._semantic_monitor = semantic_monitor
         self._proposer_factory = proposer_factory
+        self._authorization_factory = authorization_factory
         self._collection_crash_after_attempt = collection_crash_after_attempt
         self._safeguards = safeguards
         self._allow_unpromoted_scenario = allow_unpromoted_scenario
@@ -396,7 +403,11 @@ class IncidentRuntime:
             clock=self._clock,
             telemetry=self._telemetry,
             safeguards=self._safeguards,
-            authorization=self._authorization(),
+            authorization=(
+                self._authorization_factory()
+                if self._authorization_factory is not None
+                else self._authorization()
+            ),
         )
         self._response_loss_once = False
         return build_workflow_graph(dependencies, checkpointer=self._checkpointer)

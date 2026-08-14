@@ -24,12 +24,30 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from incidentgate.contracts import EvaluationMode
-from incidentgate.control.response_cache import ResponseCache
+from incidentgate.contracts import (
+    EvaluationMode,
+    IncidentIdentity,
+    ModelInvocationRecord,
+    Role,
+    ToolCallContext,
+)
+from incidentgate.control.model_proposal import (
+    CompletionRequest,
+    CompletionResult,
+    ModelAgentProposer,
+)
+from incidentgate.control.models import Caller
+from incidentgate.control.proposal import ProposalError
+from incidentgate.control.response_cache import (
+    ProviderCaptureProvenance,
+    ResponseCache,
+    schema_sha256,
+)
 from incidentgate.evaluation import runner as runner_module
 from incidentgate.evaluation.runner import (
     MODEL_BACKED_SCENARIOS,
@@ -37,6 +55,9 @@ from incidentgate.evaluation.runner import (
     CheckpointBEvaluationRunner,
     _reproduction_command,
 )
+from incidentgate.integration.adapters import LabEvidenceCollector
+from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.service import ObservabilityService
 from incidentgate.manifests import load_checkpoint_manifests
 
 OPUS = "claude-opus-5"
@@ -54,20 +75,109 @@ def _d1_manifest() -> object:
     return next(m for m in load_checkpoint_manifests(runner_module._MANIFEST_DIR) if m.id == "D1")
 
 
-def _cache_posing_as_a_real_capture(tmp_path: Path) -> Path:
-    """Re-store the committed body under a provider_call capture, in a throwaway directory.
+class _RequestCapturingClient:
+    """Public proposer seam that captures a request and never contacts a provider."""
 
-    The key is taken from the committed entry rather than recomputed, so this cannot drift
-    from D1's current prompt: that key is already gated against the live prompt by
-    ``tests/control/test_response_cache.py`` and by the lab-collected check in
-    ``tests/integration/test_model_backed_incident.py``.
+    def __init__(self) -> None:
+        self.request: CompletionRequest | None = None
+
+    def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.request = request
+        raise RuntimeError("synthetic integration fixture must not call a provider")
+
+
+def _cache_posing_as_a_real_capture(
+    tmp_path: Path, dsn: str
+) -> tuple[Path, ProviderCaptureProvenance]:
+    """Make a synthetic integration fixture for runner wiring, never publication evidence.
+
+    It derives the actual D1 request from a lab-collected incident via the public proposer
+    client seam. The fixture's provider-shaped invocation and provenance satisfy cache
+    validation only so this test can exercise replay wiring; they do not evidence a provider
+    call and remain solely under ``tmp_path``.
     """
     source = next((COMMITTED_CACHE / OPUS).glob("*.json"))
     body = json.loads(source.read_text(encoding="utf-8"))
     assert body["capture"] == "synthetic", "the committed fixture is not a real capture"
+    repository = LabRepository(dsn)
+    repository.migrate()
+    repository.reset_d1()
+    repository.inject_d1()
+    thread_id = "synthetic-cache-fixture"
+    incident = IncidentIdentity(
+        incident_id="INC-D1",
+        scenario_id="D1",
+        thread_id=thread_id,
+        correlation_id=f"corr-{thread_id}",
+    )
+    caller = Caller(actor="evaluation-operator", role=Role.OPERATOR)
+    context = ToolCallContext(
+        incident_id=incident.incident_id,
+        thread_id=thread_id,
+        correlation_id=incident.correlation_id,
+        actor=caller.actor,
+        permission="operations:write",
+    )
+    client = _RequestCapturingClient()
+    records = LabEvidenceCollector(
+        ObservabilityService(repository), caller, context, scenario_id="D1"
+    ).collect(incident)
+    with pytest.raises(ProposalError):
+        ModelAgentProposer(client=client, model=OPUS, temperature=None).propose(
+            incident, caller, context, records
+        )
+    assert client.request is not None, "the public proposer seam did not build a D1 request"
+    request = client.request
+    assert request.prompt_sha256 == body["prompt_sha256"], "D1's stable prompt key drifted"
+    invocation = ModelInvocationRecord(
+        invocation_kind="provider_call",
+        provider=MODEL_PROVIDER,
+        model=OPUS,
+        usage_source="synthetic_test_usage",
+        input_tokens=0,
+        output_tokens=0,
+        cost=None,
+        currency=None,
+        pricing_snapshot="synthetic-test-pricing-v1",
+    )
+    provenance = ProviderCaptureProvenance(
+        provider=MODEL_PROVIDER,
+        model=OPUS,
+        role="proposer",
+        prompt_sha256=request.prompt_sha256,
+        request_schema_sha256=schema_sha256(request.schema),
+        input_schema_version="synthetic-test-input-v1",
+        prompt_version="synthetic-test-prompt-v1",
+        stop_reason="end_turn",
+        input_tokens=invocation.input_tokens,
+        output_tokens=invocation.output_tokens,
+        usage_source=invocation.usage_source,
+        capture_mode="live_provider_call",
+        captured_at=datetime(2026, 1, 1, tzinfo=UTC),
+        capture_command="pytest tests/evaluation/test_model_backed_column.py",
+        git_revision="a" * 40,
+        pricing_snapshot_id=invocation.pricing_snapshot,
+        estimated_cost=None,
+        currency=None,
+        cost_unavailable_reason="model_not_priced_in_snapshot",
+        scenario_id="D1",
+        variant_id="synthetic-test-fixture-v1",
+        condition=EvaluationMode.COMPLETE,
+        leg="incident",
+        step_index=0,
+        split="development",
+    )
     cache = ResponseCache(tmp_path / "model_cache")
-    cache.store(OPUS, body["prompt_sha256"], body["raw_json"], capture="provider_call")
-    return tmp_path / "model_cache"
+    cache.store(
+        OPUS,
+        request.prompt_sha256,
+        body["raw_json"],
+        capture="provider_call",
+        provenance=provenance,
+        invocation=invocation,
+        request=request,
+    )
+    return tmp_path / "model_cache", provenance
 
 
 def test_the_repository_publishes_no_model_claim_today() -> None:
@@ -102,12 +212,18 @@ def test_an_enrolled_scenario_publishes_a_named_cache_replay_row(
     """
     dsn = _dsn()
     monkeypatch.setattr("incidentgate.evaluation.runner._revision", lambda value: value or "a" * 40)
+    assert dict(runner_module.MODEL_BACKED_SCENARIOS) == {}
     monkeypatch.setattr(runner_module, "MODEL_BACKED_SCENARIOS", {"D1": OPUS})
+    cache_dir, provenance = _cache_posing_as_a_real_capture(tmp_path, dsn)
+    cached = ResponseCache(cache_dir).load(OPUS, provenance.prompt_sha256)
+    assert cached.capture == "provider_call" and cached.provenance == provenance
+    assert cached.provenance.capture_command.startswith("pytest tests/evaluation/")
+    assert cached.provenance.prompt_version.startswith("synthetic-test-")
     runner = CheckpointBEvaluationRunner(
         dsn,
         mock_evaluation=True,
         git_revision="a" * 40,
-        model_cache_dir=_cache_posing_as_a_real_capture(tmp_path),
+        model_cache_dir=cache_dir,
     )
     manifest = _d1_manifest()
 
@@ -115,6 +231,7 @@ def test_an_enrolled_scenario_publishes_a_named_cache_replay_row(
         row = runner._one(manifest, mode, 0, "b" * 64)  # type: ignore[arg-type]
         invocation = row.model_invocation
         assert invocation.invocation_kind == "cache_replay", mode
+        assert dict(MODEL_BACKED_SCENARIOS) == {}, "only this test's monkeypatch enrolled D1"
         assert invocation.provider == MODEL_PROVIDER
         assert invocation.model == OPUS
         # A replay contacted no provider, so it must still claim no usage and no cost.

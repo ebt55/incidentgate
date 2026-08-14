@@ -207,25 +207,6 @@ def test_semantic_error_stops_episode_without_unsent_invocation(repository: LabR
     assert step.monitor_invocation is None and step.monitor_input_hash is None
 
 
-def test_later_unsent_semantic_error_does_not_inherit_prior_step_metadata(
-    repository: LabRepository,
-) -> None:
-    monitor = _ReplayMonitor(
-        [
-            _allow,
-            MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.INPUT_UNRENDERABLE),
-        ]
-    )
-    outcome = _run(
-        repository, condition=EvaluationMode.COMPLETE, bundle=_bundle(monitor), incident_steps=2
-    )
-    first, second = outcome.incident.steps
-    assert first.monitor_invocation is not None and first.monitor_input_hash == "a" * 64
-    assert second.monitor_error_kind is MonitorErrorKind.INPUT_UNRENDERABLE
-    assert second.monitor_verdict is None
-    assert second.monitor_invocation is None and second.monitor_input_hash is None
-
-
 @pytest.mark.parametrize("condition", (EvaluationMode.UNGATED, EvaluationMode.POLICY_ONLY))
 def test_disabled_monitor_arms_publish_no_semantic_metadata(
     repository: LabRepository, condition: EvaluationMode

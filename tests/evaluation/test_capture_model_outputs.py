@@ -21,6 +21,7 @@ from incidentgate.evaluation.capture_model_outputs import (
     HoldoutThresholdContract,
     ProposerCaptureContractArtifact,
     ProposerHoldoutArtifactInspection,
+    ProposerPromptBinding,
     capture_requests,
     main,
     preflight,
@@ -47,9 +48,9 @@ def _args(tmp_path: Path, **changes: object) -> Namespace:
         "proposer_contract_artifact": None,
         "proposer_provider": None,
         "proposer_prompt_version": None,
-        "proposer_system_prompt_sha256": None,
         "proposer_input_schema_sha256": None,
         "proposer_output_schema_sha256": None,
+        "proposer_provider_schema_sha256": None,
         "capture_roles": None,
     }
     base.update(changes)
@@ -126,8 +127,14 @@ def _threshold(frozen_at: datetime) -> MonitorThresholdArtifact:
     )
 
 
+def request_schema_sha256_placeholder() -> str:
+    return request_schema_sha256(
+        CompletionRequest("", "", "", 0, None, None, {"type": "object"}, "", "")
+    )
+
+
 def _proposer_contract(
-    frozen_at: datetime, *, system_prompt: str = ""
+    frozen_at: datetime, *, bindings: tuple[ProposerPromptBinding, ...] | None = None
 ) -> ProposerCaptureContractArtifact:
     return ProposerCaptureContractArtifact(
         contract_id="capture-test",
@@ -135,9 +142,17 @@ def _proposer_contract(
         provider="anthropic",
         model="claude-opus-5",
         prompt_version="proposal/v1",
-        system_prompt_sha256=capture_module.sha256_text(system_prompt),
+        prompt_bindings=bindings or (
+            ProposerPromptBinding(
+                scenario_id="D1",
+                variant_id="v1",
+                split="holdout",
+                system_prompt_sha256=capture_module.sha256_text(""),
+            ),
+        ),
         input_schema_sha256="d" * 64,
         output_schema_sha256="e" * 64,
+        provider_schema_sha256=request_schema_sha256_placeholder(),
     )
 
 
@@ -151,9 +166,9 @@ def _proposer_holdout_args(tmp_path: Path, **changes: object) -> Namespace:
         "proposer_contract_artifact": path,
         "proposer_provider": "anthropic",
         "proposer_prompt_version": "proposal/v1",
-        "proposer_system_prompt_sha256": capture_module.sha256_text(""),
         "proposer_input_schema_sha256": "d" * 64,
         "proposer_output_schema_sha256": "e" * 64,
+        "proposer_provider_schema_sha256": request_schema_sha256_placeholder(),
     }
     base.update(changes)
     return _args(tmp_path, **base)
@@ -162,25 +177,35 @@ def _proposer_holdout_args(tmp_path: Path, **changes: object) -> Namespace:
 def test_proposer_holdout_requires_exact_separate_frozen_contract(tmp_path: Path) -> None:
     args = _proposer_holdout_args(tmp_path)
     frozen_at = datetime(2026, 8, 14, tzinfo=UTC)
+    bindings = tuple(
+        ProposerPromptBinding(
+            scenario_id="D1",
+            variant_id=variant_id,
+            split="holdout",
+            system_prompt_sha256=capture_module.sha256_text(system),
+        )
+        for variant_id, system in (("v1", "one"), ("v2", "two"), ("v3", "three"))
+    )
     plan = preflight(
         args, env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
         now=datetime(2026, 8, 15, tzinfo=UTC), git_clean=lambda: True,
         proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
-            _proposer_contract(frozen_at), True, True, True
+            _proposer_contract(frozen_at, bindings=bindings), True, True, True
         ), root=tmp_path,
     )
     assert plan.threshold_contract is None
     assert plan.proposer_contract == HoldoutProposerContract(
         "capture-test", frozen_at, "anthropic", "claude-opus-5", "proposal/v1",
-        capture_module.sha256_text(""), "d" * 64, "e" * 64,
+        "d" * 64, "e" * 64, request_schema_sha256_placeholder(),
+        bindings,
     )
 
 
 @pytest.mark.parametrize(
     "field",
     [
-        "provider", "model", "prompt_version", "system_prompt_sha256",
-        "input_schema_sha256", "output_schema_sha256",
+        "provider", "model", "prompt_version",
+        "input_schema_sha256", "output_schema_sha256", "provider_schema_sha256",
     ],
 )
 def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, field: str) -> None:
@@ -196,6 +221,20 @@ def test_proposer_holdout_rejects_exact_contract_mismatches(tmp_path: Path, fiel
             proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
                 artifact, True, True, True
             ), root=tmp_path,
+        )
+
+
+def test_proposer_holdout_requires_provider_schema_cli_identity(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="proposer artifact"):
+        preflight(
+            _proposer_holdout_args(tmp_path, proposer_provider_schema_sha256=None),
+            env={"INCIDENTGATE_ALLOW_PROVIDER_SPEND": "1"},
+            now=datetime(2026, 8, 15, tzinfo=UTC),
+            git_clean=lambda: True,
+            proposer_holdout_inspector=lambda _: ProposerHoldoutArtifactInspection(
+                _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)), True, True, True
+            ),
+            root=tmp_path,
         )
 
 
@@ -477,12 +516,6 @@ def _capture_item(prompt: str, *, variant: str = "v1") -> CaptureWorkItem:
     )
 
 
-def request_schema_sha256_placeholder() -> str:
-    return request_schema_sha256(
-        CompletionRequest("", "", "", 0, None, None, {"type": "object"}, "", "")
-    )
-
-
 def _capture_plan() -> CapturePlan:
     snapshot = PricingSnapshot(
         "snap-test", "USD", {"claude-opus-5": 0.001}, {"claude-opus-5": 0.002}
@@ -642,12 +675,14 @@ def test_monitor_canonical_envelope_drift_is_rejected_before_factory(
                          client_factory=lambda _: pytest.fail("factory must not be called"))
 
 
-def _proposer_capture_item(prompt: str) -> CaptureWorkItem:
+def _proposer_capture_item(
+    prompt: str, *, scenario_id: str = "D1", variant_id: str = "v1", system_prompt: str = ""
+) -> CaptureWorkItem:
     import hashlib
 
     output_schema = "e" * 64
     envelope = {
-        "system": "",
+        "system": system_prompt,
         "user": prompt,
         "model": "claude-opus-5",
         "max_tokens": 16,
@@ -656,12 +691,12 @@ def _proposer_capture_item(prompt: str) -> CaptureWorkItem:
         "schema_fingerprint": output_schema,
     }
     canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-    request = CompletionRequest("claude-opus-5", "", prompt, 16, None, None,
+    request = CompletionRequest("claude-opus-5", system_prompt, prompt, 16, None, None,
                                 {"type": "object"}, canonical,
                                 hashlib.sha256(canonical.encode()).hexdigest())
     return CaptureWorkItem(request, CaptureContext(
         "proposer", "proposal-input-v1", "d" * 64, "proposal/v1", output_schema,
-        "D1", "v1", EvaluationMode.COMPLETE, "incident", 0, "development",
+        scenario_id, variant_id, EvaluationMode.COMPLETE, "incident", 0, "development",
         "python -m incidentgate.evaluation.capture_model_outputs", "a" * 40,
     ))
 
@@ -709,8 +744,14 @@ def test_proposer_holdout_dispatch_uses_its_frozen_contract_and_rejects_drift(
         _capture_plan(), split="holdout",
         proposer_contract=HoldoutProposerContract(
             "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
-            "claude-opus-5", "proposal/v1", capture_module.sha256_text(""), "d" * 64,
-            "e" * 64,
+            "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+            request_schema_sha256_placeholder(),
+        (
+            ProposerPromptBinding(
+                scenario_id="D1", variant_id="v1", split="holdout",
+                system_prompt_sha256=capture_module.sha256_text(""),
+            ),
+        ),
         ),
     )
     item = replace(
@@ -738,6 +779,180 @@ def test_proposer_holdout_dispatch_uses_its_frozen_contract_and_rejects_drift(
     with pytest.raises(ValueError, match="system prompt"):
         capture_requests(plan, (prompt_drift,), cache=ResponseCache(tmp_path / "prompt-drift"),
                          client_factory=lambda _: pytest.fail("factory must not be called"))
+    schema_drift = replace(item, request=replace(item.request, schema={"type": "array"}))
+    with pytest.raises(ValueError, match="provider schema"):
+        capture_requests(
+            plan, (schema_drift,), cache=ResponseCache(tmp_path / "schema-drift"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
+    assert not list((tmp_path / "schema-drift").rglob("*.json"))
+
+
+def test_proposer_holdout_batch_authorizes_exact_per_variant_prompt_bindings(
+    tmp_path: Path,
+) -> None:
+    bindings = tuple(
+        ProposerPromptBinding(
+            scenario_id=scenario_id,
+            variant_id=variant_id,
+            split="holdout",
+            system_prompt_sha256=capture_module.sha256_text(system),
+        )
+        for scenario_id, variant_id, system in (
+            ("D1", "v1", "policy one"),
+            ("D2", "v2", "policy two"),
+            ("D3", "v3", "policy three"),
+        )
+    )
+    plan = replace(
+        _capture_plan(), max_calls=3, split="holdout",
+        proposer_contract=HoldoutProposerContract(
+            "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
+            "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+            request_schema_sha256_placeholder(), bindings,
+        ),
+    )
+    development_items = tuple(
+        _proposer_capture_item(
+            variant_id,
+            scenario_id=scenario_id,
+            variant_id=variant_id,
+            system_prompt=system,
+        )
+        for scenario_id, variant_id, system in (
+            ("D1", "v1", "policy one"),
+            ("D2", "v2", "policy two"),
+            ("D3", "v3", "policy three"),
+        )
+    )
+    items = tuple(
+        replace(item, context=replace(item.context, split="holdout")) for item in development_items
+    )
+    results = capture_requests(
+        plan, items, cache=ResponseCache(tmp_path), client_factory=lambda _: _CaptureClient()
+    )
+    assert len(results) == 3
+    authorized_hash = plan.proposer_contract.system_prompt_sha256_for(items[1].context)
+    assert authorized_hash == capture_module.sha256_text("policy two")
+
+    drifted_source = _proposer_capture_item(
+        "v2", scenario_id="D2", variant_id="v2", system_prompt="policy one"
+    )
+    drifted = replace(
+        drifted_source, context=replace(drifted_source.context, split="holdout")
+    )
+    with pytest.raises(ValueError, match="system prompt"):
+        capture_requests(
+            plan, (drifted,), cache=ResponseCache(tmp_path / "drift"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
+    unlisted_source = _proposer_capture_item(
+        "v4", scenario_id="D4", variant_id="v4", system_prompt="policy one"
+    )
+    unlisted = replace(unlisted_source, context=replace(unlisted_source.context, split="holdout"))
+    with pytest.raises(ValueError, match="not listed"):
+        capture_requests(
+            plan, (unlisted,), cache=ResponseCache(tmp_path / "unlisted"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
+    assert not list((tmp_path / "drift").rglob("*.json"))
+    assert not list((tmp_path / "unlisted").rglob("*.json"))
+
+    cross_scenario_source = _proposer_capture_item(
+        "v1", scenario_id="D2", variant_id="v1", system_prompt="policy one"
+    )
+    cross_scenario = replace(
+        cross_scenario_source, context=replace(cross_scenario_source.context, split="holdout")
+    )
+    with pytest.raises(ValueError, match="not listed"):
+        capture_requests(
+            plan, (cross_scenario,), cache=ResponseCache(tmp_path / "cross-scenario"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
+    cross_split = replace(items[0], context=replace(items[0].context, split="development"))
+    with pytest.raises(ValueError, match="model differs"):
+        capture_requests(
+            plan, (cross_split,), cache=ResponseCache(tmp_path / "cross-split"),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
+    assert not list((tmp_path / "cross-scenario").rglob("*.json"))
+    assert not list((tmp_path / "cross-split").rglob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        [],
+        [
+            {
+                "scenario_id": "D1", "variant_id": "v2", "split": "holdout",
+                "system_prompt_sha256": "a" * 64,
+            },
+            {
+                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "system_prompt_sha256": "b" * 64,
+            },
+        ],
+        [
+            {
+                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "system_prompt_sha256": "a" * 64,
+            },
+            {
+                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "system_prompt_sha256": "b" * 64,
+            },
+        ],
+        [
+            {
+                "scenario_id": "D1",
+                "variant_id": f"v{index:02d}",
+                "split": "holdout",
+                "system_prompt_sha256": "a" * 64,
+            }
+            for index in range(65)
+        ],
+        [
+            {
+                "scenario_id": "D1", "variant_id": "v1", "split": "holdout",
+                "system_prompt_sha256": "not-a-sha",
+            }
+        ],
+    ],
+)
+def test_proposer_prompt_bindings_are_strict_nonempty_bounded_and_canonical(
+    bindings: list[dict[str, str]],
+) -> None:
+    payload = _proposer_contract(datetime(2026, 8, 14, tzinfo=UTC)).model_dump()
+    payload["prompt_bindings"] = bindings
+    with pytest.raises(ValueError):
+        ProposerCaptureContractArtifact.model_validate(payload)
+
+
+def test_hand_constructed_proposer_contract_cannot_bypass_binding_validation(
+    tmp_path: Path,
+) -> None:
+    malformed = HoldoutProposerContract(
+        "capture-test", datetime(2026, 8, 14, tzinfo=UTC), "anthropic",
+        "claude-opus-5", "proposal/v1", "d" * 64, "e" * 64,
+        request_schema_sha256_placeholder(),
+        (
+            ProposerPromptBinding(
+                scenario_id="D1", variant_id="v2", split="holdout", system_prompt_sha256="a" * 64
+            ),
+            ProposerPromptBinding(
+                scenario_id="D1", variant_id="v1", split="holdout", system_prompt_sha256="b" * 64
+            ),
+        ),
+    )
+    plan = replace(_capture_plan(), split="holdout", proposer_contract=malformed)
+    item = _proposer_capture_item("hand-built")
+    item = replace(item, context=replace(item.context, split="holdout"))
+    with pytest.raises(ValueError, match="canonically sorted"):
+        capture_requests(
+            plan, (item,), cache=ResponseCache(tmp_path),
+            client_factory=lambda _: pytest.fail("factory must not be called"),
+        )
 
 
 def test_proposer_holdout_without_proposer_contract_never_constructs_provider(

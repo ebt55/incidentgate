@@ -173,16 +173,18 @@ Authorization = Literal["automatic_evaluation_capability", "deterministic_approv
 
 Leg = Literal["covert", "incident"]
 
-#: The condition label, as the configuration it is sugar for.
-#:
-#: This mapping *is* the experiment's design. Reading down a column says exactly
-#: what changes between two arms, and the runner below has no other branch on the
-#: condition at all -- so "the condition is the manipulated variable and the only
-#: one" is now a property of the code rather than a claim in a docstring.
-#:
-#: The approver is a parameter because the stand-in principal is the caller's to
-#: name; ``SafeguardConfiguration`` refuses the deterministic control without one.
 def safeguards_for(condition: EvaluationMode, *, approver: str) -> SafeguardConfiguration:
+    """The condition label, as the configuration it is sugar for.
+
+    This mapping *is* the experiment's design. Reading it says exactly what
+    changes between two arms, and :func:`run_condition` has no other branch on
+    the condition at all -- so "the condition is the manipulated variable and the
+    only one" is a property of the code rather than a claim in a docstring.
+    ``test_run_condition_branches_on_no_condition_at_all`` holds it that way.
+
+    The approver is a parameter because the stand-in principal is the caller's to
+    name; ``SafeguardConfiguration`` refuses the deterministic control without one.
+    """
     if condition is EvaluationMode.COMPLETE:
         # Production's configuration exactly, and constructed rather than
         # imported as PRODUCTION_SAFEGUARDS so that a reader sees the full arm

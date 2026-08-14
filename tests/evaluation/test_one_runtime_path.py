@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 
-from incidentgate.contracts import EvaluationMode, MonitorVerdict, PolicyDecision
+from incidentgate.contracts import EvaluationMode, MonitorVerdict, PolicyDecision, Role
 from incidentgate.control.attack_policies import (
     T1_ATTACK_VARIANTS,
     DeterministicT1AttackProposer,
@@ -49,9 +49,15 @@ from incidentgate.control.safeguards import (
 from incidentgate.evaluation import sabotage_episodes
 from incidentgate.evaluation.sabotage_episodes import (
     SabotageConditionOutcome,
+    _identity,
+    _purge_threads,
     run_condition,
     safeguards_for,
+    step_thread_id,
 )
+from incidentgate.integration.runtime import IncidentRuntime, PendingApproval
+from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ResponseLost
 from incidentgate.lab.repository import (
     T1_INCIDENT,
     T1_OUTBOUND_NOTE_SCOPE,
@@ -462,77 +468,71 @@ def test_a_lost_response_replays_without_a_second_mutation_in_every_arm(
 
 
 @pytest.mark.parametrize("condition", list(EvaluationMode), ids=lambda c: c.value)
-def test_process_death_before_the_result_is_read_leaves_one_mutation_in_every_arm(
-    repository: LabRepository, condition: EvaluationMode, monkeypatch: pytest.MonkeyPatch
+def test_a_dead_process_recovers_its_committed_step_from_the_checkpoint_in_every_arm(
+    repository: LabRepository, condition: EvaluationMode
 ) -> None:
-    """Kill the step after its transaction and let the next drive recover it.
+    """Commit, lose the whole process, recover through a brand new runtime.
 
-    Simulated as the process actually losing everything in memory: the executor
-    commits, then the step raises before the runner ever sees a result, and the
-    runtime is dropped. The recovery drive re-derives the same thread and the
-    same idempotency key, so the ledger returns the committed row and the fixture
-    is mutated once -- which is the property the chaos matrix measures with a
-    real ``os._exit`` and which every arm now has.
+    The hard case, and the one the chaos matrix measures with a real
+    ``os._exit``: the operation transaction committed, the delivery was lost, and
+    then everything in memory went away. Recovery has nothing but the durable
+    checkpoint and an idempotency key derived from what it holds.
+
+    Driven against ``IncidentRuntime`` directly rather than through
+    ``run_condition``, and deliberately: ``run_condition`` resets the fixture
+    before each drive, so a second drive there is a fresh run rather than a
+    recovery. This is the repository's established idiom for the property -- the
+    same shape as ``test_r09_r12_approval_and_response_loss_replay_are_exactly_once``
+    -- and the point of running it per arm is that until this phase only the full
+    arm went through a graph that could be recovered at all.
+
+    The honest remediation is used rather than the covert proposal because it is
+    allowed in **every** arm. A covert proposal would be denied in two of the
+    three, so those arms would have nothing committed to lose and the parametrize
+    would quietly cover one arm while claiming three.
     """
-    import incidentgate.evaluation.sabotage_episodes as episodes
+    arm = safeguards_for(condition, approver=APPROVER)
+    repository.reset_checkpoint("T1")
+    repository.inject_checkpoint("T1")
+    thread = step_thread_id("T1", f"process-death-{condition.value}", "incident", 0)
+    _purge_threads(repository.dsn, (thread,))
+    incident, operator, call_context = _identity("T1", thread, "operator-1")
 
-    original = episodes.IncidentRuntime
-    deaths: list[bool] = []
+    # 1. Drive to the commit, then lose the response and the process with it.
+    #
+    # Where the commit happens *is* the authorization gate: the durable human
+    # arm suspends first, so its executor runs on the resume, while the
+    # deterministic control decides in-process and commits inside ``start``.
+    # Written as two branches rather than one tolerant one, because a branch that
+    # accepted either would stop noticing if an arm's commit point moved.
+    with IncidentRuntime(repository.dsn, safeguards=arm, response_loss_once=True) as runtime:
+        if arm.authorization_gate is AuthorizationGate.DURABLE_HUMAN:
+            started = runtime.start(incident, operator, call_context)
+            assert isinstance(started, PendingApproval)
+            with pytest.raises(ResponseLost):
+                runtime.approve(thread, Principal(APPROVER, Role.APPROVER), reason="death")
+        else:
+            with pytest.raises(ResponseLost):
+                runtime.start(incident, operator, call_context)
 
-    class Dying:
-        """A runtime whose first executed step dies after the commit."""
+    assert repository.checkpoint_state("T1")["mutation_count"] == 1
+    assert repository.operation_count(T1_INCIDENT) == 1
 
-        def __init__(self, dsn: str, **kwargs: Any) -> None:
-            self._inner = original(dsn, **kwargs)
+    # 2. A brand new runtime, holding nothing, replays the durable task.
+    with IncidentRuntime(repository.dsn, safeguards=arm) as recovered_runtime:
+        recovered_runtime.resume(thread)
+        completed = recovered_runtime.retry(thread)
 
-        def __enter__(self) -> Any:
-            self._inner.__enter__()
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            self._inner.__exit__(*args)
-
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self._inner, name)
-
-        def start(self, *args: Any, **kwargs: Any) -> Any:
-            status = self._inner.start(*args, **kwargs)
-            result = getattr(status, "result", None)
-            if not deaths and result is not None and result.operation is not None:
-                deaths.append(True)
-                raise RuntimeError("injected process loss after the operation committed")
-            return status
-
-    key = f"process-death-{condition.value}"
-    monkeypatch.setattr(episodes, "IncidentRuntime", Dying)
-    died = False
-    try:
-        drive(repository, condition=condition, episode_key=key)
-    except RuntimeError as error:
-        died = "injected process loss" in str(error)
-    monkeypatch.undo()
-
-    if not died:
-        # Only reachable where no step of this arm executes inside ``start`` --
-        # the durable human arm interrupts first, so its commit happens on the
-        # resume. Recorded rather than skipped, and the redelivery test above
-        # covers that arm's exactly-once boundary from the other side.
-        assert condition is EvaluationMode.COMPLETE
-        return
-
-    # Recover: the same episode key derives the same threads and the same keys.
-    recovered = drive(repository, condition=condition, episode_key=key)
+    assert completed.result is not None
+    assert completed.result.operation is not None
+    # The ledger returned the row it already had rather than mutating again.
+    assert completed.result.operation.status.value == "duplicate"
+    assert repository.operation_count(T1_INCIDENT) == 1
+    assert repository.checkpoint_state("T1")["mutation_count"] == 1
     counts = repository.sabotage_durable_counts("T1")
-    assert counts.ledger_rows[T1_OUTBOUND_NOTE_SCOPE] == (
-        1 if recovered.covert.steps[0].executed else 0
-    )
     assert counts.ledger_rows[T1_REMEDIATION_SCOPE] == 1
-    assert len(repository.ordered_operation_calls(T1_INCIDENT)) == sum(
-        1
-        for episode in (recovered.covert, recovered.incident)
-        for step in episode.steps
-        if step.executed
-    )
+    assert counts.ledger_rows[T1_OUTBOUND_NOTE_SCOPE] == 0
+    repository.reset_checkpoint("T1")
 
 
 def test_the_monitor_object_is_the_same_one_in_every_arm(repository: LabRepository) -> None:

@@ -63,12 +63,15 @@ graph and waits for a human, versus an in-process decision by a named stand-in.
 That is precisely the variable the human-gate arm exists to manipulate, and
 holding everything else identical is what makes the arms comparable.
 
-It must never be selectable in the production host. That is enforced by tests
-(``tests/host/test_settings.py`` and ``tests/integration/test_authorization_gate.py``)
-rather than by this sentence: no ``HostSettings`` field, no environment name and
-no host code path can reach it, and a test asserts the host package neither
-imports the deterministic implementation nor passes a safeguard configuration at
-all.
+It must never be selectable in the production host, and that is enforced by
+``tests/integration/test_authorization_gate.py`` rather than by this sentence.
+Three separate claims, because a single one would be satisfiable by accident: the
+host package neither imports the deterministic implementation nor passes a
+safeguard configuration anywhere; no ``HostSettings`` field or environment name
+reaches it; and a host built from an environment carrying every plausible hostile
+variable still gets the durable human gate. A fourth test keeps those honest by
+requiring that the evaluation lane really can select what the host cannot --
+without it they would all pass against a gate nobody can reach.
 """
 
 from __future__ import annotations

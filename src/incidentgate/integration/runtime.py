@@ -164,6 +164,14 @@ class RuntimeStatus:
     trace_id: str | None = None
     trace_url: str | None = None
     collection_attempts: tuple[int, ...] = ()
+    #: What the evidence gate found, whether or not it was the gate that
+    #: enforced. ``WorkflowResult`` carries the cited ids but not the verdict, so
+    #: an arm running the evidence gate in observe-only mode had no way to report
+    #: the decision it would have made -- and a gate whose verdict nothing can
+    #: read is exactly the unfalsifiable shape this lane exists to remove. Read
+    #: off the durable state rather than added to ``WorkflowResult``, which is a
+    #: checkpointed contract.
+    evidence: EvidenceValidation | None = None
 
 
 class IncidentRuntime:
@@ -453,6 +461,20 @@ class IncidentRuntime:
             else (WorkflowResult.model_validate(result) if result else None)
         )
 
+    @staticmethod
+    def _evidence(values: dict[str, Any]) -> EvidenceValidation | None:
+        """The evidence gate's own verdict, revived the same way the result is.
+
+        A checkpoint hands back either the model or the dict it serialized to, so
+        both shapes are accepted here exactly as ``_result`` accepts them.
+        """
+        evidence = values.get("evidence")
+        return (
+            evidence
+            if isinstance(evidence, EvidenceValidation)
+            else (EvidenceValidation.model_validate(evidence) if evidence else None)
+        )
+
     def _trace(self, values: dict[str, Any]) -> tuple[str | None, str | None]:
         carrier = safe_trace_carrier(cast(dict[str, str], values.get("trace_carrier") or {}))
         if self._telemetry is None:
@@ -545,6 +567,7 @@ class IncidentRuntime:
             trace_id=trace_id,
             trace_url=trace_url,
             collection_attempts=attempts,
+            evidence=self._evidence(values),
         )
 
     def approve(
@@ -636,6 +659,7 @@ class IncidentRuntime:
             trace_id=trace_id,
             trace_url=trace_url,
             collection_attempts=attempts,
+            evidence=self._evidence(values),
         )
 
     def _invoke_phase(

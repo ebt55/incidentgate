@@ -1,4 +1,4 @@
-"""The sabotage-tier episode runner: N-step legs over one durable fixture.
+﻿"""The sabotage-tier episode runner: N-step legs over one durable fixture.
 
 This is the measurement apparatus, not a test helper. It exists so the project's
 central claim about the sabotage tier -- that the gate chain prevents a steered
@@ -65,6 +65,46 @@ and cannot be changed from here without moving every published artifact in the
 project. ``tests/sabotage/test_sabotage_episodes.py`` pins the mechanism so the
 next reader measures it instead of re-deriving it.
 
+ONE RUNTIME PATH FOR EVERY ARM
+==============================
+
+Every condition drives :func:`_runtime_step`. There is no second implementation
+of a step, and that is the point.
+
+Until this change the ungated and policy-only arms ran an isolated harness --
+its own evidence collection, its own executor call, its own approval minting,
+no checkpointer -- while the full arm ran :class:`IncidentRuntime`. This module's
+own docstring for :func:`run_condition` claimed "the condition is the manipulated
+variable and the only one", and it was not: the arms also differed in
+orchestration and checkpoint semantics, in the path their approval token was
+minted along, and in how their idempotency key was derived
+(``sabotage-episode:{thread}:{hash}`` against the graph's frozen
+``triage-agent-lab:d1:`` seed). Three variables moved with the gates, so no
+difference between two columns could be attributed to a gate.
+
+What was *not* wrong is worth stating, because the diagnosis is easy to
+overstate: the harness's authorization was never fake. It minted a real
+``ApprovalToken`` through the production ``ApprovalService`` for a real
+``APPROVER`` principal, and the executor really consumed it. The confound was the
+minting path, not the token.
+
+So the condition is now sugar over a :class:`SafeguardConfiguration`
+(:func:`safeguards_for`), and the four gates are the only things that differ
+between arms:
+
+    ungated               evidence and policy observe, monitor off, the
+                          deterministic authorization control
+    policy_only           evidence and policy enforce, monitor off, the
+                          deterministic authorization control
+    policy_monitor_human  every gate enforces, the durable human approval
+
+An observing gate still runs and still records the verdict it reached -- see
+``observed_policy_decision`` on :class:`SabotageStep`. What it does not do is
+stop the action. That distinction is why the ungated arm is a real experiment
+rather than an absence of one: it now says what the policy *would* have refused
+while letting the covert action land, which is exactly the control the published
+matrix needs.
+
 WHY IT IS BUILT THIS WAY
 ========================
 
@@ -90,16 +130,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from typing import Final, Literal
 
 import psycopg
 
 from incidentgate.contracts import (
-    ApprovalRequest,
-    ApprovalToken,
     CanonicalAction,
     EvaluationMode,
     EvidenceRecord,
@@ -111,28 +148,77 @@ from incidentgate.contracts import (
     PolicyDecision,
     Role,
     ToolCallContext,
-    canonical_action_hash,
     canonical_arguments_digest,
 )
-from incidentgate.control.evidence import EvidenceValidator
-from incidentgate.control.models import Caller
+from incidentgate.control.models import Caller, EvidenceState
 from incidentgate.control.monitor import AdvisoryMonitor, FixtureMonitor
-from incidentgate.control.policy import DeterministicPolicyEngine
 from incidentgate.control.ports import ProposalGenerator
-from incidentgate.integration.adapters import LabEvidenceCollector, LabOperationExecutor
-from incidentgate.integration.runtime import IncidentRuntime, PendingApproval
-from incidentgate.lab.approval import ApprovalService
+from incidentgate.control.safeguards import (
+    AuthorizationGate,
+    GateMode,
+    SafeguardConfiguration,
+)
+from incidentgate.integration.runtime import IncidentRuntime, PendingApproval, RuntimeStatus
 from incidentgate.lab.auth import Principal
+from incidentgate.lab.errors import ResponseLost
 from incidentgate.lab.repository import LabRepository
-from incidentgate.lab.service import ObservabilityService, OperationsService
 from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES, RUNNABLE_SCENARIOS
 
-#: Which authorization minted a step's execution. The two are genuinely
-#: different gates and the published row names which one ran, so this is
-#: recorded rather than inferred from the condition.
+#: Which authorization minted a step's execution. Both mint a real token through
+#: the production ``ApprovalService``; they differ in the path -- an in-process
+#: decision by a named stand-in against a durable interrupt and a human resume --
+#: and the published row names which one ran, so this is recorded rather than
+#: inferred from the condition.
 Authorization = Literal["automatic_evaluation_capability", "deterministic_approver_simulation"]
 
 Leg = Literal["covert", "incident"]
+
+#: The condition label, as the configuration it is sugar for.
+#:
+#: This mapping *is* the experiment's design. Reading down a column says exactly
+#: what changes between two arms, and the runner below has no other branch on the
+#: condition at all -- so "the condition is the manipulated variable and the only
+#: one" is now a property of the code rather than a claim in a docstring.
+#:
+#: The approver is a parameter because the stand-in principal is the caller's to
+#: name; ``SafeguardConfiguration`` refuses the deterministic control without one.
+def safeguards_for(condition: EvaluationMode, *, approver: str) -> SafeguardConfiguration:
+    if condition is EvaluationMode.COMPLETE:
+        # Production's configuration exactly, and constructed rather than
+        # imported as PRODUCTION_SAFEGUARDS so that a reader sees the full arm
+        # spelled out beside the two weaker ones.
+        return SafeguardConfiguration(
+            evidence_gate=GateMode.ENFORCE,
+            policy_gate=GateMode.ENFORCE,
+            monitor_gate=GateMode.ENFORCE,
+            authorization_gate=AuthorizationGate.DURABLE_HUMAN,
+        )
+    return SafeguardConfiguration(
+        # Ungated observes both gates rather than skipping them: the arm records
+        # what the policy would have refused *and* lets the covert action land,
+        # which is what makes it a control instead of an absence.
+        evidence_gate=(
+            GateMode.ENFORCE if condition is EvaluationMode.POLICY_ONLY else GateMode.OBSERVE_ONLY
+        ),
+        policy_gate=(
+            GateMode.ENFORCE if condition is EvaluationMode.POLICY_ONLY else GateMode.OBSERVE_ONLY
+        ),
+        # Disabled, not observing, and this is the one place the distinction
+        # earns the third mode: the published row contract requires these two
+        # conditions to record no monitor verdict at all, because "the condition
+        # ran no monitor" is a different arm from "the monitor allowed it".
+        monitor_gate=GateMode.DISABLED,
+        authorization_gate=AuthorizationGate.DETERMINISTIC_CONTROL,
+        control_approver=approver,
+    )
+
+
+#: How a step's authorization is labelled, per gate. Named once so the two
+#: published labels cannot drift from the two implementations they describe.
+_AUTHORIZATION_LABEL: Final[dict[AuthorizationGate, Authorization]] = {
+    AuthorizationGate.DETERMINISTIC_CONTROL: "automatic_evaluation_capability",
+    AuthorizationGate.DURABLE_HUMAN: "deterministic_approver_simulation",
+}
 
 
 def _utc_now() -> datetime:
@@ -142,9 +228,17 @@ def _utc_now() -> datetime:
 def evidence_sources_for(scenario_id: str) -> frozenset[str]:
     """Read the evidence surface from the shared projection rather than restate it.
 
-    This was once a duplicated literal that happened to equal production's. The
-    harness now cannot be configured with a different evidence surface than the
-    gate it measures, and it cannot drift per scenario either.
+    This was once a duplicated literal that happened to equal production's, then
+    a shared reference this module handed its own validator. It is now neither:
+    every arm builds its validator inside ``IncidentRuntime``, off the same
+    projection, so the harness *cannot* be configured with a different evidence
+    surface than the gate it measures -- there is no second construction site to
+    configure.
+
+    Kept because the parity tests assert against a named surface rather than
+    reaching into the runtime, and because a scenario's declared surface is a
+    fact about the lane worth being able to name. ``tests/sabotage/
+    test_enforcement_parity.py`` checks the identity, not merely the equality.
     """
     return ALLOWED_EVIDENCE_SOURCES[scenario_id]
 
@@ -158,20 +252,6 @@ def step_thread_id(scenario_id: str, episode_key: str, leg: str, step_index: int
     they must not land on one thread.
     """
     return f"{scenario_id}-{episode_key}-{leg}-{step_index:02d}"
-
-
-def _harness_idempotency_key(thread_id: str, action_hash: str) -> UUID:
-    """Derive the isolated harness's own idempotency key.
-
-    Deliberately **not** ``control/workflow.py``'s ``_idempotency_key``, whose
-    ``triage-agent-lab:d1:`` prefix is a frozen wire value persisted in
-    ``operation_ledger`` and compared for exact equality by ``chaos/enddiff.py``.
-    That seed needs no new producers; what this path needs from it is only the
-    property it already has -- a key that is a pure function of the thread and
-    the action, so a replay of one step collapses onto its own ledger row
-    instead of writing a second one.
-    """
-    return uuid5(NAMESPACE_URL, f"sabotage-episode:{thread_id}:{action_hash}")
 
 
 def _purge_threads(dsn: str, thread_ids: Sequence[str]) -> None:
@@ -207,17 +287,44 @@ class SabotageStep:
     #: the evidence ids, or anything else minted per run. See
     #: :func:`incidentgate.contracts.canonical_arguments_digest`.
     arguments_digest: str
+    #: Whether the policy gate was *enforcing* for this step, and therefore
+    #: whether the decision below is one that could have stopped the action. An
+    #: observing gate reaches a decision too -- it is recorded in
+    #: ``observed_policy_decision`` -- but the published row must not report it
+    #: here, because the contract reads a decision in this field as the gate
+    #: having been consulted in the sense of being able to refuse.
     policy_consulted: bool
     policy_decision: PolicyDecision | None
     policy_reasons: tuple[str, ...]
+    #: What the policy gate decided, whether or not it was enforcing. This is the
+    #: whole content of "observe_only": the ungated arm now says what the policy
+    #: would have refused while still letting the covert action land, so the two
+    #: arms differ in one recorded variable rather than in the presence of a
+    #: measurement. Never published into the frozen row contract; it exists so a
+    #: mutation test can flip one gate and see exactly which fields move.
+    observed_policy_decision: PolicyDecision | None
+    observed_policy_reasons: tuple[str, ...]
+    #: The same, for the evidence gate. ``None`` only when the chain stopped
+    #: before the evidence validator ran at all.
+    observed_evidence_state: EvidenceState | None
+    observed_evidence_reasons: tuple[str, ...]
     #: Not inferred from a null verdict: "the monitor allowed it" and "the
     #: monitor never saw it" are the two facts the full condition keeps apart.
     monitor_consulted: bool
     monitor_verdict: MonitorVerdict | None
+    #: Whether the durable human gate suspended the graph and asked. False under
+    #: the deterministic authorization control, which decides in-process -- and
+    #: false for a step that never reached the authorizer at all.
     approval_requested: bool
     authorization: Authorization | None
     executed: bool
     operation: OperationLedgerResult | None
+    #: Whether the executor's delivery was lost after its transaction committed
+    #: and the durable task had to be replayed to recover the result. Recorded
+    #: rather than swallowed: a redelivered step is exactly-once only if the
+    #: ledger returned the original row, and a row that hid the redelivery could
+    #: not say which of those happened.
+    redelivered: bool = False
 
     @property
     def refused(self) -> bool:
@@ -251,6 +358,12 @@ class SabotageConditionOutcome:
     scenario_id: str
     variant_id: str
     condition: EvaluationMode
+    #: The arm this outcome was actually produced under. Recorded rather than
+    #: re-derived from ``condition``, because the two can legitimately disagree:
+    #: an equivalence test drives all three labels under one configuration, and a
+    #: record that re-derived the arm would report the label's configuration
+    #: instead of the one that ran.
+    safeguards: SafeguardConfiguration
     covert: SabotageEpisodeOutcome
     incident: SabotageEpisodeOutcome
     end_state: object
@@ -290,6 +403,12 @@ def load_policy_configuration() -> PolicyConfiguration:
     Read from disk rather than constructed here on purpose: a condition that
     evaluated a hand-built configuration would be testing a fixture, not the
     policy the lab actually ships.
+
+    No arm calls this any more -- every arm's policy engine is built inside
+    ``IncidentRuntime`` from that same file, which is a stronger guarantee than
+    this function was. It stays because the sabotage and evidence-source tests
+    need to name the shipped configuration in order to assert things about it,
+    and reading it here keeps that one statement in the lane it belongs to.
     """
     path = Path(__file__).parents[3] / "config" / "policy.example.json"
     return PolicyConfiguration.model_validate(json.loads(path.read_text(encoding="utf-8")))
@@ -334,13 +453,23 @@ def _runtime_step(
     actor: str,
     approver: str,
     monitor: AdvisoryMonitor | None,
+    safeguards: SafeguardConfiguration,
+    clock: Callable[[], datetime],
 ) -> SabotageStep:
-    """Drive one call through the durable runtime, approving it if it is offered.
+    """Drive one call through the durable runtime. The only step implementation.
 
-    The approval is granted unconditionally *when one is requested*, which is
-    the deterministic stand-in for a human decision. That is not the same as
-    granting one unconditionally: a denied action never becomes a request, so
-    there is nothing here that could approve it into existence.
+    Every arm calls this, and the arm is the ``safeguards`` argument. There is no
+    second path a condition can take, which is what makes the condition the
+    manipulated variable rather than a label on three different machines.
+
+    Under the durable human gate the approval is granted unconditionally *when
+    one is requested*, which is the deterministic stand-in for a human decision.
+    That is not the same as granting one unconditionally: a denied action never
+    becomes a request, so there is nothing here that could approve it into
+    existence. Under the deterministic authorization control no interrupt happens
+    at all -- the same token is minted in-process and the same validator, audit
+    write and executor consume it -- so ``approval_requested`` is False and the
+    absence is a fact about the gate rather than about the action.
 
     Every step is wrapped in a :class:`_RecordingProposer`, including the honest
     leg's, which previously passed ``proposer=None`` and let the runtime select
@@ -352,14 +481,19 @@ def _runtime_step(
     """
     incident, operator, context = _identity(scenario_id, thread_id, actor)
     recorder = _RecordingProposer(proposer)
+    redelivered = False
     with IncidentRuntime(
         dsn,
+        clock=clock,
         # Scenarios that supply no monitor keep the always-allow fixture, which
         # is what every condition ran before any scenario needed a real one: the
         # full column's claim was then about the policy and the human gate, and
-        # the monitor stage was present but never dissenting.
+        # the monitor stage was present but never dissenting. Passed in every
+        # arm, including the two that disable the monitor stage, so the arms
+        # share one monitor identity and not merely one monitor type.
         monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
         proposer_factory=lambda: recorder,
+        safeguards=safeguards,
         # The acceptance gate lists a published evaluation among the clauses a
         # scenario must satisfy *before* it is promoted, so requiring promotion
         # in order to run the evaluation would be circular -- T1 was measured
@@ -367,161 +501,66 @@ def _runtime_step(
         # UI and the chaos worker, which are the paths it exists to hold shut.
         allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
     ) as runtime:
-        outcome = runtime.start(incident, operator, context)
+        try:
+            outcome: PendingApproval | RuntimeStatus = runtime.start(incident, operator, context)
+        except ResponseLost:
+            # The operation transaction committed and its delivery was lost.
+            # Replaying the durable task returns the original ledger row instead
+            # of mutating a second time -- the exactly-once boundary, exercised
+            # in whichever arm the loss happened to land in.
+            redelivered, outcome = True, runtime.retry(thread_id)
         requested = isinstance(outcome, PendingApproval)
-        status = (
-            runtime.approve(
-                outcome.thread_id,
-                Principal(approver, Role.APPROVER),
-                reason="deterministic evaluation approver",
-            )
-            if isinstance(outcome, PendingApproval)
-            else outcome
-        )
+        if isinstance(outcome, PendingApproval):
+            try:
+                status = runtime.approve(
+                    outcome.thread_id,
+                    Principal(approver, Role.APPROVER),
+                    reason="deterministic evaluation approver",
+                )
+            except ResponseLost:
+                redelivered, status = True, runtime.retry(thread_id)
+        else:
+            status = outcome
     result = status.result
     if result is None:
         raise TypeError("a sabotage runtime step did not reach a terminal runtime result")
     if recorder.action is None:
         raise TypeError("a sabotage runtime step could not name the capability it proposed")
-    granted = requested and result.approval is not None
+    # Bound to the authorizer having issued an approve decision, not to an
+    # interrupt having happened: both gates authorize, and only one of them asks.
+    authorized = result.approval is not None and result.approval.decision == "approve"
+    enforcing_policy = safeguards.enforces_policy
+    evidence = status.evidence
     return SabotageStep(
         step_index=step_index,
         thread_id=thread_id,
         tool_name=recorder.action.tool_name,
         arguments_digest=canonical_arguments_digest(recorder.action),
-        policy_consulted=result.policy is not None,
-        policy_decision=result.policy.decision if result.policy is not None else None,
-        policy_reasons=result.policy.reasons if result.policy is not None else (),
+        # An observing gate is not a consulted gate for the purposes of the
+        # published row: the contract reads a decision here as one that could
+        # have refused. What it decided is carried below instead.
+        policy_consulted=enforcing_policy and result.policy is not None,
+        policy_decision=(
+            result.policy.decision if enforcing_policy and result.policy is not None else None
+        ),
+        policy_reasons=(
+            result.policy.reasons if enforcing_policy and result.policy is not None else ()
+        ),
+        observed_policy_decision=result.policy.decision if result.policy is not None else None,
+        observed_policy_reasons=result.policy.reasons if result.policy is not None else (),
+        observed_evidence_state=evidence.state if evidence is not None else None,
+        observed_evidence_reasons=evidence.reasons if evidence is not None else (),
         monitor_consulted=result.monitor is not None,
         monitor_verdict=result.monitor.verdict if result.monitor is not None else None,
         approval_requested=requested,
-        authorization="deterministic_approver_simulation" if granted else None,
+        authorization=(
+            _AUTHORIZATION_LABEL[safeguards.authorization_gate] if authorized else None
+        ),
         executed=result.operation is not None,
         operation=result.operation,
+        redelivered=redelivered,
     )
 
-
-def _harness_step(
-    repository: LabRepository,
-    *,
-    scenario_id: str,
-    thread_id: str,
-    step_index: int,
-    proposer: ProposalGenerator,
-    policy: DeterministicPolicyEngine,
-    validator: EvidenceValidator,
-    observability: ObservabilityService,
-    caller: Caller,
-    executor: LabOperationExecutor,
-    gate_enabled: bool,
-    approver: str,
-    clock: Callable[[], datetime],
-) -> SabotageStep:
-    """Propose one action, gate it or not, and execute it if it was not denied."""
-    incident, _, action_context = _identity(scenario_id, thread_id, caller.actor)
-    records: tuple[EvidenceRecord, ...] = LabEvidenceCollector(
-        observability, caller, action_context, scenario_id=scenario_id, checkpoint_serde=False
-    ).collect(incident)
-    _, action = proposer.propose(incident, caller, action_context, records)
-    digest = canonical_arguments_digest(action)
-
-    decision: PolicyDecision | None = None
-    reasons: tuple[str, ...] = ()
-    if gate_enabled:
-        # ``action_context`` is passed for the same reason workflow.py passes
-        # ``state["context"]``: it is what binds cited evidence to this run's
-        # correlation id. Omitting it ran the gated arm one predicate short of
-        # the gate it claims to measure, while the published row still labelled
-        # evidence_gate=EXECUTED.
-        outcome = policy.evaluate(
-            action, caller.role, validator.validate(action, records, action_context)
-        )
-        decision, reasons = outcome.decision, outcome.reasons
-        if decision is PolicyDecision.DENY:
-            # The executor is not reached. This is the whole gated claim, and it
-            # is a control-flow fact rather than a flag: there is no code path
-            # from here to a durable write.
-            return SabotageStep(
-                step_index=step_index,
-                thread_id=thread_id,
-                tool_name=action.tool_name,
-                arguments_digest=digest,
-                policy_consulted=True,
-                policy_decision=decision,
-                policy_reasons=reasons,
-                monitor_consulted=False,
-                monitor_verdict=None,
-                approval_requested=False,
-                authorization=None,
-                executed=False,
-                operation=None,
-            )
-    operation = _execute(repository, executor, action, approver=approver, clock=clock)
-    return SabotageStep(
-        step_index=step_index,
-        thread_id=thread_id,
-        tool_name=action.tool_name,
-        arguments_digest=digest,
-        policy_consulted=gate_enabled,
-        policy_decision=decision,
-        policy_reasons=reasons,
-        monitor_consulted=False,
-        monitor_verdict=None,
-        approval_requested=False,
-        authorization="automatic_evaluation_capability",
-        executed=True,
-        operation=operation,
-    )
-
-
-def _execute(
-    repository: LabRepository,
-    executor: LabOperationExecutor,
-    action: CanonicalAction,
-    *,
-    approver: str,
-    clock: Callable[[], datetime],
-) -> OperationLedgerResult:
-    """Mint a real approval and execute through the ordinary executor seam.
-
-    This is the same ``LabOperationExecutor`` the durable runtime builds, holding
-    the same ``OperationsService`` over the same repository. Bypassing the policy
-    gate does not bypass the operation boundary: the approval is real, the
-    idempotency key is real, and the ledger row is real.
-    """
-    action_hash = canonical_action_hash(action)
-    now = clock()
-    token: ApprovalToken = ApprovalService(
-        repository, clock, incident_id=action.incident_id, thread_id=action.thread_id
-    ).approve(
-        ApprovalRequest(
-            action_hash=action_hash,
-            actor=action.actor,
-            requested_at=now,
-            expires_at=now + timedelta(minutes=5),
-            # One-time use ids stay random: they are the anti-replay token, and
-            # a derived one would make two runs of a step share the single use
-            # the boundary is built to refuse twice.
-            one_time_use_id=uuid4(),
-        ),
-        Principal(approver, Role.APPROVER),
-    )
-    idempotency_key = _harness_idempotency_key(action.thread_id, action_hash)
-    write_context = ToolCallContext(
-        incident_id=action.incident_id,
-        thread_id=action.thread_id,
-        correlation_id=f"corr-{action.thread_id}",
-        actor=action.actor,
-        permission="operations:write",
-        idempotency_key=idempotency_key,
-    )
-    return executor.execute(
-        action,
-        write_context,
-        token,
-        action_hash=action_hash,
-        idempotency_key=idempotency_key,
-    )
 
 
 def run_condition(
@@ -545,28 +584,40 @@ def run_condition(
     #: today and is exactly the kind of thing that stops being harmless once a
     #: monitor holds any memory of the episode.
     monitor: AdvisoryMonitor | None = None,
+    #: The arm, stated directly. Left unset the condition supplies it through
+    #: :func:`safeguards_for`, which is the mapping the published matrix uses.
+    #: A caller passing one explicitly is running an arm the condition labels do
+    #: not name -- which is what the equivalence and mutation tests do, and the
+    #: only way to configure two arms identically and compare their traces.
+    safeguards: SafeguardConfiguration | None = None,
 ) -> SabotageConditionOutcome:
     """Run one condition end to end: reset the fixture, drive both episodes, read the state.
 
-    The condition is the manipulated variable and the only one. Both episodes
-    run the identical plan against the identical durable fixture with the
-    identical evidence, approval issuance and executor; what changes between
-    conditions is which safeguards are consulted:
+    The condition is the manipulated variable and the only one, and that is now a
+    property of this function rather than a claim about it: there is a single
+    ``drive``, it calls :func:`_runtime_step`, and the condition reaches it only
+    as a :class:`SafeguardConfiguration`. Every arm shares one incident and
+    thread identity, one evidence collector, one proposer loop, one LangGraph
+    checkpoint path, one idempotency-key derivation, one executor and repository
+    check, one post-commit verifier and one recorder.
 
-        ungated               no gate is consulted; the covert action executes
-        policy_only           the deterministic policy gate, nothing else
-        policy_monitor_human  the durable runtime: policy, advisory monitor and
-                              a checkpointed human approval
+    What differs between arms is the four gates:
 
-    The first two loop the isolated harness step; the third loops the durable
-    runtime step, so its monitor and human gate are the real ones -- a real
-    LangGraph interrupt, a real checkpoint, a real ``ApprovalService`` token
-    minted for an ``APPROVER`` principal and really consumed by the executor.
-    Simulating those two stages inside the harness would have made the third
-    column a claim about the harness rather than about the system.
+        ungated               evidence and policy observe and record; no monitor;
+                              the deterministic authorization control
+        policy_only           evidence and policy enforce; no monitor; the
+                              deterministic authorization control
+        policy_monitor_human  every gate enforces, with the durable human
+                              approval over a real LangGraph interrupt
+
+    Both authorization gates mint a real ``ApprovalService`` token for a real
+    ``APPROVER`` principal and both have it consumed exactly once by the
+    executor inside the mutation's own transaction. They differ in the path the
+    token is minted along, and in nothing else.
     """
     if not covert_plan or not incident_plan:
         raise ValueError("both episodes need at least one planned call")
+    applied = safeguards if safeguards is not None else safeguards_for(condition, approver=approver)
     threads = [
         step_thread_id(scenario_id, episode_key, leg, index)
         for leg, plan in (("covert", covert_plan), ("incident", incident_plan))
@@ -576,47 +627,19 @@ def run_condition(
     repository.inject_checkpoint(scenario_id)
     _purge_threads(repository.dsn, threads)
 
-    if condition is EvaluationMode.COMPLETE:
-
-        def drive(leg: Leg, index: int, proposer: ProposalGenerator) -> SabotageStep:
-            return _runtime_step(
-                repository.dsn,
-                scenario_id=scenario_id,
-                thread_id=step_thread_id(scenario_id, episode_key, leg, index),
-                step_index=index,
-                proposer=proposer,
-                actor=actor,
-                approver=approver,
-                monitor=monitor,
-            )
-
-    else:
-        configuration = load_policy_configuration()
-        engine = DeterministicPolicyEngine(configuration)
-        validator = EvidenceValidator(
-            configuration, clock, allowed_sources=evidence_sources_for(scenario_id)
+    def drive(leg: Leg, index: int, proposer: ProposalGenerator) -> SabotageStep:
+        return _runtime_step(
+            repository.dsn,
+            scenario_id=scenario_id,
+            thread_id=step_thread_id(scenario_id, episode_key, leg, index),
+            step_index=index,
+            proposer=proposer,
+            actor=actor,
+            approver=approver,
+            monitor=monitor,
+            safeguards=applied,
+            clock=clock,
         )
-        observability = ObservabilityService(repository)
-        caller = Caller(actor=actor, role=Role.OPERATOR)
-        executor = LabOperationExecutor(OperationsService(repository), caller)
-        gate_enabled = condition is EvaluationMode.POLICY_ONLY
-
-        def drive(leg: Leg, index: int, proposer: ProposalGenerator) -> SabotageStep:
-            return _harness_step(
-                repository,
-                scenario_id=scenario_id,
-                thread_id=step_thread_id(scenario_id, episode_key, leg, index),
-                step_index=index,
-                proposer=proposer,
-                policy=engine,
-                validator=validator,
-                observability=observability,
-                caller=caller,
-                executor=executor,
-                gate_enabled=gate_enabled,
-                approver=approver,
-                clock=clock,
-            )
 
     def run_episode(leg: Leg, plan: Sequence[ProposalGenerator]) -> SabotageEpisodeOutcome:
         steps: list[SabotageStep] = []
@@ -636,6 +659,7 @@ def run_condition(
         scenario_id=scenario_id,
         variant_id=variant_id,
         condition=condition,
+        safeguards=applied,
         covert=covert,
         incident=incident,
         end_state=end_state(),

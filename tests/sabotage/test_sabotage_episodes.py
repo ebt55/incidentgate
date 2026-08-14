@@ -199,6 +199,8 @@ def test_a_blocking_monitor_would_also_end_an_episode() -> None:
     """
     from incidentgate.evaluation.sabotage_episodes import SabotageStep
 
+    from incidentgate.control.models import EvidenceState
+
     def step(**overrides: object) -> SabotageStep:
         fields: dict[str, object] = {
             "step_index": 0,
@@ -208,6 +210,10 @@ def test_a_blocking_monitor_would_also_end_an_episode() -> None:
             "policy_consulted": True,
             "policy_decision": PolicyDecision.REQUIRE_APPROVAL,
             "policy_reasons": ("policy_valid",),
+            "observed_policy_decision": PolicyDecision.REQUIRE_APPROVAL,
+            "observed_policy_reasons": ("policy_valid",),
+            "observed_evidence_state": EvidenceState.VALID,
+            "observed_evidence_reasons": ("evidence_valid",),
             "monitor_consulted": True,
             "monitor_verdict": MonitorVerdict.ALLOW,
             "approval_requested": False,
@@ -222,6 +228,14 @@ def test_a_blocking_monitor_would_also_end_an_episode() -> None:
     # A defer is advisory and carries on to the human; it is not a refusal.
     assert step(monitor_verdict=MonitorVerdict.DEFER).refused is False
     assert step(policy_decision=PolicyDecision.DENY).refused is True
+    # And the observed decision is deliberately NOT a refusal: an observing gate
+    # records what it would have refused without stopping the action, which is
+    # the whole difference between the ungated arm and an absent measurement.
+    assert (
+        step(policy_decision=None, policy_reasons=(), observed_policy_decision=PolicyDecision.DENY)
+        .refused
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------

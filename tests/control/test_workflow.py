@@ -30,6 +30,7 @@ from incidentgate.contracts import (
     ToolCallContext,
     VerificationResult,
     canonical_action_hash,
+    canonical_arguments_digest,
 )
 from incidentgate.control import (
     Caller,
@@ -40,6 +41,10 @@ from incidentgate.control import (
     build_workflow_graph,
 )
 from incidentgate.control.models import ControlAuditEvent
+from incidentgate.control.monitor_decision import MonitorThresholds
+from incidentgate.control.monitor_input import MonitorConsultation
+from incidentgate.control.monitor_v2 import MonitorAssessmentV2, MonitorErrorKind, MonitorOutcomeV2
+from incidentgate.control.safeguards import GateMode, SafeguardConfiguration
 from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -193,6 +198,71 @@ class Monitor:
         )
 
 
+class SemanticMonitor:
+    def __init__(self, outcome: MonitorOutcomeV2) -> None:
+        self.outcome, self.calls = outcome, 0
+
+    def assess_consultation(self, consultation: object) -> MonitorOutcomeV2:
+        self.calls += 1
+        return self.outcome
+
+
+class ConsultationFactory:
+    def __init__(self) -> None:
+        self.action: CanonicalAction | None = None
+        self.incident: IncidentIdentity | None = None
+        self.records: tuple[EvidenceRecord, ...] | None = None
+        self.evidence: object | None = None
+        self.policy: object | None = None
+        self.safeguards: SafeguardConfiguration | None = None
+
+    def build(
+        self,
+        *,
+        incident: IncidentIdentity,
+        action: CanonicalAction,
+        records: tuple[EvidenceRecord, ...],
+        evidence: object,
+        policy: object,
+        safeguards: SafeguardConfiguration,
+    ) -> MonitorConsultation:
+        self.incident, self.action, self.records = incident, action, records
+        self.evidence, self.policy, self.safeguards = evidence, policy, safeguards
+        return MonitorConsultation(
+            incident=incident,
+            action=action,
+            records=records,
+            evidence=evidence,  # type: ignore[arg-type]
+            policy=policy,  # type: ignore[arg-type]
+            safeguards=safeguards,
+        )
+
+
+class AssessmentMonitor:
+    def __init__(self, score: float) -> None:
+        self.score, self.calls = score, 0
+
+    def assess_consultation(self, consultation: object) -> MonitorOutcomeV2:
+        self.calls += 1
+        action_value = consultation.action  # type: ignore[attr-defined]
+        return MonitorOutcomeV2(
+            outcome="assessed",
+            assessment=MonitorAssessmentV2(
+                risk_score=self.score,
+                risk_categories=(),
+                evidence_support="supported",
+                sequence_risk="none",
+                rationale="fixture",
+                evaluated_action_fingerprint=canonical_arguments_digest(action_value),
+            ),
+        )
+
+
+class UnrenderableConsultationFactory:
+    def build(self, **_: object) -> MonitorConsultation:
+        raise ValueError("fixture cannot render")
+
+
 class Tokens:
     """In-memory test double for binding, expiry, and one-time-use validation."""
 
@@ -282,7 +352,13 @@ def system(
     executor: Executor | None = None,
     proposer: object | None = None,
     collector: Collector | None = None,
-) -> tuple[object, Monitor, Tokens, Executor, Verifier, Audit]:
+    monitor_v2: SemanticMonitor | None = None,
+    consultation_factory: ConsultationFactory | None = None,
+    thresholds: MonitorThresholds | None = None,
+    safeguards: SafeguardConfiguration | None = None,
+    no_monitor: bool = False,
+    both_monitor_config: bool = False,
+) -> tuple[object, object, Tokens, Executor, Verifier, Audit]:
     policy = policy_config()
     monitor, token_validator = Monitor(verdict, mismatch=mismatch), tokens or Tokens()
     operation_executor, verifier, audit = executor or Executor(), Verifier(), Audit()
@@ -294,12 +370,20 @@ def system(
                 policy, lambda: NOW, allowed_sources=ALLOWED_SOURCES
             ),
             policy=DeterministicPolicyEngine(policy),
-            monitor=monitor,
+            monitor=(
+                None
+                if no_monitor or (monitor_v2 is not None and not both_monitor_config)
+                else monitor
+            ),
+            monitor_v2=monitor_v2,
+            monitor_consultation_factory=consultation_factory,
+            monitor_thresholds=thresholds,
             token_validator=token_validator,
             executor=operation_executor,
             verifier=verifier,
             audit=audit,
             clock=lambda: NOW,
+            safeguards=safeguards or SafeguardConfiguration(),
         ),
         checkpointer=MemorySaver(),
     )
@@ -451,6 +535,137 @@ def test_monitor_terminal_denials_skip_approval_and_execution(
     assert completed["result"].report.final_state is IncidentState.BLOCKED
     assert monitor.calls == 1 and tokens.calls == executor.calls == verifier.calls == 0
     assert [event.transition for event in audit.events] == ["policy", "monitor"]
+
+
+@pytest.mark.parametrize("kind", list(MonitorErrorKind))
+def test_v2_monitor_errors_enforce_as_a_distinct_terminal(kind: MonitorErrorKind) -> None:
+    semantic = SemanticMonitor(MonitorOutcomeV2(outcome="error", error_kind=kind))
+    factory = ConsultationFactory()
+    safeguards = SafeguardConfiguration()
+    graph, _, tokens, executor, verifier, audit = system(
+        monitor_v2=semantic,
+        consultation_factory=factory,
+        thresholds=MonitorThresholds(defer_at=0.4, block_at=0.8),
+        safeguards=safeguards,
+    )
+    completed, _ = invoke(graph, initial_state())
+    result = completed["result"]
+    assert result.reasons == ("monitor_error",)
+    assert result.monitor is None
+    assert semantic.calls == 1 and tokens.calls == executor.calls == verifier.calls == 0
+    assert factory.incident is completed["incident"]
+    assert factory.action is completed["action"]
+    assert factory.records is completed["records"]
+    assert factory.evidence is completed["evidence"]
+    assert factory.policy is completed["policy"]
+    assert factory.safeguards is safeguards
+    assert [event.reason for event in audit.events] == [
+        "policy_valid",
+        f"monitor_error:{kind.value}",
+    ]
+
+
+def test_v2_monitor_error_observe_only_audits_once_and_proceeds() -> None:
+    semantic = SemanticMonitor(
+        MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.TIMEOUT)
+    )
+    graph, _, _, executor, verifier, audit = system(
+        monitor_v2=semantic,
+        consultation_factory=ConsultationFactory(),
+        thresholds=MonitorThresholds(defer_at=0.4, block_at=0.8),
+        safeguards=SafeguardConfiguration(monitor_gate=GateMode.OBSERVE_ONLY),
+    )
+    paused, config = invoke(graph, initial_state())
+    completed = resume(
+        graph,
+        config,
+        {
+            "decision": "approve",
+            "approver": "approver-1",
+            "token": approved_token(paused["policy"].action_hash),
+        },
+    )
+    assert completed["result"].final_state == "resolved"
+    assert semantic.calls == executor.calls == verifier.calls == 1
+    assert [event.reason for event in audit.events].count("monitor_error:timeout") == 1
+
+
+def test_v2_consultation_factory_validation_error_is_a_monitor_error() -> None:
+    semantic = SemanticMonitor(
+        MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.TIMEOUT)
+    )
+    graph, _, tokens, executor, verifier, audit = system(
+        monitor_v2=semantic,
+        consultation_factory=UnrenderableConsultationFactory(),  # type: ignore[arg-type]
+        thresholds=MonitorThresholds(defer_at=0.4, block_at=0.8),
+    )
+    completed, _ = invoke(graph, initial_state())
+    assert completed["result"].reasons == ("monitor_error",)
+    assert semantic.calls == tokens.calls == executor.calls == verifier.calls == 0
+    assert audit.events[-1].reason == "monitor_error:input_unrenderable"
+
+
+def test_v2_monitor_disabled_never_calls_it() -> None:
+    semantic = SemanticMonitor(
+        MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.TIMEOUT)
+    )
+    graph, _, _, _, _, _ = system(
+        monitor_v2=semantic,
+        consultation_factory=ConsultationFactory(),
+        thresholds=MonitorThresholds(defer_at=0.4, block_at=0.8),
+        safeguards=SafeguardConfiguration(monitor_gate=GateMode.DISABLED),
+    )
+    paused, _ = invoke(graph, initial_state())
+    assert "__interrupt__" in paused
+    assert semantic.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("score", "verdict", "terminal_reason"),
+    [
+        (0.1, MonitorVerdict.ALLOW, None),
+        (0.5, MonitorVerdict.DEFER, None),
+        (0.9, MonitorVerdict.BLOCK, "monitor_block"),
+    ],
+)
+def test_v2_assessments_bind_the_live_action_and_keep_v1_downstream_semantics(
+    score: float, verdict: MonitorVerdict, terminal_reason: str | None
+) -> None:
+    semantic = AssessmentMonitor(score)
+    graph, _, _, _, _, _ = system(
+        monitor_v2=semantic,  # type: ignore[arg-type]
+        consultation_factory=ConsultationFactory(),
+        thresholds=MonitorThresholds(defer_at=0.4, block_at=0.8),
+    )
+    values, _ = invoke(graph, initial_state())
+    if terminal_reason is not None:
+        assert values["result"].reasons == (terminal_reason,)
+        assert values["result"].monitor.evaluated_action_hash == values["policy"].action_hash
+        return
+    assert values["monitor"].verdict is verdict
+    assert values["monitor"].evaluated_action_hash == values["policy"].action_hash
+
+
+def test_workflow_dependencies_require_one_complete_monitor_configuration() -> None:
+    semantic = SemanticMonitor(
+        MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.TIMEOUT)
+    )
+    factory = ConsultationFactory()
+    thresholds = MonitorThresholds(defer_at=0.4, block_at=0.8)
+    # Existing v1 construction remains valid; v2 requires all three pieces.
+    system()
+    system(monitor_v2=semantic, consultation_factory=factory, thresholds=thresholds)
+    with pytest.raises(ValueError, match="exactly one monitor"):
+        system(no_monitor=True)
+    with pytest.raises(ValueError, match="exactly one monitor"):
+        system(monitor_v2=semantic, consultation_factory=factory)
+    with pytest.raises(ValueError, match="exactly one monitor"):
+        system(
+            monitor_v2=semantic,
+            consultation_factory=factory,
+            thresholds=thresholds,
+            both_monitor_config=True,
+        )
 
 
 def test_monitor_defer_requires_explicit_human_reason() -> None:

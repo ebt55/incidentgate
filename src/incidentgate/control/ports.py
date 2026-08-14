@@ -16,11 +16,14 @@ from incidentgate.contracts import (
     IncidentIdentity,
     MonitorVerdict,
     OperationLedgerResult,
+    PolicyOutcome,
     ToolCallContext,
     VerificationResult,
 )
 
-from .models import Caller, ControlAuditEvent
+from .models import Caller, ControlAuditEvent, EvidenceValidation
+from .monitor_input import MonitorConsultation
+from .safeguards import SafeguardConfiguration
 
 
 class EvidenceCollector(Protocol):
@@ -37,6 +40,26 @@ class ProposalGenerator(Protocol):
         context: ToolCallContext,
         records: tuple[EvidenceRecord, ...],
     ) -> tuple[Hypothesis, CanonicalAction]: ...
+
+
+class MonitorConsultationFactory(Protocol):
+    """Build the v2 monitor input from the graph's live, typed facts.
+
+    This deliberately keeps the unrendered value mapping inside an adapter.  The
+    workflow boundary cannot pass an open-ended dictionary to a model-facing
+    component, and must not reconstruct policy or evidence facts a second time.
+    """
+
+    def build(
+        self,
+        *,
+        incident: IncidentIdentity,
+        action: CanonicalAction,
+        records: tuple[EvidenceRecord, ...],
+        evidence: EvidenceValidation,
+        policy: PolicyOutcome,
+        safeguards: SafeguardConfiguration,
+    ) -> MonitorConsultation: ...
 
 
 class ApprovalTokenValidator(Protocol):

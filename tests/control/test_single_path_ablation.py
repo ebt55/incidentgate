@@ -83,6 +83,9 @@ from incidentgate.control import (
     build_workflow_graph,
 )
 from incidentgate.control.models import ControlAuditEvent, EvidenceState
+from incidentgate.control.monitor_decision import MonitorThresholds
+from incidentgate.control.monitor_input import MonitorConsultation
+from incidentgate.control.monitor_v2 import MonitorErrorKind, MonitorOutcomeV2
 from incidentgate.control.ports import AuthorizationRequest
 from incidentgate.control.safeguards import (
     PRODUCTION_SAFEGUARDS,
@@ -294,6 +297,36 @@ class TracingMonitor:
         )
 
 
+class TracingSemanticMonitor:
+    def __init__(self, trace: Trace, outcome: MonitorOutcomeV2) -> None:
+        self._trace, self._outcome = trace, outcome
+
+    def assess_consultation(self, _: MonitorConsultation) -> MonitorOutcomeV2:
+        self._trace.record("assess_monitor")
+        return self._outcome
+
+
+class TracingConsultationFactory:
+    def build(
+        self,
+        *,
+        incident: IncidentIdentity,
+        action: CanonicalAction,
+        records: tuple[EvidenceRecord, ...],
+        evidence: object,
+        policy: object,
+        safeguards: SafeguardConfiguration,
+    ) -> MonitorConsultation:
+        return MonitorConsultation(
+            incident=incident,
+            action=action,
+            records=records,
+            evidence=evidence,  # type: ignore[arg-type]
+            policy=policy,  # type: ignore[arg-type]
+            safeguards=safeguards,
+        )
+
+
 class TracingTokens:
     def __init__(self, trace: Trace) -> None:
         self._trace, self.used = trace, set[UUID]()
@@ -475,6 +508,7 @@ def drive(
     mismatch: bool = False,
     tool_name: str = "operations.rollback",
     evidence_ids: tuple[str, ...] | None = None,
+    monitor_error: MonitorErrorKind | None = None,
 ) -> Arm:
     """Drive one arm to a terminal state, resuming the interrupt if there is one."""
     trace, policy = Trace(), policy_config()
@@ -484,13 +518,33 @@ def drive(
         if safeguards.authorization_gate is AuthorizationGate.DURABLE_HUMAN
         else TracingDeterministicControl(trace, hashes)
     )
+    semantic_monitor = (
+        TracingSemanticMonitor(
+            trace, MonitorOutcomeV2(outcome="error", error_kind=monitor_error)
+        )
+        if monitor_error is not None
+        else None
+    )
     graph = build_workflow_graph(
         WorkflowDependencies(
             collector=TracingCollector(trace, d1_records()),
             proposer=TracingProposer(trace, tool_name=tool_name, evidence_ids=evidence_ids),
             evidence_validator=TracingEvidenceValidator(trace, policy),
             policy=TracingPolicy(trace, policy),
-            monitor=TracingMonitor(trace, verdict, mismatch=mismatch),
+            monitor=(
+                None
+                if semantic_monitor is not None
+                else TracingMonitor(trace, verdict, mismatch=mismatch)
+            ),
+            monitor_v2=semantic_monitor,
+            monitor_consultation_factory=(
+                TracingConsultationFactory() if semantic_monitor is not None else None
+            ),
+            monitor_thresholds=(
+                MonitorThresholds(defer_at=0.4, block_at=0.8)
+                if semantic_monitor is not None
+                else None
+            ),
             token_validator=TracingTokens(trace),
             executor=TracingExecutor(trace),
             verifier=TracingVerifier(trace),
@@ -583,6 +637,22 @@ def test_every_arm_traverses_the_same_ordered_components() -> None:
     # And the order of everything they share is identical, not merely its set.
     assert traces["policy_only"] == traces["ungated"]
     assert [e for e in traces["complete"] if e in without_monitor] == without_monitor
+
+
+def test_monitor_error_uses_the_existing_monitor_path_and_stops_before_approval() -> None:
+    """A v2 error is a monitor-node outcome, not an alternate orchestration arm."""
+    driven = drive(COMPLETE, monitor_error=MonitorErrorKind.TIMEOUT)
+    assert driven.result.reasons == ("monitor_error",)
+    assert driven.result.monitor is None
+    assert normalized(driven.trace) == [
+        "collect",
+        "propose",
+        "validate_evidence",
+        "evaluate_policy",
+        "assess_monitor",
+        "audit:policy",
+        "audit:monitor",
+    ]
 
 
 def test_the_durable_interrupt_is_the_only_ordering_difference_between_arms() -> None:

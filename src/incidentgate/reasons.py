@@ -75,6 +75,7 @@ CITATIONS_REQUIRED: Final = "citations_required"
 # --------------------------------------------------------------------------
 MONITOR_BLOCK: Final = "monitor_block"
 MONITOR_ACTION_HASH_MISMATCH: Final = "monitor_action_hash_mismatch"
+MONITOR_ERROR: Final = "monitor_error"
 
 # --------------------------------------------------------------------------
 # Approval, result position.
@@ -212,6 +213,7 @@ AUDIT_REQUEST_EXPIRED: Final = "request_expired"
 # --------------------------------------------------------------------------
 APPROVAL_INVALID_PREFIX: Final = "approval_invalid:"
 MONITOR_VERDICT_PREFIX: Final = "monitor_verdict:"
+MONITOR_ERROR_PREFIX: Final = "monitor_error:"
 ARGUMENT_CONSTRAINT_PREFIX: Final = "argument_constraint:"
 UNENFORCEABLE_CONSTRAINT_PREFIX: Final = "unenforceable_constraint:"
 UNKNOWN_EVIDENCE_PREFIX: Final = "unknown_evidence:"
@@ -237,6 +239,26 @@ def monitor_verdict(verdict: object) -> str:
     of ``monitor_block``. Prefixing it says which axis the value belongs to.
     """
     return f"{MONITOR_VERDICT_PREFIX}{verdict}"
+
+
+_MONITOR_ERROR_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "provider_unavailable",
+        "timeout",
+        "response_truncated",
+        "response_malformed",
+        "schema_violation",
+        "echo_mismatch",
+        "input_unrenderable",
+        "cache_miss",
+    }
+)
+
+
+def monitor_error(kind: object) -> str:
+    """Name a bounded v2 monitor availability/validation failure for audit."""
+    value = str(kind)
+    return f"{MONITOR_ERROR_PREFIX}{value if value in _MONITOR_ERROR_KINDS else 'unknown'}"
 
 
 def argument_constraint(argument_name: str) -> str:
@@ -309,6 +331,7 @@ STATIC_REASONS: Final[frozenset[str]] = frozenset(
         CITATIONS_REQUIRED,
         MONITOR_BLOCK,
         MONITOR_ACTION_HASH_MISMATCH,
+        MONITOR_ERROR,
         HUMAN_REJECTED,
         DEFER_REASON_REQUIRED,
         APPROVAL_TOKEN_REQUIRED,
@@ -356,6 +379,7 @@ REASON_FAMILY_PREFIXES: Final[frozenset[str]] = frozenset(
     {
         APPROVAL_INVALID_PREFIX,
         MONITOR_VERDICT_PREFIX,
+        MONITOR_ERROR_PREFIX,
         ARGUMENT_CONSTRAINT_PREFIX,
         UNKNOWN_EVIDENCE_PREFIX,
         CROSS_CONTEXT_EVIDENCE_PREFIX,

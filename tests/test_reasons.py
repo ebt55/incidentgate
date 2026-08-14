@@ -48,6 +48,7 @@ FROZEN_STATIC_REASONS = frozenset(
         # monitor
         "monitor_action_hash_mismatch",
         "monitor_block",
+        "monitor_error",
         # approval, result position
         "approval_token_required",
         "defer_reason_required",
@@ -109,6 +110,7 @@ FROZEN_FAMILY_PREFIXES = frozenset(
         "embedded_instruction_data:",
         "expired_evidence:",
         "monitor_verdict:",
+        "monitor_error:",
         "stale_evidence:",
         "unallowed_evidence_source:",
         # Added with the policy-gate hardening: a constraint name the engine has
@@ -188,6 +190,7 @@ def test_is_known_reason_accepts_statics_and_populated_families() -> None:
     assert reasons.is_known_reason(reasons.unknown_evidence("ev-1"))
     assert reasons.is_known_reason(reasons.argument_constraint("component"))
     assert reasons.is_known_reason(reasons.monitor_verdict("allow"))
+    assert reasons.is_known_reason(reasons.monitor_error("timeout"))
 
 
 def test_is_known_reason_rejects_strangers_and_bare_prefixes() -> None:

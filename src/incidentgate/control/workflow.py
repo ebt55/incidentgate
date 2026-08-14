@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.graph import END, START, StateGraph
@@ -41,6 +41,7 @@ from incidentgate.reasons import (
     INCIDENT_CONTEXT_MISMATCH,
     MONITOR_ACTION_HASH_MISMATCH,
     MONITOR_BLOCK,
+    MONITOR_ERROR,
     NO_ACTION_EVIDENCE_VALIDATION_FAILED,
     POLICY_VALID,
     RECOVERY_FAILED,
@@ -49,6 +50,7 @@ from incidentgate.reasons import (
     TIME_BUDGET_EXHAUSTED,
     TOKEN_APPROVER_MISMATCH,
     approval_invalid,
+    monitor_error,
     monitor_verdict,
 )
 from incidentgate.scenario_registry import (
@@ -75,12 +77,17 @@ from .ports import (
     AuthorizationRequest,
     AuthorizationRequester,
     EvidenceCollector,
+    MonitorConsultationFactory,
     OperationExecutor,
     ProposalGenerator,
     RecoveryVerifier,
 )
 from .proposal import ProposalError
 from .safeguards import PRODUCTION_SAFEGUARDS, SafeguardConfiguration
+
+if TYPE_CHECKING:
+    from .monitor_decision import MonitorThresholds
+    from .monitor_v2 import AdvisoryMonitorV2
 
 
 class WorkflowState(TypedDict, total=False):
@@ -93,6 +100,7 @@ class WorkflowState(TypedDict, total=False):
     hypothesis: Hypothesis
     policy: Any
     monitor: Any
+    monitor_error: str
     idempotency_key: UUID
     human: HumanDecision
     operation: Any
@@ -109,7 +117,7 @@ class WorkflowDependencies:
         proposer: ProposalGenerator,
         evidence_validator: EvidenceValidator,
         policy: DeterministicPolicyEngine,
-        monitor: AdvisoryMonitor,
+        monitor: AdvisoryMonitor | None,
         token_validator: ApprovalTokenValidator,
         executor: OperationExecutor,
         verifier: RecoveryVerifier,
@@ -124,12 +132,25 @@ class WorkflowDependencies:
         # The authorization port. ``None`` selects the durable human interrupt,
         # which is the only authorizer the production host can reach.
         authorization: AuthorizationRequester | None = None,
+        monitor_v2: AdvisoryMonitorV2 | None = None,
+        monitor_consultation_factory: MonitorConsultationFactory | None = None,
+        monitor_thresholds: MonitorThresholds | None = None,
     ) -> None:
+        v2_bundle = (monitor_v2, monitor_consultation_factory, monitor_thresholds)
+        has_v1, has_any_v2 = monitor is not None, any(item is not None for item in v2_bundle)
+        has_complete_v2 = all(item is not None for item in v2_bundle)
+        if (has_v1 and has_any_v2) or (not has_v1 and not has_complete_v2):
+            raise ValueError(
+                "configure exactly one monitor: v1 monitor or complete v2 monitor bundle"
+            )
         self.collector = collector
         self.proposer = proposer
         self.evidence_validator = evidence_validator
         self.policy = policy
         self.monitor = monitor
+        self.monitor_v2 = monitor_v2
+        self.monitor_consultation_factory = monitor_consultation_factory
+        self.monitor_thresholds = monitor_thresholds
         self.token_validator = token_validator
         self.executor = executor
         self.verifier = verifier
@@ -448,7 +469,40 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         if policy.decision is PolicyDecision.DENY and dependencies.safeguards.enforces_policy:
             return {}
         with _span(_scenario_span("monitor", state), state):
-            return {"monitor": dependencies.monitor.assess(state["action"], evidence.digest)}
+            if dependencies.monitor is not None:
+                return {"monitor": dependencies.monitor.assess(state["action"], evidence.digest)}
+            assert (
+                dependencies.monitor_v2 is not None
+                and dependencies.monitor_consultation_factory is not None
+                and dependencies.monitor_thresholds is not None
+            )
+            try:
+                consultation = dependencies.monitor_consultation_factory.build(
+                    incident=state["incident"],
+                    action=state["action"],
+                    records=state["records"],
+                    evidence=evidence,
+                    policy=policy,
+                    safeguards=dependencies.safeguards,
+                )
+            except (TypeError, ValueError):
+                return {"monitor_error": "input_unrenderable"}
+            outcome = dependencies.monitor_v2.assess_consultation(consultation)
+            if outcome.outcome == "error":
+                assert outcome.error_kind is not None
+                return {"monitor_error": outcome.error_kind.value}
+            assert outcome.assessment is not None
+            try:
+                from .monitor_v2 import bind_assessment
+
+                result = bind_assessment(
+                    outcome.assessment, state["action"], dependencies.monitor_thresholds
+                )
+            except ValueError:
+                # A mismatched assessment is a failed consultation, never a
+                # verdict that can be counted as a monitor catch.
+                return {"monitor_error": "echo_mismatch"}
+            return {"monitor": result}
 
     def after_monitor(state: WorkflowState) -> str:
         if "result" in state:
@@ -463,6 +517,8 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         # rather than a lenient one, and it fails closed in every arm.
         if monitor_result and monitor_result.evaluated_action_hash != state["policy"].action_hash:
             return "monitor_mismatch"
+        if state.get("monitor_error") and dependencies.safeguards.enforces_monitor:
+            return "monitor_error"
         return (
             "block"
             if monitor_result
@@ -551,6 +607,23 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             )
         }
 
+    def monitor_error_terminal(state: WorkflowState) -> WorkflowState:
+        policy = state["policy"]
+        _audit(state, "policy", POLICY_VALID)
+        _audit(state, "monitor", monitor_error(state["monitor_error"]))
+        return {
+            "result": WorkflowResult(
+                final_state="blocked",
+                reasons=(MONITOR_ERROR,),
+                action_hash=policy.action_hash,
+                evidence_ids=state["action"].evidence_ids,
+                policy=policy,
+                hypothesis=state["hypothesis"],
+                idempotency_key=state["idempotency_key"],
+                report=_report(state, IncidentState.BLOCKED),
+            )
+        }
+
     def preapproval_audit(state: WorkflowState) -> WorkflowState:
         """Persist the decision chain before yielding control to a human.
 
@@ -563,6 +636,8 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         monitor_result = state.get("monitor")
         if monitor_result:
             _audit(state, "monitor", monitor_verdict(monitor_result.verdict))
+        elif state.get("monitor_error"):
+            _audit(state, "monitor", monitor_error(state["monitor_error"]))
         return {}
 
     def approval(state: WorkflowState) -> WorkflowState:
@@ -759,6 +834,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
     graph.add_node("deny", deny)
     graph.add_node("blocked", blocked)
     graph.add_node("monitor_mismatch", monitor_mismatch)
+    graph.add_node("monitor_error", monitor_error_terminal)
     graph.add_node("preapproval_audit", preapproval_audit)
     graph.add_node("approval", approval)
     graph.add_node("execute", execute)
@@ -784,12 +860,14 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             "deny": "deny",
             "block": "blocked",
             "monitor_mismatch": "monitor_mismatch",
+            "monitor_error": "monitor_error",
             "approve": "preapproval_audit",
         },
     )
     graph.add_edge("deny", END)
     graph.add_edge("blocked", END)
     graph.add_edge("monitor_mismatch", END)
+    graph.add_edge("monitor_error", END)
     graph.add_edge("preapproval_audit", "approval")
     graph.add_conditional_edges("approval", after_approval, {"finish": END, "execute": "execute"})
     graph.add_edge("execute", "verify")

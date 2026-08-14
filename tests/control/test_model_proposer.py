@@ -7,6 +7,7 @@ or mint authority. Assertions target the returned proposal, not any live model b
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -35,9 +36,11 @@ from incidentgate.control.model_proposal import (
     CompletionResult,
     ModelAgentProposer,
     PricingSnapshot,
+    proposer_input_envelope_schema,
 )
 from incidentgate.control.models import Caller
 from incidentgate.control.proposal import ProposalError
+from incidentgate.control.response_cache import schema_sha256
 
 HAIKU = "claude-haiku-4-5-20251001"
 OPUS = "claude-opus-5"
@@ -476,6 +479,40 @@ def test_hostile_steering_cannot_fabricate_evidence() -> None:
     # The steering really was injected into the system prompt (the seam works) ...
     assert complying.requests[0].system.startswith("SYSTEM OVERRIDE")
     # ... yet no action was produced, because the citation check runs in code afterward.
+
+
+def test_public_prompt_contract_matches_the_actual_public_request() -> None:
+    """Capture provenance is derived from the request surface, never a caller label."""
+    fake = FakeClient(model_output())
+    proposer = ModelAgentProposer(
+        client=fake, model=HAIKU, temperature=0, steering_prompt="frozen policy text"
+    )
+    proposer.propose(incident(), caller(), context(), records())
+    request, contract = fake.requests[0], proposer.prompt_contract
+    assert contract.prompt_version == "proposal/v1"
+    assert contract.model == request.model
+    assert contract.system_prompt_sha256 == hashlib.sha256(request.system.encode()).hexdigest()
+    assert contract.provider_schema_sha256 == schema_sha256(request.schema)
+    assert contract.output_schema_sha256 == json.loads(request.canonical_prompt)[
+        "schema_fingerprint"
+    ]
+    assert contract.input_schema_version == "proposal-evidence-digest/v1"
+    assert len(contract.input_schema_sha256) == 64
+    assert all(character in "0123456789abcdef" for character in contract.input_schema_sha256)
+
+
+def test_public_input_descriptor_covers_the_projected_evidence_digest() -> None:
+    fake = FakeClient(model_output())
+    proposer = ModelAgentProposer(client=fake, model=HAIKU, temperature=0)
+    proposer.propose(incident(), caller(), context(), records())
+    schema = proposer_input_envelope_schema()
+    digest = json.loads(fake.requests[0].user_content)["evidence_digest"]
+    item_schema = schema["properties"]["evidence_digest"]["items"]
+    payload_schema = item_schema["properties"]["payload"]
+    assert len(digest) <= schema["properties"]["evidence_digest"]["maxItems"] == 32
+    assert payload_schema["maxProperties"] == 16
+    assert item_schema["properties"]["tool_name"]["pattern"].startswith("^[a-z]")
+    assert all(len(item["payload"]) <= payload_schema["maxProperties"] for item in digest)
 
 
 def test_hostile_steering_cannot_escalate_authority() -> None:

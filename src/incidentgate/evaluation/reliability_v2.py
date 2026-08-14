@@ -80,6 +80,12 @@ from incidentgate.scenario_registry import (
     validate_no_action_evidence,
 )
 
+from .identity import (
+    RELIABILITY_V2_IDEMPOTENCY_SEED,
+    derived_idempotency_key,
+    purge_checkpoint_threads,
+)
+
 _ROOT = Path(__file__).parents[3]
 _PROPOSERS: dict[str, type[Any]] = {
     "R01": DeterministicR01Proposer,
@@ -777,6 +783,11 @@ class ReliabilityEvaluationRunnerV2:
         repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
+        # Before any arm drives, not inside the one that builds a graph. The
+        # thread id is derived and so is this lane's idempotency key, so a second
+        # batch on the same trial would otherwise resume this thread's completed
+        # graph and hand back its terminal result rather than running.
+        purge_checkpoint_threads(self.dsn, (thread,))
         incident = IncidentIdentity(
             incident_id=f"INC-{m.id}",
             scenario_id=m.id,
@@ -798,7 +809,6 @@ class ReliabilityEvaluationRunnerV2:
         source: Literal["none", "synthetic_not_model_exploit"]
         if mode is EvaluationMode.COMPLETE:
             with IncidentRuntime(self.dsn) as runtime:
-                runtime._checkpointer.delete_thread(thread)
                 status = runtime.start(
                     incident, Caller(actor="evaluation-operator", role=Role.OPERATOR), context
                 )
@@ -912,7 +922,15 @@ class ReliabilityEvaluationRunnerV2:
                 ),
                 Principal("evaluation-capability", Role.APPROVER),
             )
-            key = uuid4()
+            # Derived, not minted, on the same terms as the checkpoint-B lane's:
+            # a uuid4 key made every redelivery a second ledger row, so
+            # exactly-once was unexercised here while this lane published beside
+            # a chaos matrix arguing the key is a pure function of the binding.
+            # The seed differs from checkpoint-B's so the two lanes cannot derive
+            # one key from one binding. See evaluation/identity.py.
+            key = derived_idempotency_key(
+                RELIABILITY_V2_IDEMPOTENCY_SEED, thread, canonical_action_hash(action)
+            )
             executor = LabOperationExecutor(OperationsService(repo), caller)
             operation = executor.execute(
                 action,
@@ -1051,6 +1069,11 @@ class ReliabilityEvaluationRunnerV2:
         repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
+        # Before any arm drives, not inside the one that builds a graph. The
+        # thread id is derived and so is this lane's idempotency key, so a second
+        # batch on the same trial would otherwise resume this thread's completed
+        # graph and hand back its terminal result rather than running.
+        purge_checkpoint_threads(self.dsn, (thread,))
         incident = IncidentIdentity(
             incident_id="INC-R05",
             scenario_id="R05",
@@ -1067,7 +1090,6 @@ class ReliabilityEvaluationRunnerV2:
         caller = Caller(actor="evaluation-operator", role=Role.OPERATOR)
         if mode is EvaluationMode.COMPLETE:
             with IncidentRuntime(self.dsn) as runtime:
-                runtime._checkpointer.delete_thread(thread)
                 status = runtime.start(incident, caller, read_context)
             if isinstance(status, PendingApproval) or status.result is None:
                 raise TypeError("R05 runtime did not return its no-action result")
@@ -1204,6 +1226,11 @@ class ReliabilityEvaluationRunnerV2:
         repo.inject_checkpoint(m.id)
         run_id = uuid5(NAMESPACE_URL, f"{digest}:{m.id}:{m.seed}:{mode.value}:{trial}")
         thread = f"reliability-evaluation-{run_id.hex}"
+        # Before any arm drives, not inside the one that builds a graph. The
+        # thread id is derived and so is this lane's idempotency key, so a second
+        # batch on the same trial would otherwise resume this thread's completed
+        # graph and hand back its terminal result rather than running.
+        purge_checkpoint_threads(self.dsn, (thread,))
         incident = IncidentIdentity(
             incident_id=f"INC-{m.id}",
             scenario_id=m.id,
@@ -1221,7 +1248,6 @@ class ReliabilityEvaluationRunnerV2:
         catalog = NO_ACTION_CATALOG[m.id]
         if mode is EvaluationMode.COMPLETE:
             with IncidentRuntime(self.dsn) as runtime:
-                runtime._checkpointer.delete_thread(thread)
                 status = runtime.start(incident, caller, read_context)
             if isinstance(status, PendingApproval) or status.result is None:
                 raise TypeError(f"{m.id} runtime did not return its no-action result")

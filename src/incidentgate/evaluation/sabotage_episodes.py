@@ -134,8 +134,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal
 
-import psycopg
-
 from incidentgate.contracts import (
     CanonicalAction,
     EvaluationMode,
@@ -163,6 +161,8 @@ from incidentgate.lab.auth import Principal
 from incidentgate.lab.errors import ResponseLost
 from incidentgate.lab.repository import LabRepository
 from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES, RUNNABLE_SCENARIOS
+
+from .identity import purge_checkpoint_threads
 
 #: Which authorization minted a step's execution. Both mint a real token through
 #: the production ``ApprovalService``; they differ in the path -- an in-process
@@ -254,26 +254,20 @@ def step_thread_id(scenario_id: str, episode_key: str, leg: str, step_index: int
     return f"{scenario_id}-{episode_key}-{leg}-{step_index:02d}"
 
 
-def _purge_threads(dsn: str, thread_ids: Sequence[str]) -> None:
-    """Drop the checkpoint rows for threads this episode is about to reuse.
-
-    ``LabRepository.reset_checkpoint`` clears the lab's own tables and not the
-    checkpointer's, which was invisible while every thread id carried a fresh
-    ``uuid4``. With derived ids a second run of the same episode would resume the
-    first run's completed graph, so the reuse has to be made safe rather than
-    assumed away.
-
-    ``chaos/matrix.py`` has a sibling of this function for its own long runs. It
-    is not imported: the evaluation lane deliberately does not depend on the
-    chaos lane, and six lines of DELETE is a smaller price than that edge.
-    """
-    with psycopg.connect(dsn, autocommit=True) as connection:
-        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
-            for thread_id in thread_ids:
-                try:
-                    connection.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
-                except psycopg.Error:
-                    connection.rollback()
+#: Drop the checkpoint rows for threads this episode is about to reuse.
+#:
+#: ``LabRepository.reset_checkpoint`` clears the lab's own tables and not the
+#: checkpointer's, which was invisible while every thread id carried a fresh
+#: ``uuid4``. With derived ids a second run of the same episode would resume the
+#: first run's completed graph, so the reuse has to be made safe rather than
+#: assumed away.
+#:
+#: Now shared with the two non-sabotage lanes, which took the same derivation and
+#: therefore inherit the same isolation cost. Re-exported under this name because
+#: this module's docstring and three tests name it, and because "the episode
+#: purges its own threads" is a fact about the episode runner wherever the six
+#: lines happen to live.
+_purge_threads = purge_checkpoint_threads
 
 
 @dataclass(frozen=True)

@@ -71,6 +71,11 @@ from incidentgate.scenario_registry import (
 
 from .artifacts import load_raw, render_reports, write_raw
 from .checkers import CheckerSnapshot, run_checker
+from .identity import (
+    CHECKPOINT_B_IDEMPOTENCY_SEED,
+    derived_idempotency_key,
+    purge_checkpoint_threads,
+)
 from .regression import RegressionReport, compare_semantics
 
 _MANIFEST_DIR = Path(__file__).parents[3] / "scenarios" / "checkpoints"
@@ -319,6 +324,15 @@ class CheckpointBEvaluationRunner:
             repo.reset_checkpoint(scenario)
             repo.inject_checkpoint(scenario)
         thread = f"evaluation-{self._run_id(digest, scenario, seed, mode, trial).hex}"
+        # UUID5 identities are intentionally stable for replay, and stability is
+        # what makes this necessary: reset_checkpoint clears the lab's tables but
+        # not the checkpointer's, so a second batch on the same trial would
+        # resume this thread's *completed* graph and hand back its terminal
+        # result rather than running. Purged for every arm, before any of them
+        # drives, rather than inside the one branch that happened to build a
+        # graph -- the derived idempotency key below has the same reuse property
+        # and must not inherit an isolation that depends on which arm ran.
+        purge_checkpoint_threads(self.dsn, (thread,))
         incident = IncidentIdentity(
             incident_id=f"INC-{scenario}",
             scenario_id=scenario,
@@ -354,10 +368,6 @@ class CheckpointBEvaluationRunner:
         with IncidentRuntime(
             self.dsn, response_loss_once=scenario == "D8", proposer_factory=proposer_factory
         ) as runtime:
-            # UUID5 identities are intentionally stable for replay.  Clear only
-            # this evaluation thread's graph checkpoint so a prior batch cannot
-            # resume a completed workflow after the fixture was reset.
-            runtime._checkpointer.delete_thread(thread)
             status = runtime.start(
                 incident, Caller(actor="evaluation-operator", role=Role.OPERATOR), context
             )
@@ -566,7 +576,14 @@ class CheckpointBEvaluationRunner:
             ),
             Principal("evaluation-capability", Role.APPROVER),
         )
-        key = uuid4()
+        # Derived, not minted. A uuid4 key is a fresh identity every time, so a
+        # redelivery of this action wrote a second ledger row rather than
+        # collapsing onto its first -- which left exactly-once *unexercised* on
+        # this lane while the table beside it argued that the ledger key is a
+        # pure function of the binding. See evaluation/identity.py.
+        key = derived_idempotency_key(
+            CHECKPOINT_B_IDEMPOTENCY_SEED, incident.thread_id, canonical_action_hash(action)
+        )
         execution_context = context.model_copy(update={"idempotency_key": key})
         executor = LabOperationExecutor(
             OperationsService(repo), caller, response_loss_once=scenario == "D8"
@@ -786,7 +803,14 @@ class CheckpointBEvaluationRunner:
             ),
             Principal("evaluation-capability", Role.APPROVER),
         )
-        key = uuid4()
+        # Derived on the same terms as the counterfactual path's, even though
+        # this execution is expected to be refused before any ledger row exists.
+        # A key that is random only where nothing durable happens is a key whose
+        # derivation nobody can check, and S1's refusal is a claim about the
+        # operation boundary rather than about the absence of one.
+        key = derived_idempotency_key(
+            CHECKPOINT_B_IDEMPOTENCY_SEED, incident.thread_id, canonical_action_hash(action)
+        )
         try:
             LabOperationExecutor(OperationsService(repo), caller).execute(
                 action,

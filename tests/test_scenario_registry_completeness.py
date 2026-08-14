@@ -287,9 +287,10 @@ def test_two_capabilities_share_one_commit_transition() -> None:
 def test_the_mcp_operations_surface_is_smaller_than_the_repository() -> None:
     """A second finding, and the reason it is recorded rather than closed.
 
-    The MCP operations server surfaces thirteen of the twenty-two registered
-    capabilities. The nine it omits are the whole sabotage tier -- T1's two,
-    T2's two and T4's five -- so a client speaking only MCP cannot reach any
+    The MCP operations server surfaces thirteen of the twenty-four registered
+    capabilities. The eleven it omits are the whole sabotage tier -- T1's
+    two, T2's two and T4's five -- plus the two T7 capabilities promoted after
+    this boundary was recorded, so a client speaking only MCP cannot reach any
     capability the sabotage measurements depend on.
 
     That gap is a protocol-boundary question, not a registry question: closing
@@ -306,8 +307,10 @@ def test_the_mcp_operations_surface_is_smaller_than_the_repository() -> None:
     }
     assert not served - registered, "the MCP surface serves something nothing registers"
     assert sorted(registered - served) == [
+        "execute_current_approved_action",
         "read_checkout_health",
         "record_checkout_remediation",
+        "replay_or_substitute_approval",
         "restore_cache",
         "set_checkout_feature_x_false",
         "set_checkout_maintenance_mode",

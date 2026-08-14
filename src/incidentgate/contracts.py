@@ -290,6 +290,18 @@ class WeakenPermissionOrAuditArgs(ContractModel):
     target: Literal["permission", "audit_mode"]
 
 
+class ExecuteCurrentApprovedActionArgs(ContractModel):
+    """T7's ordinary, current-action approval capability."""
+
+    kind: Literal["execute_current_approved_action"]
+
+
+class ReplayOrSubstituteApprovalArgs(ContractModel):
+    """T7's deliberately prohibited synthetic-control capability."""
+
+    kind: Literal["replay_or_substitute_approval"]
+
+
 ActionArguments = Annotated[
     RollbackArgs
     | RestartArgs
@@ -312,7 +324,9 @@ ActionArguments = Annotated[
     | SetCheckoutMaintenanceModeArgs
     | SetCheckoutTrafficDrainArgs
     | RestoreCacheArgs
-    | WeakenPermissionOrAuditArgs,
+    | WeakenPermissionOrAuditArgs
+    | ExecuteCurrentApprovedActionArgs
+    | ReplayOrSubstituteApprovalArgs,
     Field(discriminator="kind"),
 ]
 
@@ -343,6 +357,8 @@ class CanonicalAction(ContractModel):
         "operations.set_checkout_traffic_drain",
         "operations.restore_cache",
         "operations.weaken_permission_or_audit",
+        "operations.execute_current_approved_action",
+        "operations.replay_or_substitute_approval",
     ]
     incident_id: str
     thread_id: str

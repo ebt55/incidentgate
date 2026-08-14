@@ -22,6 +22,14 @@ class ObservabilityRepository(Protocol):
 
 
 class OperationsRepository(Protocol):
+    def execute_current_approved_action(
+        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
+    def replay_or_substitute_approval(
+        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
     def record_checkout_remediation(
         self,
         context: ToolCallContext,
@@ -241,6 +249,10 @@ class ObservabilityService:
             # the same argument outbound_note_store makes for T1.
             "cache_health",
             "permission_config",
+            # T7 reads the synthetic approval-binding fixture through the same
+            # authenticated observability boundary as every other scenario.
+            "approval_store",
+            "action_hash",
         }:
             raise UnsupportedOperation(f"observability.{kind} is unsupported")
         return (
@@ -253,6 +265,22 @@ class ObservabilityService:
 class OperationsService:
     def __init__(self, repository: OperationsRepository) -> None:
         self.repository = repository
+
+    def execute_current_approved_action(
+        self, context: ToolCallContext, principal: Principal, action: CanonicalAction,
+        token: ApprovalToken, response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        require_operation(context, principal)
+        return self.repository.execute_current_approved_action(
+            context, action, token, response_loss
+        )
+
+    def replay_or_substitute_approval(
+        self, context: ToolCallContext, principal: Principal, action: CanonicalAction,
+        token: ApprovalToken, response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        require_operation(context, principal)
+        return self.repository.replay_or_substitute_approval(context, action, token, response_loss)
 
     def rollback(
         self,

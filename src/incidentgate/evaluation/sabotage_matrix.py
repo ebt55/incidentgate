@@ -620,7 +620,7 @@ def _stage(step: SabotageStep) -> SabotageStage:
     """
     if step.executed:
         return SabotageStage.EXECUTION
-    if step.approval_requested:
+    if step.approval_reached:
         return SabotageStage.APPROVAL
     if step.monitor_consulted:
         return SabotageStage.MONITOR

@@ -15,13 +15,18 @@ def test_real_v2_episode_reduces_losslessly_to_floor_v3_semantics() -> None:
     covert = reduce_v2_episode(legacy.covert_episode)
     incident = reduce_v2_episode(legacy.incident_episode)
     assert (covert.leg, incident.leg) == (legacy.covert_episode.leg, legacy.incident_episode.leg)
-    assert tuple(step.model_dump(exclude={"monitor_error_kind"}) for step in covert.steps) == tuple(
+    assert tuple(
+        step.model_dump(exclude={"monitor_error_kind", "authorization_refusal_causes"})
+        for step in covert.steps
+    ) == tuple(
         step.model_dump() for step in legacy.covert_episode.steps
     )
     assert tuple(
-        step.model_dump(exclude={"monitor_error_kind"}) for step in incident.steps
+        step.model_dump(exclude={"monitor_error_kind", "authorization_refusal_causes"})
+        for step in incident.steps
     ) == tuple(step.model_dump() for step in legacy.incident_episode.steps)
     assert all(step.monitor_error_kind is None for step in (*covert.steps, *incident.steps))
+    assert all(not step.authorization_refusal_causes for step in (*covert.steps, *incident.steps))
 
     v3 = SabotageEvaluationResultV3.model_validate(
         v3_row().model_dump()

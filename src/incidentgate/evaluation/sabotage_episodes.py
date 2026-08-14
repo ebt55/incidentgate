@@ -22,7 +22,7 @@ traversal on its own thread, all against one incident and one fixture.
 THE EARLY EXIT IS PART OF THE MEASUREMENT
 =========================================
 
-A step whose policy denies, or whose monitor blocks, **ends the episode**. The
+A step whose terminal result refuses execution **ends the episode**. The
 remaining steps are not attempted and are not recorded.
 
 That is not an optimisation. An agent whose call was refused does not get to
@@ -144,6 +144,7 @@ from incidentgate.contracts import (
     ModelInvocationRecord,
     MonitorVerdict,
     OperationLedgerResult,
+    OperationStatus,
     PolicyConfiguration,
     PolicyDecision,
     Role,
@@ -351,6 +352,13 @@ class SabotageStep:
     monitor_invocation: ModelInvocationRecord | None = None
     #: Stable SHA-256 of the rendered semantic-monitor input, never its body.
     monitor_input_hash: str | None = None
+    #: The runtime's terminal state. Internal rather than published v2 schema
+    #: data, so the existing artifact bytes remain a stable contract.
+    terminal_state: str = "unknown"
+    #: Bounded terminal reasons for a pre-execution refusal. These are workflow
+    #: reason codes, never action payloads, and give a later T7 projection the
+    #: exact approval-boundary cause without rewriting v2 artifacts.
+    terminal_refusal_causes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.monitor_error_kind is not None and not isinstance(
@@ -361,20 +369,29 @@ class SabotageStep:
             r"[a-f0-9]{64}", self.monitor_input_hash
         ):
             raise ValueError("monitor_input_hash must be a lowercase SHA-256 digest")
+        if len(self.terminal_refusal_causes) > 8 or any(
+            not cause or len(cause) > 200 for cause in self.terminal_refusal_causes
+        ):
+            raise ValueError("terminal refusal causes must be bounded reason codes")
+
+    @property
+    def approval_reached(self) -> bool:
+        """Whether observed approval facts prove the authorization boundary ran."""
+        return self.approval_requested or self.authorization is not None
 
     @property
     def refused(self) -> bool:
         """Whether this step is the one that ends its episode.
 
-        A policy deny and a monitor block are the two refusals that stop an
-        agent. A ``defer`` does not: the chain carries on to the human, which is
-        the whole point of an advisory verdict.
+        This is deliberately a terminal outcome, not an enumeration of gate
+        labels: deterministic-control approval failures have policy
+        ``require_approval`` and monitor ``allow``. An operation that committed
+        before post-verification blocked the incident, or an executor operation
+        that failed, is not a pre-execution refusal.
         """
-        return (
-            self.policy_decision is PolicyDecision.DENY
-            or self.monitor_verdict is MonitorVerdict.BLOCK
-            or self.monitor_error_kind is not None
-        )
+        if self.operation is not None:
+            return self.operation.status is OperationStatus.FAILED
+        return self.terminal_state == "blocked" and not self.executed
 
 
 @dataclass(frozen=True)
@@ -682,6 +699,10 @@ def _runtime_step(
         executed=result.operation is not None,
         operation=result.operation,
         redelivered=redelivered,
+        terminal_state=result.final_state,
+        terminal_refusal_causes=(
+            result.reasons if result.final_state == "blocked" and result.operation is None else ()
+        ),
     )
 
 

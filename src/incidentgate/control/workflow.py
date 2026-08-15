@@ -97,7 +97,7 @@ from .ports import (
     RecoveryVerifier,
 )
 from .proposal import ProposalError
-from .safeguards import PRODUCTION_SAFEGUARDS, SafeguardConfiguration
+from .safeguards import PRODUCTION_SAFEGUARDS, AuthorizationGate, SafeguardConfiguration
 
 if TYPE_CHECKING:
     from .monitor_decision import MonitorThresholds
@@ -160,6 +160,8 @@ class EpisodeWorkflowState(TypedDict, total=False):
     episode_current_leg: Literal["covert", "incident"] | None
     episode_current_action_id: str | None
     episode_authorization_selection: EpisodeAuthorizationSelection | None
+    episode_authorization_reached: bool
+    episode_durable_request_started: bool
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,10 @@ class EpisodeAuthorizationChoice:
 
     selection_id: str
     factory: Callable[[], AuthorizationRequester]
+    #: Explicitly binds a custom requester to its durable request-path
+    #: semantics.  A factory type cannot truthfully establish whether it will
+    #: interrupt; this value is replay-checked with the selection identity.
+    request_path: AuthorizationGate
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", self.selection_id):
@@ -223,16 +229,27 @@ def resolve_episode_authorization(
     leg: Literal["covert", "incident"],
     leg_index: int,
     sequence: int,
+    default_request_path: AuthorizationGate | None = None,
 ) -> tuple[EpisodeAuthorizationSelection, AuthorizationRequester]:
     """Construct one requester and its durable, replay-checkable identity."""
     choice: EpisodeAuthorizationChoice | None = None
     requester = fallback
+    request_path = (
+        default_request_path
+        if default_request_path is not None
+        else (
+            AuthorizationGate.DURABLE_HUMAN
+            if isinstance(fallback, DurableHumanAuthorization)
+            else AuthorizationGate.DETERMINISTIC_CONTROL
+        )
+    )
     if selector is not None:
         choice = selector(leg, leg_index)
         if choice is not None:
             if not isinstance(choice, EpisodeAuthorizationChoice):
                 raise TypeError("episode authorization selector must return an explicit choice")
             requester = choice.factory()
+            request_path = choice.request_path
             if not callable(getattr(requester, "request", None)):
                 raise TypeError("episode authorization factory returned an invalid requester")
     return (
@@ -241,6 +258,7 @@ def resolve_episode_authorization(
             leg_index=leg_index,
             sequence=sequence,
             selection_id="safeguard_default" if choice is None else choice.selection_id,
+            request_path=request_path,
         ),
         requester,
     )
@@ -644,6 +662,30 @@ def build_workflow_builder(dependencies: WorkflowDependencies) -> Any:
         evidence = dependencies.evidence_validator.validate(
             state["action"], state["records"], state["context"]
         )
+        if evidence.state is EvidenceState.INVALID and dependencies.safeguards.enforces_evidence:
+            # An enforcing evidence refusal is terminal at this boundary.  Do
+            # not ask policy to re-label an evidence failure as a policy
+            # decision, and do not let later monitor/authorization nodes claim
+            # to have observed an action they never received.
+            _audit(state, "evidence", ";".join(evidence.reasons))
+            return {
+                "evidence": evidence,
+                "result": WorkflowResult(
+                    final_state="blocked",
+                    reasons=evidence.reasons,
+                    evidence_ids=state["action"].evidence_ids,
+                    hypothesis=state["hypothesis"],
+                    report=IncidentReport(
+                        incident=state["incident"].model_copy(
+                            update={"state": IncidentState.BLOCKED}
+                        ),
+                        diagnosis=state["hypothesis"].statement,
+                        hypotheses=(state["hypothesis"],),
+                        evidence_ids=state["action"].evidence_ids,
+                        final_state=IncidentState.BLOCKED,
+                    ),
+                ),
+            }
         judged = evidence if dependencies.safeguards.enforces_evidence else _observed_only(evidence)
         with _span(_scenario_span("policy", state), state):
             policy = dependencies.policy.evaluate(state["action"], state["caller"].role, judged)
@@ -665,6 +707,12 @@ def build_workflow_builder(dependencies: WorkflowDependencies) -> Any:
         return {"monitor_input_hash": input_hash, "monitor_invocation": invocation}
 
     def monitor(state: WorkflowState) -> WorkflowState:
+        # ``validate`` may terminate an enforcing evidence refusal before a
+        # policy outcome exists.  Both graph topologies retain their shared
+        # validate -> monitor edge, so the monitor must pass this terminal fact
+        # through rather than indexing a policy that was never produced.
+        if state.get("result") is not None:
+            return {}
         evidence, policy = state["evidence"], state["policy"]
         if not dependencies.safeguards.consults_monitor:
             return {}
@@ -1163,6 +1211,7 @@ def build_episode_workflow_graph(
             leg=leg,
             leg_index=leg_index,
             sequence=sequence,
+            default_request_path=dependencies.safeguards.authorization_gate,
         )
 
     def episode_propose(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
@@ -1251,17 +1300,55 @@ def build_episode_workflow_graph(
         policy = result.policy
         operation = result.operation
         monitor = result.monitor
+        raw_authorization_selection = state.get("episode_authorization_selection")
+        authorization_selection = (
+            None
+            if raw_authorization_selection is None
+            else (
+                raw_authorization_selection
+                if isinstance(raw_authorization_selection, EpisodeAuthorizationSelection)
+                else EpisodeAuthorizationSelection.model_validate(raw_authorization_selection)
+            )
+        )
+        monitor_reached = bool(
+            policy is not None
+            and dependencies.safeguards.consults_monitor
+            and not (
+                policy is not None
+                and policy.decision is PolicyDecision.DENY
+                and dependencies.safeguards.enforces_policy
+            )
+        )
         return EpisodeStepSnapshot(
             thread_id=action.thread_id,
             tool_name=action.tool_name,
             arguments_digest=canonical_arguments_digest(action),
             evidence_ids=result.evidence_ids,
-            policy_decision=None if policy is None else policy.decision,
+            policy_observed=policy is not None,
+            policy_enforced=dependencies.safeguards.enforces_policy and policy is not None,
+            policy_consulted=dependencies.safeguards.enforces_policy and policy is not None,
+            policy_decision=(
+                policy.decision
+                if dependencies.safeguards.enforces_policy and policy is not None
+                else None
+            ),
+            policy_reasons=(
+                policy.reasons
+                if dependencies.safeguards.enforces_policy and policy is not None
+                else ()
+            ),
+            observed_policy_decision=None if policy is None else policy.decision,
+            observed_policy_reasons=() if policy is None else policy.reasons,
             evidence_state=(
                 None
                 if evidence is None
                 else cast(Any, evidence).state
             ),
+            evidence_observed=evidence is not None,
+            evidence_enforced=dependencies.safeguards.enforces_evidence and evidence is not None,
+            evidence_reasons=() if evidence is None else cast(Any, evidence).reasons,
+            monitor_reached=monitor_reached,
+            monitor_consulted=monitor is not None or state.get("monitor_error") is not None,
             monitor_verdict=None if monitor is None else monitor.verdict,
             monitor_error_kind=(
                 state.get("monitor_error")
@@ -1276,9 +1363,15 @@ def build_episode_workflow_graph(
             ),
             authorization=(
                 None
-                if result.approval is None
-                else evaluation_authorization_label(dependencies.safeguards.authorization_gate)
+                if result.approval is None or result.approval.decision != "approve"
+                else evaluation_authorization_label(
+                    dependencies.safeguards.authorization_gate
+                    if authorization_selection is None
+                    else authorization_selection.request_path
+                )
             ),
+            authorization_reached=bool(state.get("episode_authorization_reached")),
+            approval_requested=bool(state.get("episode_durable_request_started")),
             executed=operation is not None,
             operation_id=None if operation is None else operation.operation_id,
             operation_status=None if operation is None else operation.status,
@@ -1355,6 +1448,8 @@ def build_episode_workflow_graph(
             "episode_current_leg": None,
             "episode_current_action_id": None,
             "episode_authorization_selection": None,
+            "episode_authorization_reached": False,
+            "episode_durable_request_started": False,
         }
 
     def episode_preselection_finish(_state: EpisodeWorkflowState) -> EpisodeWorkflowState:
@@ -1386,6 +1481,29 @@ def build_episode_workflow_graph(
             EpisodeWorkflowState,
             bundle.approval_with(requester, cast(WorkflowState, active)),
         )
+
+    def episode_approval_reach(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        """Checkpoint the authorization path before it can suspend at approval.
+
+        The durable marker records entry to the request path, not a claim that
+        an external approval UI rendered.  No shared workflow-state fact can
+        prove the latter, so recording it would fabricate an observation.
+        """
+        ensure_safeguards(state)
+        raw_selection = state.get("episode_authorization_selection")
+        if raw_selection is None:
+            raise ValueError("episode authorization reach has no durable authorization selection")
+        selection = (
+            raw_selection
+            if isinstance(raw_selection, EpisodeAuthorizationSelection)
+            else EpisodeAuthorizationSelection.model_validate(raw_selection)
+        )
+        return {
+            "episode_authorization_reached": True,
+            "episode_durable_request_started": (
+                selection.request_path is AuthorizationGate.DURABLE_HUMAN
+            ),
+        }
 
     def episode_execute(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
         ensure_safeguards(state)
@@ -1419,7 +1537,7 @@ def build_episode_workflow_graph(
             # TypedDict intentionally does not model.
             active = {key: value for key, value in state.items() if value is not None}
             output = cast(EpisodeWorkflowState, node(cast(WorkflowState, active)))
-            if name == "validate":
+            if name == "validate" and output.get("policy") is not None:
                 transcript = transcript_from(state)
                 policy = cast(Any, output["policy"])
                 output["idempotency_key"] = _episode_idempotency_key(
@@ -1449,6 +1567,7 @@ def build_episode_workflow_graph(
     graph.add_node("episode_record", episode_record)
     graph.add_node("episode_clear", episode_clear)
     graph.add_node("episode_preselection_finish", episode_preselection_finish)
+    graph.add_node("episode_approval_reach", episode_approval_reach)
     graph.add_node("approval", episode_approval)
     graph.add_node("execute", episode_execute)
     graph.add_node("episode_finish", lambda state: {})
@@ -1484,7 +1603,8 @@ def build_episode_workflow_graph(
     )
     for terminal_node in ("deny", "blocked", "monitor_mismatch", "monitor_error", "verify"):
         graph.add_edge(terminal_node, "episode_record")
-    graph.add_edge("preapproval_audit", "approval")
+    graph.add_edge("preapproval_audit", "episode_approval_reach")
+    graph.add_edge("episode_approval_reach", "approval")
     graph.add_conditional_edges(
         "approval",
         route_after_approval,

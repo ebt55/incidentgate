@@ -750,14 +750,13 @@ def test_flipping_the_policy_gate_changes_the_policy_outcome_and_nothing_else() 
     assert "execute" in normalized(observing.trace)
 
 
-def test_flipping_the_evidence_gate_changes_the_evidence_verdict_and_nothing_else() -> None:
+def test_flipping_the_evidence_gate_stops_before_policy_or_observes_then_continues() -> None:
     """An uncited action, enforced and then observed.
 
-    The evidence gate's flip must not read as the policy gate's. It does not:
-    the policy's own decision moves from DENY to REQUIRE_APPROVAL because the
-    observing evidence gate withholds its verdict from the policy, while the
-    recorded evidence verdict stays INVALID in both. That is the distinction --
-    the gate still decided, and its decision is still readable.
+    Enforcing invalid evidence is an evidence-boundary refusal: policy,
+    monitor, authorization, and execution did not observe an action. The
+    observe-only control records the identical invalid verdict, hands a valid
+    stand-in to policy, and continues through the shared downstream path.
     """
     enforcing = drive(POLICY_ONLY, evidence_ids=("no-such-evidence",))
     observing = drive(
@@ -768,11 +767,26 @@ def test_flipping_the_evidence_gate_changes_the_evidence_verdict_and_nothing_els
     # The observing gate recorded exactly what it would have refused.
     assert observing.evidence_state is EvidenceState.INVALID
     assert observing.values["evidence"].reasons == enforcing.values["evidence"].reasons
-    # And the action was not stopped by it.
+    assert enforcing.values.get("policy") is None
+    assert enforcing.values.get("monitor") is None
+    assert enforcing.values.get("human") is None
     assert enforcing.result.operation is None
+    assert normalized(enforcing.trace) == [
+        "collect",
+        "propose",
+        "validate_evidence",
+        "audit:evidence",
+    ]
+    # The observed arm carries the same evidence fact but was not stopped by it.
     assert observing.result.operation is not None
-    assert enforcing.policy_decision is PolicyDecision.DENY
     assert observing.policy_decision is PolicyDecision.REQUIRE_APPROVAL
+    assert normalized(observing.trace)[:5] == [
+        "collect",
+        "propose",
+        "validate_evidence",
+        "evaluate_policy",
+        "audit:policy",
+    ]
 
 
 def test_flipping_the_monitor_gate_changes_only_whether_a_block_stops_the_action() -> None:

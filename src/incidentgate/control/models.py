@@ -117,6 +117,7 @@ class EpisodeAuthorizationSelection(ContractModel):
     leg_index: int = Field(ge=0)
     sequence: int = Field(ge=0)
     selection_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,120}$")
+    request_path: AuthorizationGate
 
 
 class EpisodeStepSnapshot(ContractModel):
@@ -130,12 +131,36 @@ class EpisodeStepSnapshot(ContractModel):
     tool_name: str | None = Field(default=None, min_length=1, max_length=128)
     arguments_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     evidence_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    #: The enforcing-policy facts.  ``policy_decision`` deliberately remains
+    #: empty for an observe-only policy so a downstream row cannot mistake an
+    #: observation for a gate that could have stopped the call.
+    policy_observed: bool = False
+    policy_enforced: bool = False
+    policy_consulted: bool = False
     policy_decision: PolicyDecision | None = None
+    policy_reasons: tuple[str, ...] = Field(default=(), max_length=8)
+    #: The policy and evidence validators run even in observe-only mode.  These
+    #: are their actual terminal observations, not a reconstruction from an
+    #: evaluation-arm label.
+    observed_policy_decision: PolicyDecision | None = None
+    observed_policy_reasons: tuple[str, ...] = Field(default=(), max_length=8)
+    evidence_observed: bool = False
+    evidence_enforced: bool = False
     evidence_state: EvidenceState | None = None
+    evidence_reasons: tuple[str, ...] = Field(default=(), max_length=8)
+    #: ``monitor_reached`` says the monitor stage was eligible to assess this
+    #: action; ``monitor_consulted`` says it did assess (or returned an error).
+    monitor_reached: bool = False
+    monitor_consulted: bool = False
     monitor_verdict: MonitorVerdict | None = None
     monitor_error_kind: str | None = Field(default=None, max_length=64)
     monitor_invocation: ModelInvocationRecord | None = None
     monitor_input_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    #: These are node-path facts.  In particular durable approval request is
+    #: checkpointed by the shared episode approval node, never inferred from a
+    #: condition label after the run.
+    authorization_reached: bool = False
+    approval_requested: bool = False
     authorization: EvaluationAuthorization | None = None
     executed: bool
     operation_id: str | None = Field(default=None, max_length=200)
@@ -155,6 +180,48 @@ class EpisodeStepSnapshot(ContractModel):
                 raise ValueError("a monitor cannot have both a verdict and an error")
             if self.monitor_invocation is not None and self.monitor_input_hash is None:
                 raise ValueError("a monitor invocation requires its input hash")
+            if self.policy_observed != (self.observed_policy_decision is not None):
+                raise ValueError("observed policy facts require an observed policy decision")
+            if self.policy_enforced and not self.policy_observed:
+                raise ValueError("enforced policy must have been observed")
+            if self.policy_consulted != self.policy_enforced:
+                raise ValueError("policy consultation is exactly an enforced policy decision")
+            if self.policy_consulted != (self.policy_decision is not None):
+                raise ValueError("enforcing policy consultation requires exactly one decision")
+            if (self.policy_decision is None) != (not self.policy_reasons):
+                raise ValueError("enforcing policy reasons require exactly one decision")
+            if (self.observed_policy_decision is None) != (not self.observed_policy_reasons):
+                raise ValueError("observed policy reasons require exactly one decision")
+            if self.evidence_observed != (self.evidence_state is not None):
+                raise ValueError("observed evidence facts require an observed evidence state")
+            if self.evidence_enforced and not self.evidence_observed:
+                raise ValueError("enforced evidence must have been observed")
+            if (self.evidence_state is None) != (not self.evidence_reasons):
+                raise ValueError("observed evidence reasons require exactly one state")
+            if not self.monitor_consulted and (
+                self.monitor_verdict is not None
+                or self.monitor_error_kind is not None
+                or self.monitor_invocation is not None
+                or self.monitor_input_hash is not None
+            ):
+                raise ValueError("unconsulted monitor cannot carry consultation facts")
+            if self.monitor_consulted and not self.monitor_reached:
+                raise ValueError("monitor consultation requires the monitor boundary")
+            if self.monitor_consulted != (
+                self.monitor_verdict is not None or self.monitor_error_kind is not None
+            ):
+                raise ValueError("monitor consultation requires a verdict or typed error")
+            if self.approval_requested and not self.authorization_reached:
+                raise ValueError("durable approval request requires the authorization boundary")
+            if self.authorization is not None and not self.authorization_reached:
+                raise ValueError("authorization fact requires the authorization boundary")
+            for name, reasons in (
+                ("policy", self.policy_reasons),
+                ("observed policy", self.observed_policy_reasons),
+                ("evidence", self.evidence_reasons),
+            ):
+                if any(not reason or len(reason) > 200 for reason in reasons):
+                    raise ValueError(f"{name} reasons must be bounded non-empty reason codes")
             operation_pair = (self.operation_id is not None, self.operation_status is not None)
             if operation_pair[0] != operation_pair[1]:
                 raise ValueError("operation id and status must either both be present or absent")
@@ -168,12 +235,25 @@ class EpisodeStepSnapshot(ContractModel):
             self.tool_name is not None
             or self.arguments_digest is not None
             or self.evidence_ids
+            or self.policy_observed
+            or self.policy_enforced
+            or self.policy_consulted
             or self.policy_decision is not None
+            or self.policy_reasons
+            or self.observed_policy_decision is not None
+            or self.observed_policy_reasons
+            or self.evidence_observed
+            or self.evidence_enforced
             or self.evidence_state is not None
+            or self.evidence_reasons
+            or self.monitor_reached
+            or self.monitor_consulted
             or self.monitor_verdict is not None
             or self.monitor_error_kind is not None
             or self.monitor_invocation is not None
             or self.monitor_input_hash is not None
+            or self.authorization_reached
+            or self.approval_requested
             or self.authorization is not None
             or self.executed
             or self.operation_id is not None

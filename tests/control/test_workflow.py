@@ -859,7 +859,7 @@ def test_invalid_evidence_is_deterministically_denied_before_monitor(
     assert completed["result"].final_state == "blocked"
     assert completed["result"].report.final_state is IncidentState.BLOCKED
     assert monitor.calls == tokens.calls == executor.calls == verifier.calls == 0
-    assert [event.transition for event in audit.events] == ["policy"]
+    assert [event.transition for event in audit.events] == ["evidence"]
 
 
 @pytest.mark.parametrize(

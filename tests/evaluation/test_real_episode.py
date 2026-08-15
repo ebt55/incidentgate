@@ -209,6 +209,7 @@ def test_publication_refuses_a_vacuous_self_certifying_score() -> None:
             complete=True,
         ),
         termination="strategy_complete",
+        safeguards=SafeguardConfiguration(),
     )
 
     assert outcome.publication_eligible is False
@@ -276,6 +277,7 @@ def test_publication_allows_measured_negative_objectives() -> None:
             complete=True,
         ),
         termination="strategy_complete",
+        safeguards=SafeguardConfiguration(),
     )
     assert outcome.publication_eligible is True
     outcome.require_publishable()
@@ -313,6 +315,52 @@ def test_episode_step_snapshot_rejects_incoherent_operation_or_monitor_facts(
         "redelivered": False,
         "terminal_state": "blocked",
     }
+    payload.update(updates)
+    with pytest.raises(ValueError):
+        EpisodeStepSnapshot.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"policy_observed": True},
+        {"policy_enforced": True},
+        {"policy_consulted": True},
+        {"policy_decision": "deny", "policy_reasons": ()},
+        {"observed_policy_decision": "deny", "observed_policy_reasons": ("",)},
+        {"evidence_observed": True},
+        {"evidence_enforced": True},
+        {"evidence_state": "invalid", "evidence_reasons": ()},
+        {"monitor_reached": True, "monitor_input_hash": "a" * 64},
+        {"monitor_consulted": True, "monitor_reached": False, "monitor_verdict": "allow"},
+        {"authorization_reached": False, "approval_requested": True},
+        {"authorization_reached": False, "authorization": "automatic_evaluation_capability"},
+        {"proposal_produced": False, "policy_observed": True},
+        {
+            "policy_observed": True,
+            "observed_policy_decision": "deny",
+            "observed_policy_reasons": ("x" * 201,),
+        },
+    ),
+)
+def test_episode_step_snapshot_rejects_new_gate_fact_residue(updates: dict[str, object]) -> None:
+    payload: dict[str, object] = {
+        "thread_id": "thread",
+        "tool_name": "operations.record_checkout_remediation",
+        "arguments_digest": "a" * 64,
+        "evidence_ids": ("evidence",),
+        "executed": False,
+        "redelivered": False,
+        "terminal_state": "blocked",
+    }
+    if updates.get("proposal_produced") is False:
+        payload = {
+            "thread_id": "thread",
+            "proposal_produced": False,
+            "executed": False,
+            "redelivered": False,
+            "terminal_state": "blocked",
+        }
     payload.update(updates)
     with pytest.raises(ValueError):
         EpisodeStepSnapshot.model_validate(payload)
@@ -645,7 +693,9 @@ def test_complete_episode_approves_two_root_interrupts(
 
     def authorization_selector(leg: str, sequence: int) -> EpisodeAuthorizationChoice:
         selected.append((leg, sequence))
-        return EpisodeAuthorizationChoice("durable-human-v1", DurableHumanAuthorization)
+        return EpisodeAuthorizationChoice(
+            "durable-human-v1", DurableHumanAuthorization, AuthorizationGate.DURABLE_HUMAN
+        )
 
     outcome = run_real_episode(
         repository,
@@ -952,7 +1002,9 @@ def test_reconstructed_episode_rejects_changed_authorization_or_safeguards(
         def select(_leg: str, _index: int) -> EpisodeAuthorizationChoice:
             # Deliberately the same requester class/factory for both selections:
             # only the explicit durable identity may distinguish their semantics.
-            return EpisodeAuthorizationChoice(selection_id, DurableHumanAuthorization)
+            return EpisodeAuthorizationChoice(
+                selection_id, DurableHumanAuthorization, AuthorizationGate.DURABLE_HUMAN
+            )
 
         return select
 

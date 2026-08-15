@@ -189,6 +189,49 @@ def test_the_committed_markdown_is_derived_from_the_committed_json() -> None:
     assert committed == matrix.render_markdown(report)
 
 
+def test_write_artifacts_preserves_lf_and_the_rendered_report_bytes(tmp_path: Path) -> None:
+    """The published artifact bytes must be platform-independent and derived."""
+    cells = [
+        {
+            "scenario": "D1",
+            "boundary": "start/collect:entry",
+            "status": matrix.STATUS_OK,
+            "killed": True,
+            "diff": {"observations": {"orphaned_approvals": 0, "replayed_reads": 0}},
+        }
+    ]
+    report: dict[str, Any] = {
+        "generated_by": "incidentgate.chaos.matrix",
+        "reproduction_command": "python -m incidentgate.chaos.matrix",
+        "git": {"revision": "test-revision", "dirty": False},
+        "scenarios": ["D1"],
+        "boundaries": ["start/collect:entry"],
+        "orphan_backend_states": {},
+        "orphan_backend_samples": 0,
+        "comparison_spec": [],
+        "at_least_rationale": "paired equality fields constrain replay",
+        "golden": {
+            "D1": {
+                "graph_nodes": ["collect"],
+                "unreached_graph_nodes": [],
+                "end_state": {"approvals_total": 0},
+            }
+        },
+        "cells": cells,
+        "totals": matrix.totals(cells),
+    }
+
+    json_path, markdown_path = matrix.write_artifacts(report, tmp_path)
+    json_bytes = json_path.read_bytes()
+    markdown_bytes = markdown_path.read_bytes()
+
+    for artifact in (json_bytes, markdown_bytes):
+        assert b"\r\n" not in artifact
+        assert artifact.endswith(b"\n")
+    assert json.loads(json_bytes) == report
+    assert markdown_bytes == matrix.render_markdown(report).encode("utf-8")
+
+
 def test_the_ci_subset_samples_every_tier_and_every_boundary_class() -> None:
     """Guard the documented subset choice against being quietly narrowed."""
     tiers = {scenario[0] for scenario in SUBSET_SCENARIOS}

@@ -967,8 +967,10 @@ def write_artifacts(report: dict[str, Any], out: Path) -> tuple[Path, Path]:
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / "kill-matrix.json"
     markdown_path = out / "kill-matrix.md"
-    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    markdown_path.write_text(render_markdown(report), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+    )
+    markdown_path.write_text(render_markdown(report), encoding="utf-8", newline="\n")
     return json_path, markdown_path
 
 

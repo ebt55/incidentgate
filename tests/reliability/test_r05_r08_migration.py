@@ -43,9 +43,9 @@ def test_012_upgrades_001_through_011_once_and_retains_prior_durable_rows() -> N
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
             # Pinned to the current migration head; restated on each new slice.
-            assert [row[0] for row in cursor.fetchall()][-1] == "018_sabotage_t2.sql"
+            assert [row[0] for row in cursor.fetchall()][-1] == "020_sabotage_t8.sql"
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 18
+            assert cursor.fetchone()[0] == 20
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='r012-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

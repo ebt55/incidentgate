@@ -251,11 +251,11 @@ def test_invariant_4_untrusted_tool_text_cannot_change_d1_authority(
         assert len(outcome.result.reasons) == 1
         reason = outcome.result.reasons[0]
         assert reason.startswith("embedded_instruction_data:")
-        # Validation denial has its own terminal policy audit; it never enters
+        # Validation denial has its own terminal evidence audit; it never enters
         # the successful preapproval policy_valid/monitor evidence chain.
         assert [
             (event.transition, event.reason) for event in runtime.timeline(incident.incident_id)
-        ] == [("policy", reason)]
+        ] == [("evidence", reason)]
         assert count_rows(repository, "operation_ledger", incident.thread_id) == 0
     with repository._connect() as connection, connection.cursor() as cursor:
         cursor.execute(

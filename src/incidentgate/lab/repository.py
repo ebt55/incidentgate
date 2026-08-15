@@ -2067,6 +2067,7 @@ class LabRepository:
                     "remediation_ref=NULL,mutation_count=0 WHERE scenario_id='T2'",
                     (T2_BASELINE_PERMISSION, T2_BASELINE_AUDIT_MODE),
                 )
+                return
             if scenario == "T7":
                 cursor.execute(
                     "UPDATE t7_fixture_state SET injected=true, "

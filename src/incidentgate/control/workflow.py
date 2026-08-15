@@ -6,10 +6,12 @@ module does not claim Postgres durability or crash-safe external exactly-once ef
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast, runtime_checkable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.graph import END, START, StateGraph
@@ -17,13 +19,18 @@ from langgraph.types import interrupt
 
 from incidentgate.contracts import (
     CanonicalAction,
+    EvidenceRecord,
     Hypothesis,
     IncidentIdentity,
     IncidentReport,
     IncidentState,
+    ModelInvocationRecord,
     MonitorVerdict,
+    OperationLedgerResult,
+    OperationStatus,
     PolicyDecision,
     ToolCallContext,
+    canonical_arguments_digest,
 )
 from incidentgate.reasons import (
     APPROVAL_TOKEN_REQUIRED,
@@ -63,11 +70,18 @@ from incidentgate.telemetry import TelemetryRuntime
 from .evidence import EvidenceValidator
 from .models import (
     Caller,
+    EpisodeAuthorizationSelection,
+    EpisodeCheckpointIdentity,
+    EpisodeSafeguardIdentity,
+    EpisodeStepSnapshot,
+    EpisodeTranscript,
+    EpisodeTranscriptEvent,
     EvidenceState,
     EvidenceValidation,
     HumanDecision,
     WorkflowResult,
     audit_event,
+    evaluation_authorization_label,
 )
 from .monitor import AdvisoryMonitor
 from .policy import DeterministicPolicyEngine
@@ -101,12 +115,144 @@ class WorkflowState(TypedDict, total=False):
     policy: Any
     monitor: Any
     monitor_error: str
+    monitor_input_hash: str | None
+    monitor_invocation: ModelInvocationRecord | None
     idempotency_key: UUID
     human: HumanDecision
     operation: Any
     verification: Any
     result: WorkflowResult
     trace_carrier: dict[str, str]
+
+
+class EpisodeWorkflowState(TypedDict, total=False):
+    """One root graph's durable episode facts plus the shared action state.
+
+    Action-local workflow channels are deliberately overwritten by
+    ``episode_clear`` between iterations.  The transcript, sequence and bound
+    are root-state facts: unlike the prior prototype they do not live in a
+    separate manually-written checkpoint chain.
+    """
+
+    incident: IncidentIdentity
+    context: ToolCallContext
+    caller: Caller
+    records: tuple[EvidenceRecord, ...] | None
+    evidence: EvidenceValidation | None
+    hypothesis: Hypothesis | None
+    action: CanonicalAction | None
+    policy: Any | None
+    monitor: Any | None
+    monitor_error: str | None
+    monitor_input_hash: str | None
+    monitor_invocation: ModelInvocationRecord | None
+    idempotency_key: UUID | None
+    human: HumanDecision | None
+    operation: Any | None
+    verification: Any | None
+    result: WorkflowResult | None
+    trace_carrier: dict[str, str]
+    episode_transcript: EpisodeTranscript
+    episode_max_actions: int
+    episode_sequence: int
+    episode_termination: Literal["strategy_complete", "max_actions"]
+    episode_safeguards: EpisodeSafeguardIdentity
+    episode_current_leg: Literal["covert", "incident"] | None
+    episode_current_action_id: str | None
+    episode_authorization_selection: EpisodeAuthorizationSelection | None
+
+
+@dataclass(frozen=True)
+class EpisodeStrategyObservation:
+    """Read-only, prompt-free input for adaptive episode selection.
+
+    The strategy is a process-local dependency.  This observation and its
+    return value never enter checkpoint state; the selected identifiers and the
+    proposal output are written by ``episode_propose`` in one root checkpoint.
+    """
+
+    transcript: EpisodeTranscript
+    incident: IncidentIdentity
+    caller: Caller
+    context: ToolCallContext
+    records: tuple[EvidenceRecord, ...]
+
+
+@dataclass(frozen=True)
+class EpisodeActionSelection:
+    """An in-memory choice to make a fresh shared-pipeline proposal."""
+
+    leg: Literal["covert", "incident"]
+    action_id: str
+    proposer: ProposalGenerator
+
+
+@dataclass(frozen=True)
+class EpisodeAuthorizationChoice:
+    """One explicit, replay-checkable authorization implementation choice.
+
+    ``selection_id`` is a trusted, versioned semantic identity supplied by the
+    evaluation host.  It must change whenever the factory or requester behavior
+    changes.  Reusing an id for different behavior violates the episode replay
+    contract, even if the callable happens to share a type or qualified name.
+    """
+
+    selection_id: str
+    factory: Callable[[], AuthorizationRequester]
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", self.selection_id):
+            raise ValueError("episode authorization selection_id must be a bounded identifier")
+        if not callable(self.factory):
+            raise TypeError("episode authorization choice factory must be callable")
+
+
+EpisodeStrategy = Callable[[EpisodeStrategyObservation], EpisodeActionSelection | None]
+EpisodeAuthorizationFactorySelector = Callable[
+    [Literal["covert", "incident"], int], EpisodeAuthorizationChoice | None
+]
+EpisodePostDeliveryHook = Callable[
+    [Literal["covert", "incident"], int, OperationLedgerResult], None
+]
+
+
+def resolve_episode_authorization(
+    *,
+    fallback: AuthorizationRequester,
+    selector: EpisodeAuthorizationFactorySelector | None,
+    leg: Literal["covert", "incident"],
+    leg_index: int,
+    sequence: int,
+) -> tuple[EpisodeAuthorizationSelection, AuthorizationRequester]:
+    """Construct one requester and its durable, replay-checkable identity."""
+    choice: EpisodeAuthorizationChoice | None = None
+    requester = fallback
+    if selector is not None:
+        choice = selector(leg, leg_index)
+        if choice is not None:
+            if not isinstance(choice, EpisodeAuthorizationChoice):
+                raise TypeError("episode authorization selector must return an explicit choice")
+            requester = choice.factory()
+            if not callable(getattr(requester, "request", None)):
+                raise TypeError("episode authorization factory returned an invalid requester")
+    return (
+        EpisodeAuthorizationSelection(
+            leg=leg,
+            leg_index=leg_index,
+            sequence=sequence,
+            selection_id="safeguard_default" if choice is None else choice.selection_id,
+        ),
+        requester,
+    )
+
+
+@runtime_checkable
+class _SemanticMonitorObservation(Protocol):
+    @property
+    def last_input_hash(self) -> str | None: ...
+
+    @property
+    def last_invocation(self) -> ModelInvocationRecord | None: ...
 
 
 class WorkflowDependencies:
@@ -179,6 +325,25 @@ class DurableHumanAuthorization:
                 "requires_reason": request.requires_reason,
             }
         )
+
+
+@dataclass(frozen=True)
+class WorkflowNodeBundle:
+    """The action pipeline's bound nodes and route selectors.
+
+    Topologies own only edges.  This keeps an episode loop from recreating a
+    policy, approval, executor, or audit implementation beside the legacy path.
+    """
+
+    nodes: dict[str, Callable[[WorkflowState], WorkflowState]]
+    propose_with: Callable[[ProposalGenerator, WorkflowState], WorkflowState]
+    approval_with: Callable[[AuthorizationRequester, WorkflowState], WorkflowState]
+    execute_with: Callable[
+        [Callable[[WorkflowState, OperationLedgerResult], None] | None, WorkflowState],
+        WorkflowState,
+    ]
+    after_monitor: Callable[[WorkflowState], str]
+    after_approval: Callable[[WorkflowState], str]
 
 
 def build_deferred_graph(
@@ -335,6 +500,30 @@ def _idempotency_key(action_hash: str, thread_id: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"{_IDEMPOTENCY_KEY_PREFIX}{thread_id}:{action_hash}")
 
 
+def _episode_idempotency_key(
+    action_hash: str, thread_id: str, episode_id: str, sequence: int
+) -> UUID:
+    """Bind one root-episode attempt without changing frozen legacy keys."""
+    legacy_name = f"{_IDEMPOTENCY_KEY_PREFIX}{thread_id}:{action_hash}"
+    return uuid5(
+        NAMESPACE_URL,
+        f"{legacy_name}:episode:{episode_id}:sequence:{sequence}",
+    )
+
+
+def episode_safeguard_identity(
+    safeguards: SafeguardConfiguration,
+) -> EpisodeSafeguardIdentity:
+    """Serialize only the configuration facts that may alter a resumed gate."""
+    return EpisodeSafeguardIdentity(
+        evidence_gate=safeguards.evidence_gate,
+        policy_gate=safeguards.policy_gate,
+        monitor_gate=safeguards.monitor_gate,
+        authorization_gate=safeguards.authorization_gate,
+        control_approver=safeguards.control_approver,
+    )
+
+
 def _observed_only(evidence: EvidenceValidation) -> EvidenceValidation:
     """What an observing evidence gate hands the policy instead of its verdict.
 
@@ -356,10 +545,12 @@ def _observed_only(evidence: EvidenceValidation) -> EvidenceValidation:
     )
 
 
-def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: Any = None) -> Any:
-    """Compile the approval-gated workflow graph shared by every action-taking scenario.
+def build_workflow_builder(dependencies: WorkflowDependencies) -> Any:
+    """Build the one action pipeline without choosing its root topology.
 
-    Invoke/resume with one caller-owned configurable ``thread_id``.
+    Both the legacy one-action graph and the future episode root graph must use
+    these exact node functions and routes.  The caller alone decides where the
+    pipeline starts/ends and which checkpointer owns the root state.
     """
 
     def _attributes(state: WorkflowState) -> dict[str, object]:
@@ -430,15 +621,18 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         with _span("mcp.observability", state):
             return {"records": dependencies.collector.collect(state["incident"])}
 
-    def propose(state: WorkflowState) -> WorkflowState:
+    def propose_with(proposer: ProposalGenerator, state: WorkflowState) -> WorkflowState:
         try:
-            hypothesis, action = dependencies.proposer.propose(
+            hypothesis, action = proposer.propose(
                 state["incident"], state["caller"], state["context"], state["records"]
             )
         except ProposalError as error:
             _audit(state, "proposal", error.reason)
             return {"result": WorkflowResult(final_state="blocked", reasons=(error.reason,))}
         return {"hypothesis": hypothesis, "action": action}
+
+    def propose(state: WorkflowState) -> WorkflowState:
+        return propose_with(dependencies.proposer, state)
 
     def validate(state: WorkflowState) -> WorkflowState:
         # The validator always runs against the real records, and what it says is
@@ -458,6 +652,17 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             "policy": policy,
             "idempotency_key": _idempotency_key(policy.action_hash, state["incident"].thread_id),
         }
+
+    def _semantic_observation() -> WorkflowState:
+        monitor = dependencies.monitor_v2
+        if monitor is None or not isinstance(monitor, _SemanticMonitorObservation):
+            return {}
+        input_hash, invocation = monitor.last_input_hash, monitor.last_invocation
+        if input_hash is not None and not re.fullmatch(r"[a-f0-9]{64}", input_hash):
+            raise TypeError("semantic monitor exposed an invalid input hash")
+        if invocation is not None and not isinstance(invocation, ModelInvocationRecord):
+            raise TypeError("semantic monitor exposed an invalid invocation record")
+        return {"monitor_input_hash": input_hash, "monitor_invocation": invocation}
 
     def monitor(state: WorkflowState) -> WorkflowState:
         evidence, policy = state["evidence"], state["policy"]
@@ -490,7 +695,7 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             outcome = dependencies.monitor_v2.assess_consultation(consultation)
             if outcome.outcome == "error":
                 assert outcome.error_kind is not None
-                return {"monitor_error": outcome.error_kind.value}
+                return {"monitor_error": outcome.error_kind.value, **_semantic_observation()}
             assert outcome.assessment is not None
             try:
                 from .monitor_v2 import bind_assessment
@@ -501,11 +706,16 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             except ValueError:
                 # A mismatched assessment is a failed consultation, never a
                 # verdict that can be counted as a monitor catch.
-                return {"monitor_error": "echo_mismatch"}
-            return {"monitor": result}
+                return {"monitor_error": "echo_mismatch", **_semantic_observation()}
+            return {"monitor": result, **_semantic_observation()}
 
     def after_monitor(state: WorkflowState) -> str:
-        if "result" in state:
+        # Episode loops explicitly clear an attempt before recollecting.  A
+        # cleared ``result`` is represented by ``None`` in the durable root
+        # state, not by removing a channel, so presence alone is not a terminal
+        # fact.  The legacy graph never writes ``None`` and therefore retains
+        # its original routing behaviour.
+        if state.get("result") is not None:
             return "finish"
         if state["policy"].decision is PolicyDecision.DENY and (
             dependencies.safeguards.enforces_policy
@@ -640,17 +850,15 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             _audit(state, "monitor", monitor_error(state["monitor_error"]))
         return {}
 
-    def approval(state: WorkflowState) -> WorkflowState:
+    def approval_with(requester: AuthorizationRequester, state: WorkflowState) -> WorkflowState:
         with _span(_scenario_span("approval", state), state):
-            payload = dependencies.authorization.request(
+            payload = requester.request(
                 AuthorizationRequest(
                     action_hash=state["policy"].action_hash,
                     incident_id=state["incident"].incident_id,
                     thread_id=state["incident"].thread_id,
                     actor=state["action"].actor,
-                    monitor_verdict=(
-                        state["monitor"].verdict if state.get("monitor") else None
-                    ),
+                    monitor_verdict=(state["monitor"].verdict if state.get("monitor") else None),
                     requires_reason=bool(
                         state.get("monitor") and state["monitor"].verdict is MonitorVerdict.DEFER
                     ),
@@ -763,10 +971,16 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
         _audit(state, "approval", AUDIT_APPROVED)
         return {"human": human}
 
-    def after_approval(state: WorkflowState) -> str:
-        return "finish" if "result" in state else "execute"
+    def approval(state: WorkflowState) -> WorkflowState:
+        return approval_with(dependencies.authorization, state)
 
-    def execute(state: WorkflowState) -> WorkflowState:
+    def after_approval(state: WorkflowState) -> str:
+        return "finish" if state.get("result") is not None else "execute"
+
+    def execute_with(
+        post_delivery: Callable[[WorkflowState, OperationLedgerResult], None] | None,
+        state: WorkflowState,
+    ) -> WorkflowState:
         action, policy, human = state["action"], state["policy"], state["human"]
         context = state["context"].model_copy(update={"idempotency_key": state["idempotency_key"]})
         token = human.token
@@ -779,6 +993,8 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
                 action_hash=policy.action_hash,
                 idempotency_key=state["idempotency_key"],
             )
+        if post_delivery is not None:
+            post_delivery(state, operation)
         dependencies.audit.emit(
             audit_event(
                 "execution",
@@ -790,6 +1006,9 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             )
         )
         return {"operation": operation}
+
+    def execute(state: WorkflowState) -> WorkflowState:
+        return execute_with(None, state)
 
     def verify(state: WorkflowState) -> WorkflowState:
         action, policy = state["action"], state["policy"]
@@ -825,36 +1044,52 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
             ),
         }
 
+    return WorkflowNodeBundle(
+        nodes={
+            "ingest": ingest,
+            "collect": collect,
+            "propose": propose,
+            "validate": validate,
+            "monitor": monitor,
+            "deny": deny,
+            "blocked": blocked,
+            "monitor_mismatch": monitor_mismatch,
+            "monitor_error": monitor_error_terminal,
+            "preapproval_audit": preapproval_audit,
+            "approval": approval,
+            "execute": execute,
+            "verify": verify,
+        },
+        propose_with=propose_with,
+        approval_with=approval_with,
+        execute_with=execute_with,
+        after_monitor=after_monitor,
+        after_approval=after_approval,
+    )
+
+
+def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: Any = None) -> Any:
+    """Compile the legacy one-action root graph unchanged."""
+    bundle = build_workflow_builder(dependencies)
     graph = StateGraph(WorkflowState)
-    graph.add_node("ingest", ingest)
-    graph.add_node("collect", collect)
-    graph.add_node("propose", propose)
-    graph.add_node("validate", validate)
-    graph.add_node("monitor", monitor)
-    graph.add_node("deny", deny)
-    graph.add_node("blocked", blocked)
-    graph.add_node("monitor_mismatch", monitor_mismatch)
-    graph.add_node("monitor_error", monitor_error_terminal)
-    graph.add_node("preapproval_audit", preapproval_audit)
-    graph.add_node("approval", approval)
-    graph.add_node("execute", execute)
-    graph.add_node("verify", verify)
+    for name, node in bundle.nodes.items():
+        graph.add_node(name, node)
     graph.add_edge(START, "ingest")
     graph.add_conditional_edges(
         "ingest",
-        lambda state: "finish" if "result" in state else "collect",
+        lambda state: "finish" if state.get("result") is not None else "collect",
         {"finish": END, "collect": "collect"},
     )
     graph.add_edge("collect", "propose")
     graph.add_conditional_edges(
         "propose",
-        lambda state: "finish" if "result" in state else "validate",
+        lambda state: "finish" if state.get("result") is not None else "validate",
         {"finish": END, "validate": "validate"},
     )
     graph.add_edge("validate", "monitor")
     graph.add_conditional_edges(
         "monitor",
-        after_monitor,
+        bundle.after_monitor,
         {
             "finish": END,
             "deny": "deny",
@@ -869,7 +1104,398 @@ def build_workflow_graph(dependencies: WorkflowDependencies, *, checkpointer: An
     graph.add_edge("monitor_mismatch", END)
     graph.add_edge("monitor_error", END)
     graph.add_edge("preapproval_audit", "approval")
-    graph.add_conditional_edges("approval", after_approval, {"finish": END, "execute": "execute"})
+    graph.add_conditional_edges(
+        "approval", bundle.after_approval, {"finish": END, "execute": "execute"}
+    )
     graph.add_edge("execute", "verify")
     graph.add_edge("verify", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+def build_episode_workflow_graph(
+    dependencies: WorkflowDependencies,
+    *,
+    strategy: EpisodeStrategy,
+    authorization_factory_selector: EpisodeAuthorizationFactorySelector | None = None,
+    preselected_requesters: dict[int, AuthorizationRequester] | None = None,
+    post_delivery_hook: EpisodePostDeliveryHook | None = None,
+    interrupt_after: tuple[Literal["episode_propose", "monitor", "execute"], ...] = (),
+    checkpointer: Any = None,
+) -> Any:
+    """Compile the adaptive evaluation loop on one LangGraph root thread.
+
+    The loop owns sequencing and the transcript, but not control-plane policy:
+    every action-taking node below is a bound callable from
+    :func:`build_workflow_builder`.  In particular, a denial reaches the same
+    policy/monitor/authorization implementation as it does in the legacy
+    one-action graph; only its terminal edge returns to ``episode_record``
+    rather than ``END``.
+    """
+
+    bundle = build_workflow_builder(dependencies)
+    requester_cache = {} if preselected_requesters is None else dict(preselected_requesters)
+    expected_safeguards = episode_safeguard_identity(dependencies.safeguards)
+
+    def transcript_from(state: EpisodeWorkflowState) -> EpisodeTranscript:
+        raw = state["episode_transcript"]
+        payload = raw.model_dump(mode="python") if isinstance(raw, EpisodeTranscript) else raw
+        return EpisodeTranscript.model_validate(payload)
+
+    def ensure_safeguards(state: EpisodeWorkflowState) -> None:
+        raw = state.get("episode_safeguards")
+        persisted = (
+            raw
+            if isinstance(raw, EpisodeSafeguardIdentity)
+            else EpisodeSafeguardIdentity.model_validate(raw)
+        )
+        if persisted != expected_safeguards:
+            raise ValueError("episode safeguards do not match the durable root configuration")
+
+    def select_requester(
+        *,
+        leg: Literal["covert", "incident"],
+        leg_index: int,
+        sequence: int,
+    ) -> tuple[EpisodeAuthorizationSelection, AuthorizationRequester]:
+        return resolve_episode_authorization(
+            fallback=dependencies.authorization,
+            selector=authorization_factory_selector,
+            leg=leg,
+            leg_index=leg_index,
+            sequence=sequence,
+        )
+
+    def episode_propose(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        ensure_safeguards(state)
+        transcript = transcript_from(state)
+        raw_records = state["records"]
+        if raw_records is None:
+            raise ValueError("episode collection did not produce evidence records")
+        records = raw_records
+        selection = strategy(
+            EpisodeStrategyObservation(
+                transcript=transcript,
+                incident=state["incident"],
+                caller=state["caller"],
+                context=state["context"],
+                records=records,
+            )
+        )
+        if selection is None:
+            return {"episode_termination": "strategy_complete"}
+        if not selection.action_id or len(selection.action_id) > 120:
+            raise ValueError("episode action_id must be a bounded identifier")
+
+        sequence = state["episode_sequence"]
+        started = EpisodeTranscriptEvent(
+            identity=EpisodeCheckpointIdentity(
+                episode_id=transcript.episode_id,
+                sequence=sequence,
+            ),
+            leg=selection.leg,
+            action_id=selection.action_id,
+            phase="started",
+            at=dependencies.clock(),
+        )
+        durable_transcript = EpisodeTranscript(
+            incident_id=transcript.incident_id,
+            thread_id=transcript.thread_id,
+            episode_id=transcript.episode_id,
+            events=(*transcript.events, started),
+        )
+        # The selected proposer is deliberately consumed in this node, never
+        # checkpointed. Its proposal/error behaviour is the legacy helper's
+        # exact implementation. The selection/start event and either the
+        # canonical proposal or its not-produced result checkpoint together
+        # before any downstream gate executes.
+        active = {key: value for key, value in state.items() if value is not None}
+        proposed = bundle.propose_with(selection.proposer, cast(WorkflowState, active))
+        base = cast(
+            EpisodeWorkflowState,
+            {
+                **proposed,
+                "episode_transcript": durable_transcript,
+                "episode_current_leg": selection.leg,
+                "episode_current_action_id": selection.action_id,
+            },
+        )
+        if proposed.get("result") is not None:
+            return base
+        action = cast(CanonicalAction, proposed["action"])
+        if action.thread_id != transcript.thread_id or action.incident_id != transcript.incident_id:
+            raise ValueError("episode proposer returned an action for another business incident")
+        selection_fact, requester = select_requester(
+            leg=selection.leg,
+            leg_index=_episode_leg_index(state, selection.leg),
+            sequence=sequence,
+        )
+        requester_cache[sequence] = requester
+        base["episode_authorization_selection"] = selection_fact
+        return base
+
+    def episode_snapshot(state: EpisodeWorkflowState) -> EpisodeStepSnapshot:
+        result = state["result"]
+        action = state.get("action")
+        if result is None:
+            raise ValueError("episode terminal record has no result")
+        if action is None:
+            return EpisodeStepSnapshot(
+                thread_id=state["episode_transcript"].thread_id,
+                proposal_produced=False,
+                executed=False,
+                redelivered=False,
+                terminal_state=result.final_state,
+                refusal_causes=result.reasons,
+            )
+        evidence = state.get("evidence")
+        policy = result.policy
+        operation = result.operation
+        monitor = result.monitor
+        return EpisodeStepSnapshot(
+            thread_id=action.thread_id,
+            tool_name=action.tool_name,
+            arguments_digest=canonical_arguments_digest(action),
+            evidence_ids=result.evidence_ids,
+            policy_decision=None if policy is None else policy.decision,
+            evidence_state=(
+                None
+                if evidence is None
+                else cast(Any, evidence).state
+            ),
+            monitor_verdict=None if monitor is None else monitor.verdict,
+            monitor_error_kind=(
+                state.get("monitor_error")
+                if isinstance(state.get("monitor_error"), str)
+                else None
+            ),
+            monitor_invocation=state.get("monitor_invocation"),
+            monitor_input_hash=(
+                state.get("monitor_input_hash")
+                if isinstance(state.get("monitor_input_hash"), str)
+                else None
+            ),
+            authorization=(
+                None
+                if result.approval is None
+                else evaluation_authorization_label(dependencies.safeguards.authorization_gate)
+            ),
+            executed=operation is not None,
+            operation_id=None if operation is None else operation.operation_id,
+            operation_status=None if operation is None else operation.status,
+            redelivered=bool(
+                operation is not None and operation.status is OperationStatus.DUPLICATE
+            ),
+            terminal_state=result.final_state,
+            refusal_causes=result.reasons if result.final_state == "blocked" else (),
+        )
+
+    def episode_record(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        transcript = transcript_from(state)
+        if not transcript.events or transcript.events[-1].phase != "started":
+            raise ValueError("episode terminal record requires a durable started action")
+        started = transcript.events[-1]
+        terminal = EpisodeTranscriptEvent(
+            identity=started.identity,
+            leg=started.leg,
+            action_id=started.action_id,
+            phase="terminal",
+            at=dependencies.clock(),
+            step=episode_snapshot(state),
+        )
+        durable_transcript = EpisodeTranscript(
+            incident_id=transcript.incident_id,
+            thread_id=transcript.thread_id,
+            episode_id=transcript.episode_id,
+            events=(*transcript.events, terminal),
+        )
+        sequence = state["episode_sequence"] + 1
+        termination: Literal["strategy_complete", "max_actions"] | None = None
+        if sequence >= state["episode_max_actions"]:
+            # A strategy may declare completion exactly at the bound.  Calling
+            # it with the just-recorded transcript is read-only and makes that
+            # distinction durable instead of labelling every full bound a timeout.
+            terminal_selection = strategy(
+                EpisodeStrategyObservation(
+                    transcript=durable_transcript,
+                    incident=state["incident"],
+                    caller=state["caller"],
+                    context=state["context"],
+                    records=state["records"] or (),
+                )
+            )
+            termination = "strategy_complete" if terminal_selection is None else "max_actions"
+        outcome: EpisodeWorkflowState = {
+            "episode_transcript": durable_transcript,
+            "episode_sequence": sequence,
+        }
+        if termination is not None:
+            outcome["episode_termination"] = termination
+        return outcome
+
+    def episode_clear(_state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        # StateGraph channels persist unless explicitly overwritten.  Clearing
+        # this complete attempt-local set prevents a prior denial, monitor
+        # observation, approval, operation or result from steering the next
+        # iteration. Identity/caller/context and root episode fields remain.
+        return {
+            "records": None,
+            "evidence": None,
+            "hypothesis": None,
+            "action": None,
+            "policy": None,
+            "monitor": None,
+            "monitor_error": None,
+            "monitor_input_hash": None,
+            "monitor_invocation": None,
+            "idempotency_key": None,
+            "human": None,
+            "operation": None,
+            "verification": None,
+            "result": None,
+            "episode_current_leg": None,
+            "episode_current_action_id": None,
+            "episode_authorization_selection": None,
+        }
+
+    def episode_preselection_finish(_state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        """Finish an ingest refusal without fabricating an attempted action."""
+        return {"episode_termination": "strategy_complete"}
+
+    def episode_approval(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        ensure_safeguards(state)
+        raw_selection = state.get("episode_authorization_selection")
+        if raw_selection is None:
+            raise ValueError("episode approval has no durable authorization selection")
+        selection = (
+            raw_selection
+            if isinstance(raw_selection, EpisodeAuthorizationSelection)
+            else EpisodeAuthorizationSelection.model_validate(raw_selection)
+        )
+        requester = requester_cache.get(selection.sequence)
+        if requester is None:
+            candidate, requester = select_requester(
+                leg=selection.leg,
+                leg_index=selection.leg_index,
+                sequence=selection.sequence,
+            )
+            if candidate != selection:
+                raise ValueError("episode authorization selection does not match durable root")
+            requester_cache[selection.sequence] = requester
+        active = {key: value for key, value in state.items() if value is not None}
+        return cast(
+            EpisodeWorkflowState,
+            bundle.approval_with(requester, cast(WorkflowState, active)),
+        )
+
+    def episode_execute(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+        ensure_safeguards(state)
+        def deliver(_active: WorkflowState, operation: OperationLedgerResult) -> None:
+            leg = state.get("episode_current_leg")
+            if leg is None:
+                raise ValueError("episode execution has no selected leg")
+            if post_delivery_hook is not None and operation.status is OperationStatus.SUCCEEDED:
+                post_delivery_hook(leg, _episode_leg_index(state, leg), operation)
+
+        active = {key: value for key, value in state.items() if value is not None}
+        return cast(
+            EpisodeWorkflowState,
+            bundle.execute_with(deliver, cast(WorkflowState, active)),
+        )
+
+    def _episode_leg_index(
+        state: EpisodeWorkflowState, leg: Literal["covert", "incident"]
+    ) -> int:
+        transcript = transcript_from(state)
+        return sum(event.phase == "terminal" and event.leg == leg for event in transcript.events)
+
+    def shared_node(name: str) -> Callable[[EpisodeWorkflowState], EpisodeWorkflowState]:
+        node = bundle.nodes[name]
+
+        def invoke(state: EpisodeWorkflowState) -> EpisodeWorkflowState:
+            ensure_safeguards(state)
+            # All shared nodes operate only after their required local inputs
+            # have been recreated for this iteration. ``episode_clear`` leaves
+            # explicit None channel values in root state, which the legacy
+            # TypedDict intentionally does not model.
+            active = {key: value for key, value in state.items() if value is not None}
+            output = cast(EpisodeWorkflowState, node(cast(WorkflowState, active)))
+            if name == "validate":
+                transcript = transcript_from(state)
+                policy = cast(Any, output["policy"])
+                output["idempotency_key"] = _episode_idempotency_key(
+                    policy.action_hash,
+                    transcript.thread_id,
+                    transcript.episode_id,
+                    state["episode_sequence"],
+                )
+            return output
+
+        return invoke
+
+    def route_after_monitor(state: EpisodeWorkflowState) -> str:
+        active = {key: value for key, value in state.items() if value is not None}
+        return cast(str, bundle.after_monitor(cast(WorkflowState, active)))
+
+    def route_after_approval(state: EpisodeWorkflowState) -> str:
+        active = {key: value for key, value in state.items() if value is not None}
+        return cast(str, bundle.after_approval(cast(WorkflowState, active)))
+
+    graph: Any = StateGraph(EpisodeWorkflowState)
+    for name, node in bundle.nodes.items():
+        if name not in {"propose", "approval", "execute"}:
+            _ = node
+            graph.add_node(name, shared_node(name))
+    graph.add_node("episode_propose", episode_propose)
+    graph.add_node("episode_record", episode_record)
+    graph.add_node("episode_clear", episode_clear)
+    graph.add_node("episode_preselection_finish", episode_preselection_finish)
+    graph.add_node("approval", episode_approval)
+    graph.add_node("execute", episode_execute)
+    graph.add_node("episode_finish", lambda state: {})
+    graph.add_edge(START, "ingest")
+    graph.add_conditional_edges(
+        "ingest",
+        lambda state: "finish" if state.get("result") is not None else "collect",
+        {"finish": "episode_preselection_finish", "collect": "collect"},
+    )
+    graph.add_edge("episode_preselection_finish", "episode_finish")
+    graph.add_edge("collect", "episode_propose")
+    graph.add_conditional_edges(
+        "episode_propose",
+        lambda state: (
+            "finish"
+            if state.get("episode_termination") is not None
+            else ("record" if state.get("result") is not None else "validate")
+        ),
+        {"finish": "episode_finish", "record": "episode_record", "validate": "validate"},
+    )
+    graph.add_edge("validate", "monitor")
+    graph.add_conditional_edges(
+        "monitor",
+        route_after_monitor,
+        {
+            "finish": "episode_record",
+            "deny": "deny",
+            "block": "blocked",
+            "monitor_mismatch": "monitor_mismatch",
+            "monitor_error": "monitor_error",
+            "approve": "preapproval_audit",
+        },
+    )
+    for terminal_node in ("deny", "blocked", "monitor_mismatch", "monitor_error", "verify"):
+        graph.add_edge(terminal_node, "episode_record")
+    graph.add_edge("preapproval_audit", "approval")
+    graph.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {"finish": "episode_record", "execute": "execute"},
+    )
+    graph.add_edge("execute", "verify")
+    graph.add_conditional_edges(
+        "episode_record",
+        lambda state: "finish" if state.get("episode_termination") is not None else "clear",
+        {"finish": "episode_finish", "clear": "episode_clear"},
+    )
+    graph.add_edge("episode_clear", "collect")
+    graph.add_edge("episode_finish", END)
+    return graph.compile(checkpointer=checkpointer, interrupt_after=list(interrupt_after))

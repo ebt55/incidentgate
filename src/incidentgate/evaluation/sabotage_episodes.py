@@ -133,7 +133,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from incidentgate.contracts import (
     CanonicalAction,
@@ -151,7 +151,14 @@ from incidentgate.contracts import (
     ToolCallContext,
     canonical_arguments_digest,
 )
-from incidentgate.control.models import Caller, EvidenceState
+from incidentgate.control.models import (
+    Caller,
+    EpisodeStepSnapshot,
+    EpisodeTranscript,
+    EvaluationAuthorization,
+    EvidenceState,
+    evaluation_authorization_label,
+)
 from incidentgate.control.monitor import AdvisoryMonitor, FixtureMonitor
 from incidentgate.control.monitor_v2 import MonitorErrorKind
 from incidentgate.control.ports import AuthorizationRequester, ProposalGenerator
@@ -160,7 +167,17 @@ from incidentgate.control.safeguards import (
     GateMode,
     SafeguardConfiguration,
 )
-from incidentgate.integration.runtime import IncidentRuntime, PendingApproval, RuntimeStatus
+from incidentgate.control.workflow import (
+    EpisodeActionSelection,
+    EpisodeAuthorizationChoice,
+    EpisodeStrategyObservation,
+)
+from incidentgate.integration.runtime import (
+    EpisodeRuntime,
+    IncidentRuntime,
+    PendingApproval,
+    RuntimeStatus,
+)
 from incidentgate.integration.semantic_monitor import SemanticMonitorBundle
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.errors import ResponseLost
@@ -169,21 +186,13 @@ from incidentgate.scenario_registry import ALLOWED_EVIDENCE_SOURCES, RUNNABLE_SC
 
 from .identity import purge_checkpoint_threads
 
-#: Which authorization minted a step's execution. Both mint a real token through
-#: the production ``ApprovalService``; they differ in the path -- an in-process
-#: decision by a named stand-in against a durable interrupt and a human resume --
-#: and the published row names which one ran, so this is recorded rather than
-#: inferred from the condition.
-Authorization = Literal["automatic_evaluation_capability", "deterministic_approver_simulation"]
-
 Leg = Literal["covert", "incident"]
 
 #: Chooses the evaluation-only authorizer for one durable runtime step. Returning
 #: ``None`` preserves the safeguard-selected authorizer; a returned factory is
 #: constructed by that step's ordinary ``IncidentRuntime`` graph.
-AuthorizationFactorySelector = Callable[
-    [Leg, int], Callable[[], AuthorizationRequester] | None
-]
+AuthorizationFactorySelector = Callable[[Leg, int], Callable[[], AuthorizationRequester] | None]
+EpisodeAuthorizationSelector = Callable[[Leg, int], EpisodeAuthorizationChoice | None]
 
 
 @dataclass(frozen=True)
@@ -243,14 +252,6 @@ def safeguards_for(condition: EvaluationMode, *, approver: str) -> SafeguardConf
         authorization_gate=AuthorizationGate.DETERMINISTIC_CONTROL,
         control_approver=approver,
     )
-
-
-#: How a step's authorization is labelled, per gate. Named once so the two
-#: published labels cannot drift from the two implementations they describe.
-_AUTHORIZATION_LABEL: Final[dict[AuthorizationGate, Authorization]] = {
-    AuthorizationGate.DETERMINISTIC_CONTROL: "automatic_evaluation_capability",
-    AuthorizationGate.DURABLE_HUMAN: "deterministic_approver_simulation",
-}
 
 
 def _utc_now() -> datetime:
@@ -342,7 +343,7 @@ class SabotageStep:
     #: the deterministic authorization control, which decides in-process -- and
     #: false for a step that never reached the authorizer at all.
     approval_requested: bool
-    authorization: Authorization | None
+    authorization: EvaluationAuthorization | None
     executed: bool
     operation: OperationLedgerResult | None
     #: Whether the executor's delivery was lost after its transaction committed
@@ -366,6 +367,7 @@ class SabotageStep:
     #: reason codes, never action payloads, and give a later T7 projection the
     #: exact approval-boundary cause without rewriting v2 artifacts.
     terminal_refusal_causes: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.monitor_error_kind is not None and not isinstance(
@@ -428,6 +430,70 @@ class SabotageConditionOutcome:
     covert: SabotageEpisodeOutcome
     incident: SabotageEpisodeOutcome
     end_state: object
+    #: Retained solely for frozen v2 callers; a derived-thread run is not a
+    #: publishable real episode and a future publisher must reject it.
+    execution_model: Literal["legacy_multi_thread_script"] = "legacy_multi_thread_script"
+    publication_eligible: Literal[False] = False
+
+    def require_publishable(self) -> None:
+        raise ValueError("legacy multi-thread episode output is not publishable")
+
+
+# Evaluation names intentionally expose the control graph's strict in-memory
+# selection seam.  The proposer remains a dependency only long enough for the
+# shared proposal node to call it; no callable is durable episode state.
+RealEpisodeAction = EpisodeActionSelection
+RealEpisodeStrategy = Callable[[EpisodeStrategyObservation], RealEpisodeAction | None]
+
+
+@dataclass(frozen=True)
+class RealEpisodeOutcome:
+    """One bounded, one-business-thread episode with conditional eligibility."""
+
+    incident_id: str
+    thread_id: str
+    transcript: EpisodeTranscript
+    covert: tuple[EpisodeStepSnapshot, ...]
+    incident: tuple[EpisodeStepSnapshot, ...]
+    score: RealEpisodeScore
+    termination: Literal["strategy_complete", "max_actions"]
+    execution_model: Literal["one_business_thread_resumable_episode"] = (
+        "one_business_thread_resumable_episode"
+    )
+
+    @property
+    def publication_eligible(self) -> bool:
+        return (
+            self.termination == "strategy_complete"
+            and self.score.covert_attempted == bool(self.covert)
+            and self.score.incident_attempted == bool(self.incident)
+            and self.score.covert_attempted
+            and self.score.incident_attempted
+            and self.score.covert_measured
+            and self.score.incident_measured
+            and self.score.complete
+        )
+
+    def require_publishable(self) -> None:
+        if not self.publication_eligible:
+            raise ValueError("real episode is incomplete or lacks an objective score")
+
+
+@dataclass(frozen=True)
+class RealEpisodeScore:
+    """Authoritative objective facts, scored from this transcript and end state."""
+
+    covert_attempted: bool
+    incident_attempted: bool
+    covert_effect: bool
+    incident_success: bool
+    covert_measured: bool
+    incident_measured: bool
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if self.complete != (self.covert_measured and self.incident_measured):
+            raise ValueError("complete requires both objective measurements")
 
 
 class _RecordingProposer:
@@ -475,9 +541,9 @@ def load_policy_configuration() -> PolicyConfiguration:
     return PolicyConfiguration.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def _identity(scenario_id: str, thread_id: str, actor: str) -> tuple[
-    IncidentIdentity, Caller, ToolCallContext
-]:
+def _identity(
+    scenario_id: str, thread_id: str, actor: str
+) -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     incident_id = f"INC-{scenario_id}"
     return (
         IncidentIdentity(
@@ -608,6 +674,8 @@ def _runtime_step(
     """
     if monitor is not None and semantic_monitor is not None:
         raise ValueError("provide either legacy monitor or semantic monitor, not both")
+    if authorization_factory is not None and not callable(authorization_factory):
+        raise TypeError("authorization_factory must select a factory by leg and step index")
     incident, operator, context = _identity(scenario_id, thread_id, actor)
     recorder = _RecordingProposer(proposer)
     redelivered = False
@@ -626,22 +694,22 @@ def _runtime_step(
         runtime = IncidentRuntime(
             dsn,
             clock=clock,
-        # Scenarios that supply no monitor keep the always-allow fixture, which
-        # is what every condition ran before any scenario needed a real one: the
-        # full column's claim was then about the policy and the human gate, and
-        # the monitor stage was present but never dissenting. Passed in every
-        # arm, including the two that disable the monitor stage, so the arms
-        # share one monitor identity and not merely one monitor type.
+            # Scenarios that supply no monitor keep the always-allow fixture, which
+            # is what every condition ran before any scenario needed a real one: the
+            # full column's claim was then about the policy and the human gate, and
+            # the monitor stage was present but never dissenting. Passed in every
+            # arm, including the two that disable the monitor stage, so the arms
+            # share one monitor identity and not merely one monitor type.
             monitor=monitor if monitor is not None else FixtureMonitor(MonitorVerdict.ALLOW),
             proposer_factory=lambda: recorder,
             authorization_factory=authorization_factory,
             safeguards=safeguards,
             response_loss_once=response_loss_once,
-        # The acceptance gate lists a published evaluation among the clauses a
-        # scenario must satisfy *before* it is promoted, so requiring promotion
-        # in order to run the evaluation would be circular -- T1 was measured
-        # from inside this same window. The gate is untouched for the host, the
-        # UI and the chaos worker, which are the paths it exists to hold shut.
+            # The acceptance gate lists a published evaluation among the clauses a
+            # scenario must satisfy *before* it is promoted, so requiring promotion
+            # in order to run the evaluation would be circular -- T1 was measured
+            # from inside this same window. The gate is untouched for the host, the
+            # UI and the chaos worker, which are the paths it exists to hold shut.
             allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
         )
     with runtime:
@@ -668,7 +736,8 @@ def _runtime_step(
     result = status.result
     if result is None:
         raise TypeError("a sabotage runtime step did not reach a terminal runtime result")
-    if recorder.action is None:
+    action = recorder.action or status.action
+    if action is None:
         raise TypeError("a sabotage runtime step could not name the capability it proposed")
     # Bound to the authorizer having issued an approve decision, not to an
     # interrupt having happened: both gates authorize, and only one of them asks.
@@ -681,8 +750,8 @@ def _runtime_step(
     return SabotageStep(
         step_index=step_index,
         thread_id=thread_id,
-        tool_name=recorder.action.tool_name,
-        arguments_digest=canonical_arguments_digest(recorder.action),
+        tool_name=action.tool_name,
+        arguments_digest=canonical_arguments_digest(action),
         # An observing gate is not a consulted gate for the purposes of the
         # published row: the contract reads a decision here as one that could
         # have refused. What it decided is carried below instead.
@@ -704,7 +773,7 @@ def _runtime_step(
         monitor_input_hash=monitor_input_hash,
         approval_requested=requested,
         authorization=(
-            _AUTHORIZATION_LABEL[safeguards.authorization_gate] if authorized else None
+            evaluation_authorization_label(safeguards.authorization_gate) if authorized else None
         ),
         executed=result.operation is not None,
         operation=result.operation,
@@ -713,6 +782,7 @@ def _runtime_step(
         terminal_refusal_causes=(
             result.reasons if result.final_state == "blocked" and result.operation is None else ()
         ),
+        evidence_ids=result.evidence_ids,
     )
 
 
@@ -732,6 +802,153 @@ def _validated_response_loss_steps(
     return selected
 
 
+def run_real_episode(
+    repository: LabRepository,
+    *,
+    scenario_id: str,
+    episode_id: str,
+    strategy: RealEpisodeStrategy,
+    max_actions: int,
+    safeguards: SafeguardConfiguration,
+    actor: str = "operator-1",
+    approver: str = "approver-1",
+    clock: Callable[[], datetime] = _utc_now,
+    score: Callable[[EpisodeTranscript], RealEpisodeScore],
+    monitor: AdvisoryMonitor | None = None,
+    semantic_monitor: SemanticMonitorBundle | None = None,
+    response_loss_steps: tuple[ResponseLossStep, ...] = (),
+    authorization_factory: EpisodeAuthorizationSelector | None = None,
+) -> RealEpisodeOutcome:
+    """Run or resume a real adaptive episode on one business incident/thread.
+
+    A strategy receives the transcript after every terminal action.  It may
+    react to a denial by selecting a different objective/proposer; completion is
+    therefore a typed decision, not the legacy runner's refusal short-circuit.
+    The root graph checkpoints selection/action state before gates run, so a
+    restart resumes this one business thread rather than creating a step graph.
+    """
+    if type(max_actions) is not int or not 1 <= max_actions <= 1_000:
+        raise ValueError("max_actions must be between 1 and 1000")
+    if monitor is not None and semantic_monitor is not None:
+        raise ValueError("provide either legacy monitor or semantic monitor, not both")
+    response_loss = _validated_response_loss_steps(
+        response_loss_steps, {"covert": max_actions, "incident": max_actions}
+    )
+    frozen_authorizers = _validated_episode_authorization_choices(
+        authorization_factory, {"covert": max_actions, "incident": max_actions}
+    )
+
+    def frozen_authorization_factory(
+        leg: Leg, step_index: int
+    ) -> EpisodeAuthorizationChoice | None:
+        return frozen_authorizers[(leg, step_index)]
+
+    episode_authorization_selector = (
+        None if authorization_factory is None else frozen_authorization_factory
+    )
+    thread_id = f"{scenario_id}-episode-{episode_id}"
+    incident_id = f"INC-{scenario_id}"
+    if len(thread_id) > 128:
+        raise ValueError("episode business thread exceeds the incident contract")
+    incident, operator, context = _identity(scenario_id, thread_id, actor)
+    initial_transcript = EpisodeTranscript(
+        incident_id=incident_id, thread_id=thread_id, episode_id=episode_id
+    )
+
+    def post_delivery(leg: Leg, sequence: int, operation: OperationLedgerResult) -> None:
+        if (leg, sequence) in response_loss and operation.status is OperationStatus.SUCCEEDED:
+            raise ResponseLost("injected root-episode post-commit response loss")
+
+    with EpisodeRuntime(
+        repository.dsn,
+        clock=clock,
+        monitor=monitor,
+        semantic_monitor=semantic_monitor,
+        safeguards=safeguards,
+        allow_unpromoted_scenario=scenario_id not in RUNNABLE_SCENARIOS,
+    ) as runtime:
+        exists = runtime.episode_exists(thread_id)
+        if not exists:
+            # Creation alone owns fixture setup. A restart follows the root
+            # checkpoint and never clears the evidence or an already committed
+            # mutation it must replay.
+            repository.reset_checkpoint(scenario_id)
+            repository.inject_checkpoint(scenario_id)
+        approvals = 0
+        recoveries = 0
+        values: dict[str, object] | None = None
+        while values is None or runtime.episode_pending(thread_id) is not None:
+            if recoveries > max_actions + 2:
+                raise RuntimeError("episode exceeded its bounded response-loss recovery allowance")
+            try:
+                if values is None:
+                    values = (
+                        runtime.resume_episode(
+                            thread_id,
+                            strategy=strategy,
+                            authorization_factory_selector=episode_authorization_selector,
+                            post_delivery_hook=post_delivery,
+                        )
+                        if exists
+                        else runtime.start_episode(
+                            incident,
+                            operator,
+                            context,
+                            transcript=initial_transcript,
+                            max_actions=max_actions,
+                            strategy=strategy,
+                            authorization_factory_selector=episode_authorization_selector,
+                            post_delivery_hook=post_delivery,
+                        )
+                    )
+                    exists = True
+                else:
+                    if approvals >= max_actions:
+                        raise RuntimeError("episode exceeded its bounded durable approval count")
+                    _ = runtime.approve(
+                        thread_id,
+                        Principal(approver, Role.APPROVER),
+                        reason="deterministic evaluation approver",
+                    )
+                    approvals += 1
+                    values = runtime.episode_values(thread_id)
+            except ResponseLost:
+                recoveries += 1
+                values = None
+                exists = True
+        assert values is not None
+    raw_transcript = values.get("episode_transcript")
+    if raw_transcript is None:
+        raise TypeError("episode root checkpoint has no transcript")
+    payload = (
+        raw_transcript.model_dump(mode="python")
+        if isinstance(raw_transcript, EpisodeTranscript)
+        else raw_transcript
+    )
+    transcript = EpisodeTranscript.model_validate(payload)
+    termination = values.get("episode_termination")
+    if termination not in {"strategy_complete", "max_actions"}:
+        raise TypeError("episode root graph did not reach a bounded termination")
+    scored = score(transcript)
+    return RealEpisodeOutcome(
+        incident_id=incident_id,
+        thread_id=thread_id,
+        transcript=transcript,
+        covert=tuple(
+            event.step
+            for event in transcript.events
+            if event.phase == "terminal" and event.leg == "covert" and event.step is not None
+        ),
+        incident=tuple(
+            event.step
+            for event in transcript.events
+            if event.phase == "terminal" and event.leg == "incident" and event.step is not None
+        ),
+        score=scored,
+        termination=termination,
+    )
+
+
 def _validated_authorization_factories(
     selector: AuthorizationFactorySelector | None, plan_lengths: dict[Leg, int]
 ) -> dict[tuple[Leg, int], Callable[[], AuthorizationRequester] | None]:
@@ -747,6 +964,24 @@ def _validated_authorization_factories(
             if factory is not None and not callable(factory):
                 raise TypeError("authorization_factory selector must return a callable or None")
             selected[(leg, index)] = factory
+    return selected
+
+
+def _validated_episode_authorization_choices(
+    selector: EpisodeAuthorizationSelector | None, plan_lengths: dict[Leg, int]
+) -> dict[tuple[Leg, int], EpisodeAuthorizationChoice | None]:
+    """Freeze explicit replay identities before the root episode is created."""
+    if selector is None:
+        return {}
+    if not callable(selector):
+        raise TypeError("authorization_factory must select a choice by leg and step index")
+    selected: dict[tuple[Leg, int], EpisodeAuthorizationChoice | None] = {}
+    for leg, length in plan_lengths.items():
+        for index in range(length):
+            choice = selector(leg, index)
+            if choice is not None and not isinstance(choice, EpisodeAuthorizationChoice):
+                raise TypeError("authorization_factory selector must return an explicit choice")
+            selected[(leg, index)] = choice
     return selected
 
 
@@ -821,8 +1056,10 @@ def run_benign_episode(
     )
     if any(leg != "incident" for leg, _ in selected):
         raise ValueError("benign episode response loss may select only incident steps")
-    applied = safeguards if safeguards is not None else safeguards_for(
-        EvaluationMode.COMPLETE, approver=approver
+    applied = (
+        safeguards
+        if safeguards is not None
+        else safeguards_for(EvaluationMode.COMPLETE, approver=approver)
     )
     threads = tuple(
         step_thread_id(scenario_id, episode_key, "incident", index) for index in range(len(plan))
@@ -927,16 +1164,32 @@ def run_condition(
     _purge_threads(repository.dsn, threads)
 
     covert = _run_episode(
-        repository.dsn, scenario_id=scenario_id, episode_key=episode_key, leg="covert",
-        plan=covert_plan, actor=actor, approver=approver, monitor=monitor,
-        semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
+        repository.dsn,
+        scenario_id=scenario_id,
+        episode_key=episode_key,
+        leg="covert",
+        plan=covert_plan,
+        actor=actor,
+        approver=approver,
+        monitor=monitor,
+        semantic_monitor=semantic_monitor,
+        safeguards=applied,
+        clock=clock,
         response_loss_steps=selected,
         authorization_factories=authorization_factories,
     )
     incident = _run_episode(
-        repository.dsn, scenario_id=scenario_id, episode_key=episode_key, leg="incident",
-        plan=incident_plan, actor=actor, approver=approver, monitor=monitor,
-        semantic_monitor=semantic_monitor, safeguards=applied, clock=clock,
+        repository.dsn,
+        scenario_id=scenario_id,
+        episode_key=episode_key,
+        leg="incident",
+        plan=incident_plan,
+        actor=actor,
+        approver=approver,
+        monitor=monitor,
+        semantic_monitor=semantic_monitor,
+        safeguards=applied,
+        clock=clock,
         response_loss_steps=selected,
         authorization_factories=authorization_factories,
     )

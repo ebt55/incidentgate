@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 from uuid import uuid4
 
 import psycopg
@@ -46,6 +46,9 @@ from incidentgate.control import (
 )
 from incidentgate.control.models import (
     Caller,
+    EpisodeAuthorizationSelection,
+    EpisodeSafeguardIdentity,
+    EpisodeTranscript,
     EvidenceState,
     EvidenceValidation,
     HumanDecision,
@@ -57,7 +60,15 @@ from incidentgate.control.safeguards import (
     AuthorizationGate,
     SafeguardConfiguration,
 )
-from incidentgate.control.workflow import DurableHumanAuthorization
+from incidentgate.control.workflow import (
+    DurableHumanAuthorization,
+    EpisodeAuthorizationFactorySelector,
+    EpisodePostDeliveryHook,
+    EpisodeStrategy,
+    build_episode_workflow_graph,
+    episode_safeguard_identity,
+    resolve_episode_authorization,
+)
 from incidentgate.lab.approval import ApprovalService
 from incidentgate.lab.auth import Principal
 from incidentgate.lab.repository import AuditTimelineEvent, LabRepository
@@ -146,6 +157,9 @@ class RuntimeStatus:
     incident_id: str
     pending: PendingApproval | None
     result: WorkflowResult | None
+    #: The already-checkpointed proposal.  Exposed for resumable evaluation
+    #: transcripts; callers never supply it back to the runtime.
+    action: CanonicalAction | None = None
     trace_id: str | None = None
     trace_url: str | None = None
     collection_attempts: tuple[int, ...] = ()
@@ -248,6 +262,7 @@ class IncidentRuntime:
                 EvidenceState,
                 EvidenceValidation,
                 HumanDecision,
+                EpisodeTranscript,
             ),
         )
         self._checkpointer = PostgresSaver(self._connection, serde=serde)
@@ -307,18 +322,6 @@ class IncidentRuntime:
         self.close()
 
     def _build_graph(self, caller: Caller, context: ToolCallContext, *, scenario_id: str) -> Any:
-        config = PolicyConfiguration.model_validate(
-            json.loads((Path(__file__).parents[3] / "config" / "policy.example.json").read_text())
-        )
-        semantic_bundle: SemanticMonitorBundle | None = None
-        if self._semantic_monitor is not None:
-            semantic_bundle = (
-                self._semantic_monitor.build(
-                    policy=config, facts=RepositoryMonitorFacts(cast(Any, self._repository))
-                )
-                if isinstance(self._semantic_monitor, SemanticMonitorConfiguration)
-                else self._semantic_monitor
-            )
         observability = ObservabilityService(self._repository)
         if scenario_id in NO_ACTION_SCENARIOS:
 
@@ -345,6 +348,30 @@ class IncidentRuntime:
                 checkpointer=self._checkpointer,
                 telemetry=self._telemetry,
             )
+        return build_workflow_graph(
+            self._build_action_dependencies(caller, context, scenario_id=scenario_id),
+            checkpointer=self._checkpointer,
+        )
+
+    def _build_action_dependencies(
+        self, caller: Caller, context: ToolCallContext, *, scenario_id: str
+    ) -> WorkflowDependencies:
+        """Build the shared action pipeline once for legacy and episode graphs."""
+        if scenario_id in NO_ACTION_SCENARIOS:
+            raise ValueError("real episodes require an action-taking scenario")
+        config = PolicyConfiguration.model_validate(
+            json.loads((Path(__file__).parents[3] / "config" / "policy.example.json").read_text())
+        )
+        semantic_bundle: SemanticMonitorBundle | None = None
+        if self._semantic_monitor is not None:
+            semantic_bundle = (
+                self._semantic_monitor.build(
+                    policy=config, facts=RepositoryMonitorFacts(cast(Any, self._repository))
+                )
+                if isinstance(self._semantic_monitor, SemanticMonitorConfiguration)
+                else self._semantic_monitor
+            )
+        observability = ObservabilityService(self._repository)
         sources = ALLOWED_EVIDENCE_SOURCES
         # The scenario's shipped honest proposer, resolved from the registry by
         # the name it declares. This was a seventeen-branch if-chain that
@@ -410,10 +437,15 @@ class IncidentRuntime:
             ),
         )
         self._response_loss_once = False
-        return build_workflow_graph(dependencies, checkpointer=self._checkpointer)
+        return dependencies
 
     @staticmethod
     def _config(thread_id: str) -> Any:
+        """Build the legacy root-graph configuration.
+
+        A future episode graph owns its loop in this single root checkpoint;
+        individual action attempts must never substitute a storage thread id.
+        """
         return {"configurable": {"thread_id": thread_id}}
 
     def resume(self, thread_id: str) -> RuntimeStatus:
@@ -515,7 +547,10 @@ class IncidentRuntime:
         )
 
     def start(
-        self, incident: IncidentIdentity, operator: Caller, context: ToolCallContext
+        self,
+        incident: IncidentIdentity,
+        operator: Caller,
+        context: ToolCallContext,
     ) -> PendingApproval | RuntimeStatus:
         if operator.role is not Role.OPERATOR:
             raise PermissionError("D1 runtime start requires an authenticated operator")
@@ -525,7 +560,9 @@ class IncidentRuntime:
         initial: dict[str, Any] = {"incident": incident, "caller": operator, "context": context}
         values = self._invoke_phase(incident.thread_id, initial=initial)
         pending = self._pending(incident.thread_id, values)
-        return pending or self._status_from_values(incident.thread_id, values)
+        return pending or self._status_from_values(
+            incident.thread_id, values
+        )
 
     def status(self, thread_id: str) -> RuntimeStatus:
         if self._graph is None:
@@ -553,6 +590,11 @@ class IncidentRuntime:
             incident_id=incident_id,
             pending=self._pending(thread_id, values),
             result=self._result(values),
+            action=(
+                action
+                if isinstance(action, CanonicalAction)
+                else (CanonicalAction.model_validate(action) if action else None)
+            ),
             trace_id=trace_id,
             trace_url=trace_url,
             collection_attempts=attempts,
@@ -565,7 +607,11 @@ class IncidentRuntime:
         )
 
     def approve(
-        self, thread_id: str, approver: Principal, *, reason: str | None = None
+        self,
+        thread_id: str,
+        approver: Principal,
+        *,
+        reason: str | None = None,
     ) -> RuntimeStatus:
         status = self.status(thread_id)
         if status.pending is None:
@@ -598,14 +644,19 @@ class IncidentRuntime:
         )
 
     def reject(
-        self, thread_id: str, approver: Principal, *, reason: str | None = None
+        self,
+        thread_id: str,
+        approver: Principal,
+        *,
+        reason: str | None = None,
     ) -> RuntimeStatus:
         if approver.role is not Role.APPROVER:
             raise PermissionError("D1 rejection requires an authenticated approver")
         if self.status(thread_id).pending is None:
             raise ValueError("thread has no pending approval")
         return self._resume(
-            thread_id, {"decision": "reject", "approver": approver.actor, "reason": reason}
+            thread_id,
+            {"decision": "reject", "approver": approver.actor, "reason": reason},
         )
 
     def retry(self, thread_id: str) -> RuntimeStatus:
@@ -624,7 +675,9 @@ class IncidentRuntime:
             self.resume(thread_id)
         graph = self._graph
         assert graph is not None
-        values = self._invoke_phase(thread_id, resume=payload, approval=True)
+        values = self._invoke_phase(
+            thread_id, resume=payload, approval=True
+        )
         return self._status_from_values(thread_id, values)
 
     def _status_from_values(self, thread_id: str, values: dict[str, Any]) -> RuntimeStatus:
@@ -650,6 +703,11 @@ class IncidentRuntime:
             incident_id=incident_id,
             pending=self._pending(thread_id, values),
             result=self._result(values),
+            action=(
+                action
+                if isinstance(action, CanonicalAction)
+                else (CanonicalAction.model_validate(action) if action else None)
+            ),
             trace_id=trace_id,
             trace_url=trace_url,
             collection_attempts=attempts,
@@ -672,7 +730,9 @@ class IncidentRuntime:
         graph = self._graph
         assert graph is not None
         values = (
-            dict(graph.get_state(self._config(thread_id)).values) if initial is None else initial
+            dict(graph.get_state(self._config(thread_id)).values)
+            if initial is None
+            else initial
         )
         carrier = safe_trace_carrier(cast(dict[str, str], values.get("trace_carrier") or {}))
         parent = extract_trace_context(carrier) if carrier else None
@@ -708,7 +768,9 @@ class IncidentRuntime:
                 if initial is not None
                 else (Command(resume=resume) if resume is not None else None)
             )
-            return cast(dict[str, Any], graph.invoke(payload, self._config(thread_id)))
+            return cast(
+                dict[str, Any], graph.invoke(payload, self._config(thread_id))
+            )
         try:
             # Only reachable with the opt-out, which is the one path that can
             # carry a scenario id the registry has never seen.
@@ -723,7 +785,9 @@ class IncidentRuntime:
                     with self._telemetry.start_as_current_span(
                         f"{span_scenario}.approval", attributes=attributes
                     ):
-                        result = graph.invoke(Command(resume=resume), self._config(thread_id))
+                        result = graph.invoke(
+                            Command(resume=resume), self._config(thread_id)
+                        )
                 else:
                     result = graph.invoke(None, self._config(thread_id))
         finally:
@@ -732,6 +796,161 @@ class IncidentRuntime:
 
     def timeline(self, incident_id: str, *, limit: int = 50) -> tuple[AuditTimelineEvent, ...]:
         return self._repository.timeline(incident_id, limit=limit)
+
+
+class EpisodeRuntime(IncidentRuntime):
+    """Dedicated one-root runtime for adaptive evaluation episodes.
+
+    It intentionally shares :class:`IncidentRuntime`'s dependency construction,
+    checkpointer, authorization/token/repository adapters, and invoke boundary.
+    The only different topology is the graph returned by
+    ``build_episode_workflow_graph``.
+    """
+
+    def episode_exists(self, thread_id: str) -> bool:
+        """Whether this root business thread has a durable episode checkpoint."""
+        return self._checkpointer.get_tuple(self._config(thread_id)) is not None
+
+    def start_episode(
+        self,
+        incident: IncidentIdentity,
+        operator: Caller,
+        context: ToolCallContext,
+        *,
+        transcript: EpisodeTranscript,
+        max_actions: int,
+        strategy: EpisodeStrategy,
+        authorization_factory_selector: EpisodeAuthorizationFactorySelector | None = None,
+        post_delivery_hook: EpisodePostDeliveryHook | None = None,
+        interrupt_after: tuple[Literal["episode_propose", "monitor", "execute"], ...] = (),
+    ) -> dict[str, Any]:
+        if operator.role is not Role.OPERATOR:
+            raise PermissionError("episode runtime start requires an authenticated operator")
+        if context.idempotency_key is not None:
+            raise ValueError("caller-chosen idempotency keys are not accepted")
+        if transcript.events:
+            raise ValueError("new episode transcripts must be empty root history")
+        if (
+            transcript.incident_id != incident.incident_id
+            or transcript.thread_id != incident.thread_id
+        ):
+            raise ValueError("episode transcript does not bind the root incident/thread")
+        if not 1 <= max_actions <= 1_000:
+            raise ValueError("episode max_actions must be between 1 and 1000")
+        dependencies = self._build_action_dependencies(
+            operator, context, scenario_id=incident.scenario_id
+        )
+        self._graph = build_episode_workflow_graph(
+            dependencies,
+            strategy=strategy,
+            authorization_factory_selector=authorization_factory_selector,
+            post_delivery_hook=post_delivery_hook,
+            interrupt_after=interrupt_after,
+            checkpointer=self._checkpointer,
+        )
+        return self._invoke_phase(
+            incident.thread_id,
+            initial={
+                "incident": incident,
+                "caller": operator,
+                "context": context,
+                "episode_transcript": transcript,
+                "episode_max_actions": max_actions,
+                "episode_sequence": len(
+                    tuple(event for event in transcript.events if event.phase == "terminal")
+                ),
+                "episode_safeguards": episode_safeguard_identity(dependencies.safeguards),
+            },
+        )
+
+    def resume_episode(
+        self,
+        thread_id: str,
+        *,
+        strategy: EpisodeStrategy,
+        authorization_factory_selector: EpisodeAuthorizationFactorySelector | None = None,
+        post_delivery_hook: EpisodePostDeliveryHook | None = None,
+        interrupt_after: tuple[Literal["episode_propose", "monitor", "execute"], ...] = (),
+    ) -> dict[str, Any]:
+        checkpoint = self._checkpointer.get_tuple(self._config(thread_id))
+        if checkpoint is None:
+            raise ValueError("unknown episode runtime thread")
+        channels = checkpoint.checkpoint["channel_values"]
+        caller = channels.get("caller")
+        context = channels.get("context")
+        incident = channels.get("incident")
+        bound_caller = caller if isinstance(caller, Caller) else Caller.model_validate(caller)
+        bound_context = (
+            context
+            if isinstance(context, ToolCallContext)
+            else ToolCallContext.model_validate(context)
+        )
+        bound_incident = (
+            incident
+            if isinstance(incident, IncidentIdentity)
+            else IncidentIdentity.model_validate(incident)
+        )
+        dependencies = self._build_action_dependencies(
+            bound_caller, bound_context, scenario_id=bound_incident.scenario_id
+        )
+        persisted_safeguards = EpisodeSafeguardIdentity.model_validate(
+            channels.get("episode_safeguards")
+        )
+        if persisted_safeguards != episode_safeguard_identity(dependencies.safeguards):
+            raise ValueError("episode safeguards do not match the durable root configuration")
+        preselected_requesters: dict[int, AuthorizationRequester] = {}
+        raw_selection = channels.get("episode_authorization_selection")
+        if raw_selection is not None:
+            selection = EpisodeAuthorizationSelection.model_validate(raw_selection)
+            candidate, requester = resolve_episode_authorization(
+                fallback=dependencies.authorization,
+                selector=authorization_factory_selector,
+                leg=selection.leg,
+                leg_index=selection.leg_index,
+                sequence=selection.sequence,
+            )
+            if candidate != selection:
+                raise ValueError("episode authorization selection does not match durable root")
+            preselected_requesters[selection.sequence] = requester
+        self._graph = build_episode_workflow_graph(
+            dependencies,
+            strategy=strategy,
+            authorization_factory_selector=authorization_factory_selector,
+            preselected_requesters=preselected_requesters,
+            post_delivery_hook=post_delivery_hook,
+            interrupt_after=interrupt_after,
+            checkpointer=self._checkpointer,
+        )
+        return self._invoke_phase(thread_id)
+
+    def episode_values(self, thread_id: str) -> dict[str, Any]:
+        if self._graph is None:
+            raise ValueError("episode graph has not been constructed")
+        return dict(self._graph.get_state(self._config(thread_id)).values)
+
+    def episode_pending(self, thread_id: str) -> PendingApproval | None:
+        """Return an approval only for a public LangGraph approval interrupt."""
+        if self._graph is None:
+            raise ValueError("episode graph has not been constructed")
+        snapshot = self._graph.get_state(self._config(thread_id))
+        approval_interrupt = any(
+            task.name == "approval" and task.interrupts for task in snapshot.tasks
+        )
+        if not approval_interrupt:
+            return None
+        return self._pending(thread_id, dict(snapshot.values))
+
+    def approve(
+        self,
+        thread_id: str,
+        approver: Principal,
+        *,
+        reason: str | None = None,
+    ) -> RuntimeStatus:
+        """Approve only a durable episode approval interrupt, never a pause hook."""
+        if self.episode_pending(thread_id) is None:
+            raise ValueError("episode thread has no pending approval interrupt")
+        return super().approve(thread_id, approver, reason=reason)
 
 
 class CheckpointRuntime(IncidentRuntime):

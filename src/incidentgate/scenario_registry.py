@@ -716,6 +716,77 @@ def scope_by_tool() -> dict[str, str]:
     return {tool: spec.operation_scope for tool, spec in operation_spec_by_tool().items()}
 
 
+def _validate_scenario_definition(
+    key: str, definition: ScenarioRuntimeDefinition
+) -> tuple[Any, ...]:
+    """Check facts a single fixture-preparation call can safely depend on."""
+    if key != definition.scenario_id:
+        raise ValueError("scenario registry invalid: mapping key does not match scenario id")
+    if definition.incident_id != f"INC-{definition.scenario_id}":
+        raise ValueError("scenario registry invalid: incident does not match scenario id")
+
+    operations = definition.operations()
+    if definition.status is ScenarioStatus.FROZEN_CONTRACT_ONLY:
+        if (
+            operations
+            or definition.proposer is not None
+            or definition.fixture_capture is not None
+            or definition.evaluation_scope is not None
+            or definition.recovery_predicate is not None
+            or definition.recovery_evidence_kinds
+        ):
+            raise ValueError("scenario registry invalid: frozen scenario declares runtime facts")
+        return operations
+
+    if definition.status is ScenarioStatus.PROMOTED and definition.fixture_capture is None:
+        raise ValueError("scenario registry invalid: promoted scenario has no fixture capture")
+    if definition.scenario_id in FROZEN_SABOTAGE_SCENARIOS and (
+        definition.status is ScenarioStatus.PROMOTED and definition.covert_capture is None
+    ):
+        raise ValueError(
+            "scenario registry invalid: promoted sabotage scenario has no covert capture"
+        )
+
+    if definition.episode_policy is EpisodePolicy.NO_ACTION:
+        if (
+            operations
+            or definition.proposer is not None
+            or definition.evaluation_scope is not None
+            or definition.recovery_predicate is not None
+            or definition.recovery_evidence_kinds
+        ):
+            raise ValueError("scenario registry invalid: no-action scenario declares action facts")
+        return operations
+
+    if not operations:
+        raise ValueError("scenario registry invalid: action scenario has no operations")
+    if (
+        definition.evaluation_scope is None
+        or definition.evaluation_scope not in {spec.operation_scope for spec in operations}
+        or definition.proposer is None
+        or not definition.evidence_kinds
+        or not definition.allowed_evidence_sources
+        or definition.recovery_predicate is None
+        or not definition.recovery_evidence_kinds
+    ):
+        raise ValueError("scenario registry invalid: action scenario is incomplete")
+    for spec in operations:
+        if spec.scenario_id != definition.scenario_id or spec.incident_id != definition.incident_id:
+            raise ValueError(
+                "scenario registry invalid: operation does not match scenario identity"
+            )
+    return operations
+
+
+def _validate_scenario_preparation(scenario_id: str) -> None:
+    """Reject an unknown or partial scenario before repository fixture SQL runs."""
+    try:
+        definition = SCENARIOS[scenario_id]
+    except KeyError as error:
+        raise ValueError("scenario registry invalid: unknown scenario") from error
+    _validate_scenario_definition(scenario_id, definition)
+
+
 def validate_scenario_registry(policy: PolicyConfiguration) -> None:
     """Reject a registry/policy disagreement before a host prepares fixtures.
 
@@ -728,68 +799,8 @@ def validate_scenario_registry(policy: PolicyConfiguration) -> None:
     declared_scopes: set[str] = set()
     declared_tools: set[str] = set()
     for key, definition in SCENARIOS.items():
-        if key != definition.scenario_id:
-            raise ValueError("scenario registry invalid: mapping key does not match scenario id")
-        if definition.incident_id != f"INC-{definition.scenario_id}":
-            raise ValueError("scenario registry invalid: incident does not match scenario id")
-
-        operations = definition.operations()
-        if definition.status is ScenarioStatus.FROZEN_CONTRACT_ONLY:
-            if (
-                operations
-                or definition.proposer is not None
-                or definition.fixture_capture is not None
-                or definition.evaluation_scope is not None
-                or definition.recovery_predicate is not None
-                or definition.recovery_evidence_kinds
-            ):
-                raise ValueError(
-                    "scenario registry invalid: frozen scenario declares runtime facts"
-                )
-            continue
-
-        if definition.status is ScenarioStatus.PROMOTED and definition.fixture_capture is None:
-            raise ValueError("scenario registry invalid: promoted scenario has no fixture capture")
-        if definition.scenario_id in FROZEN_SABOTAGE_SCENARIOS and (
-            definition.status is ScenarioStatus.PROMOTED and definition.covert_capture is None
-        ):
-            raise ValueError(
-                "scenario registry invalid: promoted sabotage scenario has no covert capture"
-            )
-
-        if definition.episode_policy is EpisodePolicy.NO_ACTION:
-            if (
-                operations
-                or definition.proposer is not None
-                or definition.evaluation_scope is not None
-                or definition.recovery_predicate is not None
-                or definition.recovery_evidence_kinds
-            ):
-                raise ValueError(
-                    "scenario registry invalid: no-action scenario declares action facts"
-                )
-            continue
-
-        if not operations:
-            raise ValueError("scenario registry invalid: action scenario has no operations")
-        if (
-            definition.evaluation_scope is None
-            or definition.evaluation_scope not in {spec.operation_scope for spec in operations}
-            or definition.proposer is None
-            or not definition.evidence_kinds
-            or not definition.allowed_evidence_sources
-            or definition.recovery_predicate is None
-            or not definition.recovery_evidence_kinds
-        ):
-            raise ValueError("scenario registry invalid: action scenario is incomplete")
+        operations = _validate_scenario_definition(key, definition)
         for spec in operations:
-            if (
-                spec.scenario_id != definition.scenario_id
-                or spec.incident_id != definition.incident_id
-            ):
-                raise ValueError(
-                    "scenario registry invalid: operation does not match scenario identity"
-                )
             if spec.operation_scope in declared_scopes:
                 raise ValueError("scenario registry invalid: operation scope is duplicated")
             declared_scopes.add(spec.operation_scope)

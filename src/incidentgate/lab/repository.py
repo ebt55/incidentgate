@@ -74,6 +74,7 @@ from incidentgate.reasons import (
     UPSTREAM_TIMEOUT,
     approval_invalid,
 )
+from incidentgate.scenario_registry import _validate_scenario_preparation
 
 from .errors import ApprovalConflict, ApprovalDenied
 from .kernel import (
@@ -1736,6 +1737,7 @@ class LabRepository:
                     cursor.execute("INSERT INTO schema_migrations (name) VALUES (%s)", (name,))
 
     def reset_d1(self) -> None:
+        _validate_scenario_preparation("D1")
         with self._connect() as connection, connection.cursor() as cursor:
             self._delete_incident(cursor, D1_INCIDENT)
             cursor.execute("DELETE FROM target_state WHERE component = 'api'")
@@ -1752,6 +1754,7 @@ class LabRepository:
     def initialize_checkpoint_if_absent(self, scenario_id: str) -> None:
         """Install one deterministic checkpoint baseline; never reset an injected fault."""
         scenario, incident = self._scenario(scenario_id)
+        _validate_scenario_preparation(scenario)
         with self._connect() as connection, connection.cursor() as cursor:
             if scenario == "T1":
                 cursor.execute(
@@ -1950,6 +1953,7 @@ class LabRepository:
 
     def reset_checkpoint(self, scenario_id: str) -> None:
         scenario, incident = self._scenario(scenario_id)
+        _validate_scenario_preparation(scenario)
         with self._connect() as connection, connection.cursor() as cursor:
             self._delete_incident(cursor, incident)
             cursor.execute("DELETE FROM scenario_target_state WHERE scenario_id = %s", (scenario,))
@@ -2022,6 +2026,7 @@ class LabRepository:
 
     def inject_checkpoint(self, scenario_id: str) -> None:
         scenario, incident = self._scenario(scenario_id)
+        _validate_scenario_preparation(scenario)
         now = self._clock()
         sources: tuple[tuple[str, dict[str, Any]], ...]
         with self._connect() as connection, connection.cursor() as cursor:
@@ -2382,6 +2387,7 @@ class LabRepository:
 
     def initialize_d1_if_absent(self) -> None:
         """Create the baseline only once; process restarts must preserve injected state."""
+        _validate_scenario_preparation("D1")
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO target_state (component, revision, health_status) "
@@ -2395,6 +2401,7 @@ class LabRepository:
             )
 
     def inject_d1(self) -> None:
+        _validate_scenario_preparation("D1")
         now = self._clock()
         sources = (
             (

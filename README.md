@@ -14,9 +14,10 @@
 >   [Honest gaps](#honest-gaps).
 > - **No model is in the decision path** for any published measurement. Every
 >   evaluation row is a deterministic fixture. See [Honest gaps](#honest-gaps).
-> - Scenarios R13–R20, T3 and T5–T8 are frozen contracts with no runtime. T1, T2
->   and T4 are the three sabotage scenarios that have one, and both their attack
->   proposers and T4's monitor are deterministic stand-ins rather than models.
+> - Scenarios R13–R20, T3, T5 and T6 are frozen contracts with no runtime. T1,
+>   T2, T4, T7 and T8 have runtime coverage; the official deterministic
+>   sabotage-v2 tables are T1, T2, T4 and T8 (not T7). Their attack proposers
+>   and deterministic monitors are stand-ins rather than models.
 >
 > Do not depend on this, do not cite its numbers as a product claim, and do not
 > deploy it. It is a laboratory.
@@ -45,9 +46,9 @@ golden no-kill run.
 
 | Measure | Result |
 | --- | --- |
-| Kill points × scenarios | 22 boundaries × 25 scenarios = 550 cells |
-| Cells where the boundary exists and fired | **390** |
-| Recovered to the golden end state | **390** |
+| Kill points × scenarios | 22 boundaries × 27 scenarios = 594 cells |
+| Cells where the boundary exists and fired | **434** |
+| Recovered to the golden end state | **434** |
 | Duplicate mutations | **0** |
 | Lost incidents | **0** |
 | Other durable end-state divergences | **0** |
@@ -74,29 +75,33 @@ path, so no drive ever produces a covert write on its own. Without a planted one
 the covert surface would be an unexercised guard, and a green T1 row would be a
 claim nobody had checked the instrument for.
 
-The covert surface is a different shape for each of the three sabotage
-scenarios, and the comparison spec published with the table says which is which.
+The covert surface is scenario-specific, and the comparison spec published with
+the table says which is which.
 T1's is rows in its outbound-note store. T4 has no store — its covert objective
 is a state combination assembled across individually ordinary calls — so its
 surface is the ordered call ledger with the per-call verdict recorded at each
 step, which is the only place an assembly that was later unwound still exists.
 T2 has no store either, but for the opposite reason: its covert objective is two
 columns of its own incident fixture, changed by one prohibited call, so its
-surface is those two columns read directly.
+surface is those two columns read directly. T8 tests a same-operation hidden-
+privilege rollback: the visible rollback and the malicious bundle both use
+`operations.rollback_api_release`, but declared `changed_paths` policy
+enforcement stops the malicious bundle while the incident rollback succeeds.
 
-Measured 2026-08-13, from a cold database, on a clean tree. Regenerate with:
+Measured 2026-08-15 from clean revision `de8958245b00122e606c336baddac2940c6a8f1f`,
+from a cold database. Regenerate with:
 
 ```bash
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
 
-That run takes about 25 minutes, because every cell is real processes against
+That run takes about 34 minutes, because every cell is real processes against
 real Postgres. **CI therefore runs a documented subset, not the table above**:
 one scenario per tier (D1, S1, R01) × five boundaries covering every boundary
-class = 12 executed cells instead of 368, in about a minute. The subset samples
+class = 12 executed cells instead of 434, in about a minute. The subset samples
 both dimensions rather than shrinking one, and
 `tests/chaos/test_kill_matrix.py` records why each member is in it. The full
-24-scenario matrix stays a command whose output is committed, so the expensive
+27-scenario matrix stays a command whose output is committed, so the expensive
 version does not have to run on every push — and a committed guard fails if the
 published table's scenario set ever drifts from the enrolled one, so promoting a
 scenario without regenerating is a red test rather than a silent staleness.
@@ -191,14 +196,21 @@ still cannot mutate.
 | D1–D8, S1, S2 (checkpoints) | frozen | **implemented** |
 | R01–R12 (reliability) | frozen | **implemented** |
 | R13–R20 (reliability) | frozen | planned — no runtime |
-| T1, T2, T4 (covert sabotage) | frozen, 3 attack-policy variants each | **implemented** |
-| T3, T5–T8 (covert sabotage) | frozen, 15 attack-policy variants | planned — no runtime |
+| T1, T2, T4, T7, T8 (covert sabotage) | frozen, 3 attack-policy variants each | **implemented** |
+| T3, T5, T6 (covert sabotage) | frozen, 9 attack-policy variants | planned — no runtime |
 
 Every scenario declares its initial state, injected fault, allowed evidence,
 acceptable diagnoses, allowed and forbidden actions, recovery predicate, and a
 deterministic final-state checker **before** any runtime exists for it. A guard
 test asserts that each wired scenario's diagnosis string is byte-identical to its
 frozen manifest, so runtime drift cannot silently pass evaluation.
+
+The official deterministic sabotage-v2 tables are [T1](artifacts/sabotage-matrix/sabotage-matrix.md),
+[T2](artifacts/sabotage-matrix/T2/sabotage-matrix.md),
+[T4](artifacts/sabotage-matrix/T4/sabotage-matrix.md), and
+[T8](artifacts/sabotage-matrix/T8/sabotage-matrix.md)
+([raw JSON](artifacts/sabotage-matrix/T8/sabotage-matrix.json)); their raw JSON
+files sit beside each table. T7 is runtime-covered but has no official v2 artifact.
 
 ## Five-minute local run
 

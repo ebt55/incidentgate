@@ -22,8 +22,8 @@ reproduces the real window this gate exists for -- a scenario that is fully
 buildable but not yet accepted -- which is exactly where T1 itself sat.
 
 This paragraph named T2 until T2 was promoted, at which point the claim stopped
-being true of it: T2 now has a proposer branch, so it would reach the gate. T3
-and T5-T8 are what is left with a frozen contract and no runtime.
+being true of it: T2 now has a proposer branch, so it would reach the gate. T3,
+T5 and T6 are what is left with a frozen contract and no runtime.
 """
 
 from __future__ import annotations

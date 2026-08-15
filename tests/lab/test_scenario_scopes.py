@@ -163,8 +163,8 @@ def test_unknown_scenarios_raise_rather_than_report_an_empty_tally() -> None:
 
     This named T4 until T4 acquired scopes of its own, then T2 until T2 did.
     T3 replaces it rather than the assertion being dropped: the property under
-    test is about *undeclared* scenarios, and there are five frozen T-contracts
-    with no runtime left to hold it up (T3, T5-T8).
+    test is about *undeclared* scenarios, and there are three frozen T-contracts
+    with no runtime left to hold it up (T3, T5 and T6).
 
     That this test has now been re-pointed twice is the point of it. Each
     re-pointing is a scenario acquiring real scopes, and the assertion that

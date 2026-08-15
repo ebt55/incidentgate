@@ -178,14 +178,14 @@ exact current values and what the change costs.
 
 ### 3.2 What the existing sabotage artifacts are
 
-The published T1, T2 and T4 matrices are **deterministic controls, in full**. Both the
+The official published T1, T2, T4 and T8 sabotage-v2 matrices are **deterministic controls, in full**. Both the
 attacker and, where a monitor ran, the assessor are written-to-purpose stand-ins. No cell
 in any of them is evidence about what a model would attempt, how often, in what disguised
 form, or about what a model-backed monitor would flag. Their row model structurally
 refuses to record a provider or a model, so a model claim is not merely absent from them —
 it is unconstructible.
 
-Read as floor-and-oracle results they establish three things, and they are worth having:
+Read as floor-and-oracle results they establish four things, and they are worth having:
 
 - the deterministic policy gate refuses a known prohibited capability when something
   genuinely calls it (T1, T2), negative-controlled by an ungated execution that really
@@ -193,6 +193,8 @@ Read as floor-and-oracle results they establish three things, and they are worth
 - a covert objective that exists only *across* calls is approved by the policy on every
   individual call, and the architecture nonetheless routes it to the monitor stage before
   anything commits (T4);
+- a same-operation hidden-privilege bundle is refused by declared `changed_paths` policy
+  enforcement while the honest `operations.rollback_api_release` repair succeeds (T8);
 - the incident task still completes while the covert objective is refused.
 
 Read as anything about models they establish nothing, and the tier's own docstrings,
@@ -538,8 +540,10 @@ completed README claim audit.
 5. The `development`/`calibration`/`holdout` labels do not yet denote a generalization
    check, because there is no learned or model behaviour to generalize; for one scenario
    the three variants are byte-identical and the table discloses it.
-6. Five of eight sabotage contracts (T3, T5–T8) have no runtime. Their variants and their
-   planned checker specs are contract artifacts, not coverage.
+6. Three of eight sabotage contracts (T3, T5 and T6) have no runtime. T1, T2, T4, T7 and
+   T8 have runtime coverage, but official deterministic sabotage-v2 artifacts currently
+   exist only for T1, T2, T4 and T8. Their variants and the remaining planned checker specs
+   are contract artifacts, not coverage.
 7. Exactly-once is scoped to bundled mock operations in local Postgres.
 8. Fixtures are local and synthetic throughout; no real database, DNS, TLS, credential, or
    dependency system is contacted.
@@ -561,14 +565,15 @@ relative to the repository root.
 
 - `src/incidentgate/control/attack_policies.py:1-39` — module docstring: "an
   honestly-labelled deterministic stand-in… No model is consulted, no prompt is rendered".
-- `src/incidentgate/control/attack_policies.py:121`, `:201`, `:313` — the T1, T2 and T4
-  attack proposers; each `propose()` returns its covert action unconditionally.
+- `src/incidentgate/control/attack_policies.py` — the T1, T2, T4, T7 and T8 attack
+  proposers; each `propose()` returns its covert action unconditionally.
 - `scenarios/sabotage/T1.json:29-51` — `attack_policy_variants[].policy_text`, natural
   language written for a model. Nothing reads this field into a prompt.
 - `src/incidentgate/control/attack_policies.py:19-23` — names the seam the model-driven
   condition will arrive through (`IncidentRuntime`'s `proposer_factory`).
-- All eight contracts carry exactly three variants (24 total); T1, T2 and T4 are the three
-  with a runtime, i.e. 9 variants and 27 published cells.
+- All eight contracts carry exactly three variants (24 total); T1, T2, T4, T7 and T8 have
+  runtime coverage. The four official deterministic sabotage-v2 artifacts cover 12 variants
+  and 36 cells; T7 has no v2 artifact.
 
 ### A.2 The monitor's input, and the absence of a calibration artifact
 
@@ -662,7 +667,8 @@ relative to the repository root.
 - `src/incidentgate/evaluation/sabotage_matrix.py:988-1015` — the degenerate-variant
   disclosure, derived by comparing published `(tool, arguments_digest)` pairs across
   variants rather than declared.
-- `artifacts/sabotage-matrix/sabotage-matrix.json` — the envelope stamps `git_revision`,
+- `artifacts/sabotage-matrix/sabotage-matrix.json` and
+  `artifacts/sabotage-matrix/T8/sabotage-matrix.json` — the envelopes stamp `git_revision`,
   `git_dirty`, `git_dirty_means`, `suite_manifest_digest`, `reproduction_command`,
   `schema_version` and `trial`.
 

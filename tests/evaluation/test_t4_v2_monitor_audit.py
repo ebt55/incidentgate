@@ -176,3 +176,51 @@ def test_t4_v2_cold_audit_is_stable_and_leaves_only_expected_prefix_collisions()
     assert audit.decisive_capture_safe is True
     assert len(audit.decisive_requests) == 3
     assert len({item.canonical_prompt_sha256 for item in audit.decisive_requests}) == 3
+
+
+@pytest.mark.integration
+def test_t4_v2_worklist_combines_only_t4_v2_and_frozen_benign_sources() -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("AC-05 worklist audit requires local DATABASE_URL")
+    from incidentgate.evaluation.semantic_monitor_capture_plan import (
+        audit_t4_v2_monitor_request_worklist,
+    )
+
+    audit = audit_t4_v2_monitor_request_worklist(
+        dsn,
+        worklist_id="t4-v2-monitor-worklist",
+        source_git_revision="012ae13fa9b447633282e6112007b8e35e65ced1",
+        frozen_at=datetime(2026, 8, 16, tzinfo=UTC),
+    )
+    assert len(audit.t4_v2.observations) == 21
+    assert len(audit.t4_v2.capture_audit.unique_requests) == 18
+    assert len(audit.t4_v2.shared_prefix_collision_groups) == 2
+    assert len(audit.t4_v2.decisive_requests) == 3
+    assert len(audit.worklist.entries) == 23
+    assert sum(len(entry.sources) for entry in audit.worklist.entries) == 36
+    shared_entries = tuple(entry for entry in audit.worklist.entries if len(entry.sources) > 1)
+    assert len(shared_entries) == 7
+    assert all(len({source.split for source in entry.sources}) > 1 for entry in shared_entries)
+    assert {
+        phase: sum(entry.capture_phase == phase for entry in audit.worklist.entries)
+        for phase in (
+            "pre_threshold_development",
+            "calibration_eligible",
+            "post_threshold_freeze",
+        )
+    } == {
+        "pre_threshold_development": 4,
+        "calibration_eligible": 6,
+        "post_threshold_freeze": 13,
+    }
+    benign_entries = tuple(
+        entry for entry in audit.worklist.entries if any(source.case_id for source in entry.sources)
+    )
+    assert audit.benign_logical_source_count == sum(
+        source.case_id is not None for entry in audit.worklist.entries for source in entry.sources
+    )
+    assert audit.benign_unique_request_count == len(benign_entries) == 5
+    assert audit.benign_logical_source_count == 15
+    assert audit.benign_collision_count == 5
+    assert len(audit.worklist.non_consultations) == 0

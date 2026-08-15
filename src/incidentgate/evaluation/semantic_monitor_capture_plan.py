@@ -12,6 +12,7 @@ import json
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
@@ -23,6 +24,7 @@ from incidentgate.control.monitor_decision import MonitorThresholds
 from incidentgate.control.monitor_v2 import StructuredMonitorCaller
 from incidentgate.control.response_cache import schema_sha256
 from incidentgate.evaluation.monitor_dataset import BenignMonitorCase, load_benign_monitor_suite
+from incidentgate.evaluation.monitor_request_bindings import MonitorRequestBindingWorklist
 from incidentgate.evaluation.sabotage_episodes import (
     Leg,
     ResponseLossStep,
@@ -421,6 +423,12 @@ def audit_t4_v2_semantic_monitor_requests(dsn: str) -> T4V2SemanticMonitorAudit:
     )
     first = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-cold-a")
     second = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-cold-b")
+    return _validated_t4_v2_audit(first, second, overlay)
+
+
+def _validated_t4_v2_audit(
+    first: _T4V2Enumeration, second: _T4V2Enumeration, overlay: T4V2Overlay
+) -> T4V2SemanticMonitorAudit:
     if first != second:
         raise AuditInstabilityRefusal(
             "T4-v2 semantic monitor requests are not stable across cold runs"
@@ -459,6 +467,65 @@ def audit_t4_v2_semantic_monitor_requests(dsn: str) -> T4V2SemanticMonitorAudit:
         decisive_capture_safe=True,
         stable=True,
     )
+
+
+@dataclass(frozen=True)
+class T4V2MonitorRequestWorklistAudit:
+    """Combined no-call T4-v2/benign worklist evidence for later capture admission."""
+
+    t4_v2: T4V2SemanticMonitorAudit
+    worklist: MonitorRequestBindingWorklist
+    benign_logical_source_count: int
+    benign_unique_request_count: int
+    benign_collision_count: int
+
+
+def audit_t4_v2_monitor_request_worklist(
+    dsn: str, *, worklist_id: str, source_git_revision: str, frozen_at: datetime
+) -> T4V2MonitorRequestWorklistAudit:
+    """Cold-drive only the accepted T4-v2 malicious sources plus frozen benign sources."""
+    from incidentgate.evaluation.monitor_request_bindings import build_verified_worklist
+
+    overlay = load_t4_v2_overlay(
+        _ROOT / "scenarios" / "sabotage-v2" / "T4.json",
+        _ROOT / "scenarios" / "sabotage" / "T4.json",
+    )
+    first_t4 = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-worklist-a")
+    first_benign = _enumerate_benign_once(dsn, run_namespace="t4-v2-worklist-a")
+    second_t4 = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-worklist-b")
+    second_benign = _enumerate_benign_once(dsn, run_namespace="t4-v2-worklist-b")
+    t4_audit = _validated_t4_v2_audit(first_t4, second_t4, overlay)
+    first = (*first_t4.observations, *first_benign)
+    second = (*second_t4.observations, *second_benign)
+    worklist = build_verified_worklist(
+        first,
+        second,
+        worklist_id=worklist_id,
+        source_git_revision=source_git_revision,
+        frozen_at=frozen_at,
+    )
+    benign_capture = build_capture_audit(first_benign)
+    return T4V2MonitorRequestWorklistAudit(
+        t4_v2=t4_audit,
+        worklist=worklist,
+        benign_logical_source_count=len(first_benign),
+        benign_unique_request_count=len(benign_capture.unique_requests),
+        benign_collision_count=len(benign_capture.collision_groups),
+    )
+
+
+def _enumerate_benign_once(dsn: str, *, run_namespace: str) -> tuple[MonitorAuditObservation, ...]:
+    """Run the existing frozen benign suite with an isolated cold-run namespace."""
+    repository = LabRepository(dsn)
+    repository.migrate()
+    try:
+        rows: list[MonitorAuditObservation] = []
+        for case in load_benign_monitor_suite().cases:
+            rows.extend(_drive_benign(repository, case, run_namespace))
+        return tuple(rows)
+    finally:
+        for scenario_id in _SCENARIO_IDS:
+            repository.reset_checkpoint(scenario_id)
 
 
 def _enumerate_t4_v2_once(

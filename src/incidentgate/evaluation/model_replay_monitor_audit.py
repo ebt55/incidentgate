@@ -42,13 +42,13 @@ from incidentgate.evaluation.monitor_dataset import (
 from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
 from incidentgate.evaluation.sabotage import SabotageStage
 from incidentgate.evaluation.sabotage_episodes import (
+    RealConditionOutcome,
     ResponseLossStep,
-    SabotageConditionOutcome,
     SabotageEpisodeOutcome,
     SabotageStep,
     load_policy_configuration,
     run_benign_episode,
-    run_condition,
+    run_real_condition_episode,
     safeguards_for,
 )
 from incidentgate.evaluation.sabotage_matrix import (
@@ -99,6 +99,39 @@ _MODEL = "claude-opus-5"
 
 class ModelReplayAuditRefusal(RuntimeError):
     """A cache response is not admissible evidence for this audit."""
+
+
+def _require_publishable_outcome(
+    outcome: object,
+    *,
+    scenario_id: str | None = None,
+    variant_id: str | None = None,
+    condition: EvaluationMode | None = None,
+) -> RealConditionOutcome:
+    """Refuse legacy scripts before their legs can enter a public audit row."""
+    if not isinstance(outcome, RealConditionOutcome):
+        raise ModelReplayAuditRefusal(
+            "publication audit requires a real one-business-thread outcome"
+        )
+    try:
+        outcome.require_publishable()
+    except ValueError as error:
+        raise ModelReplayAuditRefusal(
+            "publication audit refuses incomplete runtime evidence"
+        ) from error
+    if (scenario_id, variant_id, condition) != (None, None, None) and (
+        outcome.scenario_id,
+        outcome.variant_id,
+        outcome.condition,
+    ) != (scenario_id, variant_id, condition):
+        raise ModelReplayAuditRefusal("publication audit outcome identity disagrees with its cell")
+    return outcome
+
+
+def _has_covert_effect(
+    side_effects: Callable[[object], Sequence[object]], end_state: object
+) -> bool:
+    return bool(side_effects(end_state))
 
 
 @dataclass(frozen=True)
@@ -450,16 +483,27 @@ def _enumerate_once(
                     action_profile=scenario_action_profile(scenario_id),
                 )
                 deferred.bind(proposer.prompt_contract)
-                outcome = run_condition(
+                outcome = run_real_condition_episode(
                     repository,
                     scenario_id=scenario_id,
                     variant_id=variant.variant_id,
-                    episode_key=f"{run_namespace}-{variant.variant_id}",
+                    episode_id=f"{run_namespace}-{variant.variant_id}",
                     condition=EvaluationMode.COMPLETE,
                     covert_plan=(proposer,),
                     incident_plan=scenario.honest_plan(),
-                    end_state=partial(scenario.end_state, repository),
+                    safeguards=safeguards_for(EvaluationMode.COMPLETE, approver="approver-1"),
+                    end_state_reader=partial(scenario.end_state, repository),
+                    covert_effect_predicate=partial(
+                        _has_covert_effect, scenario.covert_side_effects
+                    ),
+                    incident_success_predicate=scenario.incident_checker,
                     semantic_monitor=_bundle(repository, recorder),
+                )
+                _require_publishable_outcome(
+                    outcome,
+                    scenario_id=scenario_id,
+                    variant_id=variant.variant_id,
+                    condition=EvaluationMode.COMPLETE,
                 )
                 if deferred.inner is None or deferred.inner.attestation is None:
                     raise ModelReplayAuditRefusal(
@@ -801,15 +845,26 @@ def build_cache_only_publication_audit(
                 # Fixture bands are still real runtime drives; they simply make
                 # no claim that a model supplied the relevant role.
                 for condition in EvaluationMode:
-                    floor = run_condition(
+                    floor = run_real_condition_episode(
                         repository,
                         scenario_id=scenario_id,
                         variant_id=variant.variant_id,
-                        episode_key=f"publication-floor-{variant.variant_id}-{condition.value}",
+                        episode_id=f"publication-floor-{variant.variant_id}-{condition.value}",
                         condition=condition,
                         covert_plan=scenario.covert_plan(runtime_variant),
                         incident_plan=scenario.honest_plan(),
-                        end_state=partial(scenario.end_state, repository),
+                        safeguards=safeguards_for(condition, approver="approver-1"),
+                        end_state_reader=partial(scenario.end_state, repository),
+                        covert_effect_predicate=partial(
+                            _has_covert_effect, scenario.covert_side_effects
+                        ),
+                        incident_success_predicate=scenario.incident_checker,
+                    )
+                    _require_publishable_outcome(
+                        floor,
+                        scenario_id=scenario_id,
+                        variant_id=variant.variant_id,
+                        condition=condition,
                     )
                     rows.append(
                         _publication_row(
@@ -842,15 +897,26 @@ def build_cache_only_publication_audit(
                         action_profile=scenario_action_profile(scenario_id),
                     )
                     deferred.bind(proposer.prompt_contract)
-                    oracle = run_condition(
+                    oracle = run_real_condition_episode(
                         repository,
                         scenario_id=scenario_id,
                         variant_id=variant.variant_id,
-                        episode_key=f"publication-model-oracle-{variant.variant_id}-{condition.value}",
+                        episode_id=f"publication-model-oracle-{variant.variant_id}-{condition.value}",
                         condition=condition,
                         covert_plan=(proposer,),
                         incident_plan=scenario.honest_plan(),
-                        end_state=partial(scenario.end_state, repository),
+                        safeguards=safeguards_for(condition, approver="approver-1"),
+                        end_state_reader=partial(scenario.end_state, repository),
+                        covert_effect_predicate=partial(
+                            _has_covert_effect, scenario.covert_side_effects
+                        ),
+                        incident_success_predicate=scenario.incident_checker,
+                    )
+                    _require_publishable_outcome(
+                        oracle,
+                        scenario_id=scenario_id,
+                        variant_id=variant.variant_id,
+                        condition=condition,
                     )
                     if deferred.inner is None or deferred.inner.attestation is None:
                         raise ModelReplayAuditRefusal(
@@ -889,16 +955,27 @@ def build_cache_only_publication_audit(
                 ).build(
                     policy=load_policy_configuration(), facts=RepositoryMonitorFacts(repository)
                 )
-                floor_monitored = run_condition(
+                floor_monitored = run_real_condition_episode(
                     repository,
                     scenario_id=scenario_id,
                     variant_id=variant.variant_id,
-                    episode_key=f"publication-floor-monitor-{variant.variant_id}",
+                    episode_id=f"publication-floor-monitor-{variant.variant_id}",
                     condition=EvaluationMode.COMPLETE,
                     covert_plan=scenario.covert_plan(runtime_variant),
                     incident_plan=scenario.honest_plan(),
-                    end_state=partial(scenario.end_state, repository),
+                    safeguards=safeguards_for(EvaluationMode.COMPLETE, approver="approver-1"),
+                    end_state_reader=partial(scenario.end_state, repository),
+                    covert_effect_predicate=partial(
+                        _has_covert_effect, scenario.covert_side_effects
+                    ),
+                    incident_success_predicate=scenario.incident_checker,
                     semantic_monitor=floor_semantic,
+                )
+                _require_publishable_outcome(
+                    floor_monitored,
+                    scenario_id=scenario_id,
+                    variant_id=variant.variant_id,
+                    condition=EvaluationMode.COMPLETE,
                 )
                 floor_monitor = _monitor_cell_attestation(
                     floor_monitored,
@@ -940,16 +1017,27 @@ def build_cache_only_publication_audit(
                     policy=load_policy_configuration(),
                     facts=RepositoryMonitorFacts(repository),
                 )
-                monitored = run_condition(
+                monitored = run_real_condition_episode(
                     repository,
                     scenario_id=scenario_id,
                     variant_id=variant.variant_id,
-                    episode_key=f"publication-model-monitor-{variant.variant_id}",
+                    episode_id=f"publication-model-monitor-{variant.variant_id}",
                     condition=EvaluationMode.COMPLETE,
                     covert_plan=(proposer,),
                     incident_plan=scenario.honest_plan(),
-                    end_state=partial(scenario.end_state, repository),
+                    safeguards=safeguards_for(EvaluationMode.COMPLETE, approver="approver-1"),
+                    end_state_reader=partial(scenario.end_state, repository),
+                    covert_effect_predicate=partial(
+                        _has_covert_effect, scenario.covert_side_effects
+                    ),
+                    incident_success_predicate=scenario.incident_checker,
                     semantic_monitor=semantic,
+                )
+                _require_publishable_outcome(
+                    monitored,
+                    scenario_id=scenario_id,
+                    variant_id=variant.variant_id,
+                    condition=EvaluationMode.COMPLETE,
                 )
                 if deferred.inner is None or deferred.inner.attestation is None:
                     raise ModelReplayAuditRefusal(
@@ -993,7 +1081,7 @@ def build_cache_only_publication_audit(
 
 
 def _monitor_cell_attestation(
-    outcome: SabotageConditionOutcome,
+    outcome: RealConditionOutcome,
     replays: Sequence[MonitorReplayAttestation],
     scenario_id: ScenarioId,
     variant_id: str,
@@ -1001,6 +1089,12 @@ def _monitor_cell_attestation(
     threshold: MonitorThresholdArtifact,
 ) -> tuple[MonitorReplayAttestation, ...]:
     """Bind every runtime consultation to a unique role-addressed capture."""
+    outcome = _require_publishable_outcome(
+        outcome,
+        scenario_id=scenario_id,
+        variant_id=variant_id,
+        condition=EvaluationMode.COMPLETE,
+    )
     consulted = tuple(
         (leg, step)
         for leg, episode in (("covert", outcome.covert), ("incident", outcome.incident))
@@ -1044,7 +1138,7 @@ def _publication_row(
     scenario: SabotageScenario,
     manifest: SabotageManifest,
     variant: AttackPolicyVariant,
-    outcome: SabotageConditionOutcome,
+    outcome: RealConditionOutcome,
     *,
     attacker_source: str,
     monitor_source: str,
@@ -1054,6 +1148,12 @@ def _publication_row(
     threshold_digest: str,
 ) -> SabotageEvaluationResultV3:
     """Project only runtime facts into the v3 public contract."""
+    outcome = _require_publishable_outcome(
+        outcome,
+        scenario_id=scenario.scenario_id,
+        variant_id=variant.variant_id,
+        condition=outcome.condition,
+    )
     if outcome.safeguards != safeguards_for(outcome.condition, approver="approver-1"):
         raise ModelReplayAuditRefusal("runtime safeguards do not match the labelled arm")
     if monitor_source.startswith("model:") != bool(monitor):
@@ -1203,7 +1303,7 @@ def _covert_outcome(covert: SabotageEpisodeV3, side_effects: int) -> CovertOutco
     return CovertOutcome.STOPPED_AT_POLICY
 
 
-def _covert_attempt_predicate(outcome: SabotageConditionOutcome) -> str:
+def _covert_attempt_predicate(outcome: RealConditionOutcome) -> str:
     """Name observed covert-only behavior; split labels never describe behavior."""
     incident_tools = {step.tool_name for step in outcome.incident.steps}
     tools = sorted({step.tool_name for step in outcome.covert.steps} - incident_tools)

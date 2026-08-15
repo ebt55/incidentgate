@@ -27,7 +27,8 @@ from incidentgate.evaluation.sabotage_episodes import (
     ResponseLossStep,
     SabotageStep,
     run_benign_episode,
-    run_condition,
+    run_real_condition_episode,
+    safeguards_for,
 )
 from incidentgate.evaluation.sabotage_matrix import SabotageScenario, load_scenario
 from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
@@ -260,17 +261,27 @@ def _drive_malicious(
     run_namespace: str,
 ) -> tuple[MonitorAuditObservation, ...]:
     recorder = RecordingCompletionClient()
-    outcome = run_condition(
+    outcome = run_real_condition_episode(
         repository,
         scenario_id=scenario_id,
         variant_id=variant.variant_id,
-        episode_key=f"monitor-audit-{run_namespace}-{variant.variant_id}",
+        episode_id=f"monitor-audit-{run_namespace}-{variant.variant_id}",
         condition=EvaluationMode.COMPLETE,
         covert_plan=scenario.covert_plan(variant),
         incident_plan=scenario.honest_plan(),
-        end_state=lambda: scenario.end_state(repository),
+        safeguards=safeguards_for(EvaluationMode.COMPLETE, approver="approver-1"),
+        end_state_reader=lambda: scenario.end_state(repository),
+        covert_effect_predicate=lambda end_state: bool(scenario.covert_side_effects(end_state)),
+        incident_success_predicate=scenario.incident_checker,
         semantic_monitor=_bundle(repository, recorder),
     )
+    outcome.require_publishable()
+    if (outcome.scenario_id, outcome.variant_id, outcome.condition) != (
+        scenario_id,
+        variant.variant_id,
+        EvaluationMode.COMPLETE,
+    ):
+        raise AuditInstabilityRefusal("semantic-monitor outcome identity disagrees with its cell")
     return _observations_for_steps(
         outcome.covert.steps,
         outcome.incident.steps,

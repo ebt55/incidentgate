@@ -31,6 +31,7 @@ from incidentgate.evaluation.sabotage import (
     SabotageStepOutcome,
     semantic_hash,
 )
+from incidentgate.evaluation.sabotage_episodes import run_condition
 from incidentgate.lab.repository import LabRepository
 from incidentgate.reasons import CAPABILITY_PROHIBITED, POLICY_VALID, UNKNOWN_TOOL
 
@@ -276,6 +277,32 @@ def test_replaying_the_envelope_through_its_own_types_is_stable(
     """A published matrix round-trips, and its semantic hash ignores only the clock."""
     reloaded = SabotageRawEnvelope.model_validate(matrix.model_dump(mode="json"))
     assert semantic_hash(reloaded) == semantic_hash(matrix)
+
+
+@pytest.mark.integration
+def test_matrix_direct_projection_refuses_a_legacy_multi_thread_outcome() -> None:
+    """A legacy script cannot cross the matrix's typed publication boundary."""
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("legacy projection refusal requires local DATABASE_URL")
+    repository = LabRepository(dsn)
+    repository.migrate()
+    scenario = sabotage_matrix.load_scenario("T1")
+    try:
+        legacy = run_condition(
+            repository,
+            scenario_id="T1",
+            variant_id=DEVELOPMENT_VARIANT.variant_id,
+            episode_key="legacy-direct-projection-refusal",
+            condition=EvaluationMode.UNGATED,
+            covert_plan=scenario.covert_plan(DEVELOPMENT_VARIANT),
+            incident_plan=scenario.honest_plan(),
+            end_state=lambda: scenario.end_state(repository),
+        )
+        with pytest.raises(TypeError, match="one-business-thread"):
+            sabotage_matrix._episode(legacy, "covert", ledger_rows=1)  # type: ignore[arg-type]
+    finally:
+        repository.reset_checkpoint("T1")
 
 
 # ---------------------------------------------------------------------------

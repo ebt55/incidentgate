@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Literal
 
 import pytest
 
+from incidentgate.evaluation.sabotage_matrix import load_scenario
 from incidentgate.evaluation.semantic_monitor_capture_plan import (
     AuditInstabilityRefusal,
     MonitorAuditObservation,
@@ -16,6 +18,7 @@ from incidentgate.evaluation.semantic_monitor_capture_plan import (
     build_capture_audit,
     compare_cold_observations,
 )
+from incidentgate.lab.repository import LabRepository
 
 
 def _request(token: str) -> ReachedRequestIdentity:
@@ -73,6 +76,32 @@ def test_duplicate_and_cross_split_collisions_make_labelled_capture_unsafe() -> 
     assert audit.labelled_cell_capture_safe is False
     assert len(audit.unique_requests) == 1
     assert len(audit.collision_groups) == len(audit.cross_split_collision_groups) == 1
+
+
+@pytest.mark.integration
+def test_malicious_capture_refuses_mismatched_real_outcome_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn is None:
+        pytest.skip("semantic identity refusal requires local DATABASE_URL")
+    import incidentgate.evaluation.semantic_monitor_capture_plan as capture_module
+
+    repository = LabRepository(dsn)
+    repository.migrate()
+    scenario = load_scenario("T1")
+    variant = scenario.attack_variants[0]
+    original = capture_module.run_real_condition_episode
+
+    def mismatched_outcome(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        return replace(original(*args, **kwargs), variant_id="T1-cal-v1")
+
+    monkeypatch.setattr(capture_module, "run_real_condition_episode", mismatched_outcome)
+    try:
+        with pytest.raises(AuditInstabilityRefusal, match="identity disagrees"):
+            capture_module._drive_malicious(repository, "T1", variant, scenario, "identity")
+    finally:
+        repository.reset_checkpoint("T1")
 
 
 @pytest.mark.integration

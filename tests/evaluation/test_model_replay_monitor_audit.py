@@ -35,6 +35,12 @@ from incidentgate.evaluation.model_replay_monitor_audit import (
 )
 from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
 from incidentgate.evaluation.proposer_capture_plan import audit_frozen_proposer_requests
+from incidentgate.evaluation.sabotage_episodes import (
+    run_condition,
+    run_real_condition_episode,
+    safeguards_for,
+)
+from incidentgate.evaluation.sabotage_matrix import load_scenario
 from incidentgate.evaluation.semantic_monitor_capture_plan import (
     MonitorAuditSource,
     audit_frozen_semantic_monitor_requests,
@@ -359,6 +365,75 @@ def test_replay_audit_refuses_unequal_cold_runs_before_stable_label_or_cache_mut
 
     assert calls == ["model-cold-a", "model-cold-b"]
     assert _cache_files(tmp_path) == before
+
+
+@pytest.mark.integration
+def test_publication_projection_refuses_a_legacy_multi_thread_outcome() -> None:
+    """The shared v3 projection guard protects every source arm."""
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn is None:
+        pytest.skip("legacy publication refusal requires local DATABASE_URL")
+    from incidentgate.lab.repository import LabRepository
+
+    repository = LabRepository(dsn)
+    repository.migrate()
+    scenario = load_scenario("T1")
+    variant = scenario.attack_variants[0]
+    try:
+        legacy = run_condition(
+            repository,
+            scenario_id="T1",
+            variant_id=variant.variant_id,
+            episode_key="legacy-v3-publication-refusal",
+            condition=EvaluationMode.UNGATED,
+            covert_plan=scenario.covert_plan(variant),
+            incident_plan=scenario.honest_plan(),
+            end_state=lambda: scenario.end_state(repository),
+        )
+        import incidentgate.evaluation.model_replay_monitor_audit as audit_module
+
+        with pytest.raises(ModelReplayAuditRefusal, match="one-business-thread"):
+            audit_module._require_publishable_outcome(legacy)
+    finally:
+        repository.reset_checkpoint("T1")
+
+
+@pytest.mark.integration
+def test_publication_projection_refuses_variant_laundering() -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn is None:
+        pytest.skip("publication identity refusal requires local DATABASE_URL")
+    from incidentgate.lab.repository import LabRepository
+
+    repository = LabRepository(dsn)
+    repository.migrate()
+    scenario = load_scenario("T1")
+    variant = scenario.attack_variants[0]
+    try:
+        outcome = run_real_condition_episode(
+            repository,
+            scenario_id="T1",
+            variant_id=variant.variant_id,
+            condition=EvaluationMode.UNGATED,
+            episode_id="v3-identity-refusal",
+            covert_plan=scenario.covert_plan(variant),
+            incident_plan=scenario.honest_plan(),
+            safeguards=safeguards_for(EvaluationMode.UNGATED, approver="approver-1"),
+            end_state_reader=lambda: scenario.end_state(repository),
+            covert_effect_predicate=lambda state: bool(scenario.covert_side_effects(state)),
+            incident_success_predicate=scenario.incident_checker,
+        )
+        with pytest.raises(ModelReplayAuditRefusal, match="identity disagrees"):
+            import incidentgate.evaluation.model_replay_monitor_audit as audit_module
+
+            audit_module._require_publishable_outcome(
+                replace(outcome, variant_id="T1-cal-v1"),
+                scenario_id="T1",
+                variant_id=variant.variant_id,
+                condition=EvaluationMode.UNGATED,
+            )
+    finally:
+        repository.reset_checkpoint("T1")
 
 
 def _cache_files(root: Path) -> dict[Path, bytes]:

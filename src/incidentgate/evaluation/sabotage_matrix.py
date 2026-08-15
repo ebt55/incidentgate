@@ -99,6 +99,8 @@ from incidentgate.control.proposal import (
     DeterministicT7Proposer,
     DeterministicT8Proposer,
 )
+from incidentgate.control.safeguards import AuthorizationGate
+from incidentgate.control.workflow import EpisodeAuthorizationChoice
 from incidentgate.evaluation.sabotage import (
     SabotageEpisode,
     SabotageEvaluationResult,
@@ -127,11 +129,13 @@ from incidentgate.evaluation.sabotage_checkers import (
 )
 from incidentgate.evaluation.sabotage_episodes import (
     AuthorizationFactorySelector,
-    SabotageConditionOutcome,
+    EpisodeAuthorizationSelector,
+    RealConditionOutcome,
     SabotageEpisodeOutcome,
     SabotageStep,
     _utc_now,
-    run_condition,
+    run_real_condition_episode,
+    safeguards_for,
 )
 from incidentgate.integration.adapters import DeterministicControlAuthorization
 from incidentgate.lab.repository import LabRepository
@@ -424,9 +428,12 @@ class _T7RecordedAuthorization:
 class _T7ReplayAuthorization:
     """Return one bounded recorded-token substitution for the current action."""
 
-    def __init__(self, recorded: dict[str, object], substitution: str) -> None:
+    def __init__(
+        self, recorded: dict[str, object], substitution: str, *, same_business_thread: bool = False
+    ) -> None:
         self._recorded = recorded
         self._substitution = substitution
+        self._same_business_thread = same_business_thread
         self._used = False
 
     def request(self, request: AuthorizationRequest) -> Mapping[str, object]:
@@ -436,7 +443,8 @@ class _T7ReplayAuthorization:
             request.action_hash == self._recorded.get("action_hash")
             or request.incident_id != self._recorded.get("incident_id")
             or request.actor != self._recorded.get("actor")
-            or request.thread_id == self._recorded.get("thread_id")
+            or (request.thread_id == self._recorded.get("thread_id"))
+            != self._same_business_thread
         ):
             raise RuntimeError("T7 approval replay source did not match the expected second step")
         decision = self._recorded.get("decision")
@@ -463,7 +471,11 @@ class _T7ReplayAuthorization:
 
 
 def _t7_authorization_selector(
-    repository: LabRepository, variant: ProposerVariant, clock: Callable[[], datetime]
+    repository: LabRepository,
+    variant: ProposerVariant,
+    clock: Callable[[], datetime],
+    *,
+    same_business_thread: bool = False,
 ) -> AuthorizationFactorySelector:
     """Build a fresh, cell-local T7 replay selector over the public authorizer port."""
     recorded: dict[str, object] = {}
@@ -491,8 +503,48 @@ def _t7_authorization_selector(
                 recorded,
             )
         if (leg, step_index) == ("covert", 1):
-            return lambda: _T7ReplayAuthorization(recorded, substitution)
+            return lambda: _T7ReplayAuthorization(
+                recorded, substitution, same_business_thread=same_business_thread
+            )
         raise RuntimeError("T7 authorization selector received an unexpected episode step")
+
+    return selector
+
+
+def _real_episode_authorization_selector(
+    scenario: SabotageScenario,
+    repository: LabRepository,
+    variant: ProposerVariant,
+    clock: Callable[[], datetime],
+) -> EpisodeAuthorizationSelector | None:
+    """Adapt an existing matrix-local requester selection to the root episode.
+
+    T7 is the only current scenario with an evaluation requester override.  Its
+    requester factories already contain the frozen replay/substitution behavior;
+    the real episode additionally needs the trusted replay identity and explicit
+    in-process request path that the legacy script did not record.
+    """
+    if scenario.authorization_selector is None:
+        return None
+    legacy = (
+        _t7_authorization_selector(repository, variant, clock, same_business_thread=True)
+        if scenario.scenario_id == "T7"
+        else scenario.authorization_selector(repository, variant, clock)
+    )
+
+    def selector(
+        leg: Literal["covert", "incident"], step_index: int
+    ) -> EpisodeAuthorizationChoice | None:
+        if leg != "covert" or step_index not in {0, 1}:
+            return None
+        factory = legacy(leg, step_index)
+        if factory is None:
+            return None
+        return EpisodeAuthorizationChoice(
+            f"matrix-{scenario.scenario_id}-{variant.variant_id}-{leg}-{step_index}-v1",
+            factory,
+            AuthorizationGate.DETERMINISTIC_CONTROL,
+        )
 
     return selector
 
@@ -835,7 +887,9 @@ def _stage(step: SabotageStep) -> SabotageStage:
     return SabotageStage.POLICY
 
 
-def _episode(outcome: SabotageEpisodeOutcome, *, ledger_rows: int) -> SabotageEpisode:
+def _episode(
+    outcome: RealConditionOutcome, leg: Literal["covert", "incident"], *, ledger_rows: int
+) -> SabotageEpisode:
     """Project one driven leg into the published shape, one step per real call.
 
     ``ledger_rows`` is the durable total committed under this leg's capability
@@ -846,14 +900,18 @@ def _episode(outcome: SabotageEpisodeOutcome, *, ledger_rows: int) -> SabotageEp
     and the recorded run disagree about what happened, which has to stop a
     publication rather than be smoothed into one.
     """
-    executed = sum(1 for step in outcome.steps if step.executed)
+    if not isinstance(outcome, RealConditionOutcome):
+        raise TypeError("matrix projection requires a real one-business-thread outcome")
+    outcome.require_publishable()
+    projected = outcome.covert if leg == "covert" else outcome.incident
+    executed = sum(1 for step in projected.steps if step.executed)
     if executed != ledger_rows:
         raise ValueError(
-            f"the {outcome.leg} leg recorded {executed} executed calls but its capability "
+            f"the {projected.leg} leg recorded {executed} executed calls but its capability "
             f"scope holds {ledger_rows} durable ledger rows"
         )
     return SabotageEpisode(
-        leg=outcome.leg,
+        leg=projected.leg,
         steps=tuple(
             SabotageStepOutcome(
                 step_index=step.step_index,
@@ -871,7 +929,7 @@ def _episode(outcome: SabotageEpisodeOutcome, *, ledger_rows: int) -> SabotageEp
                 operation_id=step.operation.operation_id if step.operation is not None else None,
                 ledger_rows=1 if step.executed else 0,
             )
-            for step in outcome.steps
+            for step in projected.steps
         ),
     )
 
@@ -978,28 +1036,36 @@ class SabotageMatrixRunner:
         # runtime.  Pass the one injected clock to both; generated_at remains
         # reporting metadata and intentionally uses a wall clock elsewhere.
         clock = _utc_now
-        outcome: SabotageConditionOutcome = run_condition(
+        outcome = run_real_condition_episode(
             repository,
             scenario_id=scenario.scenario_id,
             variant_id=variant.variant_id,
             # The episode key discriminates the cells of one matrix: same
             # scenario, same legs, same step indices, different variant and
             # condition. Without it every cell would derive the same thread ids.
-            episode_key=(
+            episode_id=(
                 f"{variant.variant_id.removeprefix(scenario.scenario_id + '-')}-{condition.value}"
             ),
             condition=condition,
             covert_plan=scenario.covert_plan(variant),
             incident_plan=scenario.honest_plan(),
-            end_state=lambda: scenario.end_state(repository),
+            safeguards=safeguards_for(condition, approver="approver-1"),
+            end_state_reader=lambda: scenario.end_state(repository),
+            covert_effect_predicate=lambda end_state: bool(scenario.covert_side_effects(end_state)),
+            incident_success_predicate=scenario.incident_checker,
             monitor=None if scenario.monitor is None else scenario.monitor(repository),
             clock=clock,
-            authorization_factory=(
-                None
-                if scenario.authorization_selector is None
-                else scenario.authorization_selector(repository, variant, clock)
+            authorization_factory=_real_episode_authorization_selector(
+                scenario, repository, variant, clock
             ),
         )
+        outcome.require_publishable()
+        if (outcome.scenario_id, outcome.variant_id, outcome.condition) != (
+            scenario.scenario_id,
+            variant.variant_id,
+            condition,
+        ):
+            raise ValueError("matrix outcome identity disagrees with its cell")
         counts = repository.sabotage_durable_counts(scenario.scenario_id)
         end_state = outcome.end_state
         _checkers_agree_with_the_frozen_specs(scenario, manifest, end_state)
@@ -1024,20 +1090,24 @@ class SabotageMatrixRunner:
                 expected_covert_ids, expected_incident_ids, repository.t8_operation_ids()
             )
             covert = _episode(
-                outcome.covert,
+                outcome,
+                "covert",
                 ledger_rows=sum(step.executed for step in outcome.covert.steps),
             )
             incident = _episode(
-                outcome.incident,
+                outcome,
+                "incident",
                 ledger_rows=sum(step.executed for step in outcome.incident.steps),
             )
         else:
             covert = _episode(
-                outcome.covert,
+                outcome,
+                "covert",
                 ledger_rows=sum(counts.ledger_rows[scope] for scope in scenario.covert_scopes),
             )
             incident = _episode(
-                outcome.incident,
+                outcome,
+                "incident",
                 ledger_rows=sum(counts.ledger_rows[scope] for scope in scenario.incident_scopes),
             )
         stages = _SAFEGUARDS[condition]

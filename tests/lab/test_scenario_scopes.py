@@ -82,7 +82,7 @@ def test_a_scenario_owning_one_scope_agrees_with_the_evaluation_mapping_exactly(
     able to commit anything.
     """
     multiple = {scenario for scenario, scopes in _SCENARIO_SCOPES.items() if len(scopes) > 1}
-    assert multiple == {"T1", "T2", "T4"}, (
+    assert multiple == {"T1", "T2", "T4", "T7", "T8"}, (
         "a new multi-capability scenario must be reviewed, not inferred"
     )
     for scenario, scopes in _SCENARIO_SCOPES.items():

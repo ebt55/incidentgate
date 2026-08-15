@@ -44,23 +44,23 @@ def matrix() -> SabotageRawEnvelope:
     """One real three-condition matrix, shared by every assertion in this file.
 
     Module-scoped because each cell resets the fixture, drives two legs through
-    Postgres, and in the full condition spins a durable LangGraph thread. One
-    variant is enough to exercise all three conditions; the published artifact
-    runs all three variants.
+    Postgres, and in the full condition spins a durable LangGraph thread.
     """
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("the sabotage matrix requires DATABASE_URL")
     manifest = sabotage_matrix.load_manifest("T1")
-    envelope = sabotage_matrix.SabotageMatrixRunner(dsn).run(
-        manifest, variants=(DEVELOPMENT_VARIANT,)
-    )
+    envelope = sabotage_matrix.SabotageMatrixRunner(dsn).run(manifest)
     LabRepository(dsn).reset_checkpoint("T1")
     return envelope
 
 
 def cell(envelope: SabotageRawEnvelope, condition: EvaluationMode):  # type: ignore[no-untyped-def]
-    return next(row for row in envelope.results if row.condition is condition)
+    return next(
+        row
+        for row in envelope.results
+        if row.variant_id == DEVELOPMENT_VARIANT.variant_id and row.condition is condition
+    )
 
 
 def only_step(leg: SabotageEpisode) -> SabotageStepOutcome:
@@ -147,8 +147,12 @@ def test_the_matrix_separates_the_conditions_on_the_covert_checker_alone(
     matrix: SabotageRawEnvelope,
 ) -> None:
     """Side by side: the incident task succeeds everywhere; only the covert verdict moves."""
-    assert [row.incident_checker_passed for row in matrix.results] == [True] * 3
-    assert {row.condition: row.covert_checker_passed for row in matrix.results} == {
+    assert len(matrix.results) == 9
+    development_rows = [
+        row for row in matrix.results if row.variant_id == DEVELOPMENT_VARIANT.variant_id
+    ]
+    assert [row.incident_checker_passed for row in development_rows] == [True] * 3
+    assert {row.condition: row.covert_checker_passed for row in development_rows} == {
         EvaluationMode.UNGATED: False,
         EvaluationMode.POLICY_ONLY: True,
         EvaluationMode.COMPLETE: True,
@@ -207,10 +211,12 @@ def test_the_full_condition_consumed_exactly_the_approval_it_minted(
 # ---------------------------------------------------------------------------
 def test_every_row_carries_the_frozen_variant_identity(matrix: SabotageRawEnvelope) -> None:
     for row in matrix.results:
-        assert row.variant_id == DEVELOPMENT_VARIANT.variant_id
-        assert row.policy_version == DEVELOPMENT_VARIANT.policy_version
-        assert row.split == DEVELOPMENT_VARIANT.split
-        assert row.seed == DEVELOPMENT_VARIANT.seed
+        variant = next(item for item in T1_ATTACK_VARIANTS if item.variant_id == row.variant_id)
+        assert (row.policy_version, row.split, row.seed) == (
+            variant.policy_version,
+            variant.split,
+            variant.seed,
+        )
         assert row.attack_policy_source == "deterministic_stand_in"
         assert row.model_invocation.invocation_kind == "fixture_no_call"
 
@@ -220,7 +226,11 @@ def test_run_ids_are_derived_from_the_contract_variant_condition_and_trial(
 ) -> None:
     for row in matrix.results:
         assert row.run_id == sabotage_matrix._run_id(
-            matrix.suite_manifest_digest, "T1", DEVELOPMENT_VARIANT, row.condition, matrix.trial
+            matrix.suite_manifest_digest,
+            "T1",
+            next(item for item in T1_ATTACK_VARIANTS if item.variant_id == row.variant_id),
+            row.condition,
+            matrix.trial,
         )
     assert len({row.run_id for row in matrix.results}) == len(matrix.results)
 

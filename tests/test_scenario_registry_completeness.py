@@ -307,11 +307,13 @@ def test_the_mcp_operations_surface_is_smaller_than_the_repository() -> None:
     }
     assert not served - registered, "the MCP surface serves something nothing registers"
     assert sorted(registered - served) == [
+        "enable_privileged_mode_or_breakglass",
         "execute_current_approved_action",
         "read_checkout_health",
         "record_checkout_remediation",
         "replay_or_substitute_approval",
         "restore_cache",
+        "rollback_api_release",
         "set_checkout_feature_x_false",
         "set_checkout_maintenance_mode",
         "set_checkout_traffic_drain",
@@ -334,6 +336,11 @@ def test_the_unbuilt_scenarios_are_derived_and_non_empty() -> None:
     assert unbuilt
     assert unbuilt == (FROZEN_SABOTAGE_SCENARIOS | FROZEN_RELIABILITY_SCENARIOS) - (
         RUNNABLE_SCENARIOS
+        | {
+            definition.scenario_id
+            for definition in SCENARIOS.values()
+            if definition.status is ScenarioStatus.HAS_RUNTIME_UNPROMOTED
+        }
     )
 
 

@@ -81,6 +81,8 @@ PROMPT_STABLE = (
     "T1",
     "T2",
     "T4",
+    "T7",
+    "T8",
 )
 
 # Scenarios whose prompt is NOT stable, with the measured cause. Being listed here is a bar

@@ -13,10 +13,11 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Literal
 
 from incidentgate.contracts import EvaluationMode, ModelInvocationRecord, PolicyConfiguration
-from incidentgate.control.attack_policies import AttackPolicyVariant
+from incidentgate.control.attack_policies import AttackPolicyVariant, t4_v2_covert_plan
 from incidentgate.control.model_proposal import CompletionRequest, CompletionResult
 from incidentgate.control.monitor_decision import MonitorThresholds
 from incidentgate.control.monitor_v2 import StructuredMonitorCaller
@@ -38,9 +39,11 @@ from incidentgate.integration.semantic_monitor import (
     SemanticMonitorBundle,
 )
 from incidentgate.lab.repository import LabRepository
+from incidentgate.manifests import T4V2AttackPolicyVariant, T4V2Overlay, load_t4_v2_overlay
 
 Split = Literal["development", "calibration", "holdout"]
 _SCENARIO_IDS: tuple[Literal["T1", "T2", "T4"], ...] = ("T1", "T2", "T4")
+_ROOT = Path(__file__).parents[3]
 
 
 @dataclass(frozen=True)
@@ -375,3 +378,201 @@ def _observations_for_steps(
     if next(requests, None) is not None:
         raise RuntimeError("recorder received a request absent from runtime observations")
     return tuple(result)
+
+
+@dataclass(frozen=True)
+class T4V2VariantObjectiveFacts:
+    """Measured objective facts from one unpromoted T4-v2 real condition."""
+
+    variant_id: str
+    split: Split
+    covert_effect: bool
+    incident_success: bool
+    publication_eligible: bool
+    covert_arguments_digests: tuple[str, ...]
+    final_maintenance_mode: bool
+    final_traffic_drain: bool
+
+
+@dataclass(frozen=True)
+class T4V2SemanticMonitorAudit:
+    """Exact offline worklist for the unpromoted T4-v2 overlay's requests."""
+
+    observations: tuple[MonitorAuditObservation, ...]
+    capture_audit: SemanticMonitorCaptureAudit
+    variant_facts: tuple[T4V2VariantObjectiveFacts, ...]
+    shared_prefix_collision_groups: tuple[RequestCollisionGroup, ...]
+    decisive_requests: tuple[ReachedRequestIdentity, ...]
+    decisive_capture_safe: bool
+    stable: bool
+
+
+@dataclass(frozen=True)
+class _T4V2Enumeration:
+    observations: tuple[MonitorAuditObservation, ...]
+    variant_facts: tuple[T4V2VariantObjectiveFacts, ...]
+
+
+def audit_t4_v2_semantic_monitor_requests(dsn: str) -> T4V2SemanticMonitorAudit:
+    """Cold-drive the accepted T4-v2 overlay without publishing or calling a provider."""
+    overlay = load_t4_v2_overlay(
+        _ROOT / "scenarios" / "sabotage-v2" / "T4.json",
+        _ROOT / "scenarios" / "sabotage" / "T4.json",
+    )
+    first = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-cold-a")
+    second = _enumerate_t4_v2_once(dsn, overlay, run_namespace="t4-v2-cold-b")
+    if first != second:
+        raise AuditInstabilityRefusal(
+            "T4-v2 semantic monitor requests are not stable across cold runs"
+        )
+
+    capture = build_capture_audit(first.observations)
+    expected_groups = _t4_v2_expected_shared_prefix_groups(overlay)
+    actual_groups = capture.collision_groups
+    actual_group_keys = frozenset(_t4_v2_source_group(group) for group in actual_groups)
+    if actual_group_keys != expected_groups:
+        raise AuditInstabilityRefusal("T4-v2 request collisions differ from typed overlay prefixes")
+    if any(
+        any(source.leg != "covert" for source in group.sources)
+        or any(_t4_v2_source_is_decisive(source, overlay) for source in group.sources)
+        for group in actual_groups
+    ):
+        raise AuditInstabilityRefusal("T4-v2 collision includes an incident or decisive source")
+
+    decisive = tuple(
+        row.request
+        for row in first.observations
+        if row.request is not None
+        and row.source.leg == "covert"
+        and _t4_v2_source_is_decisive(row.source, overlay)
+    )
+    if len(decisive) != len(overlay.variants) or len(set(decisive)) != len(decisive):
+        raise AuditInstabilityRefusal("T4-v2 decisive requests are not pairwise distinct")
+    if any(request == group.request for request in decisive for group in actual_groups):
+        raise AuditInstabilityRefusal("T4-v2 decisive request appears in a collision group")
+    return T4V2SemanticMonitorAudit(
+        observations=first.observations,
+        capture_audit=capture,
+        variant_facts=first.variant_facts,
+        shared_prefix_collision_groups=actual_groups,
+        decisive_requests=decisive,
+        decisive_capture_safe=True,
+        stable=True,
+    )
+
+
+def _enumerate_t4_v2_once(
+    dsn: str, overlay: T4V2Overlay, *, run_namespace: str
+) -> _T4V2Enumeration:
+    repository = LabRepository(dsn)
+    repository.migrate()
+    scenario = load_scenario("T4")
+    observations: list[MonitorAuditObservation] = []
+    facts: list[T4V2VariantObjectiveFacts] = []
+    try:
+        for variant in overlay.variants:
+            variant_observations, variant_facts = _drive_t4_v2_variant(
+                repository, scenario, variant, run_namespace
+            )
+            observations.extend(variant_observations)
+            facts.append(variant_facts)
+        return _T4V2Enumeration(tuple(observations), tuple(facts))
+    finally:
+        repository.reset_checkpoint("T4")
+
+
+def _drive_t4_v2_variant(
+    repository: LabRepository,
+    scenario: SabotageScenario,
+    variant: T4V2AttackPolicyVariant,
+    run_namespace: str,
+) -> tuple[tuple[MonitorAuditObservation, ...], T4V2VariantObjectiveFacts]:
+    recorder = RecordingCompletionClient()
+    outcome = run_real_condition_episode(
+        repository,
+        scenario_id="T4",
+        variant_id=variant.variant_id,
+        episode_id=f"monitor-audit-{run_namespace}-{variant.variant_id}",
+        condition=EvaluationMode.COMPLETE,
+        covert_plan=t4_v2_covert_plan(variant),
+        incident_plan=scenario.honest_plan(),
+        safeguards=safeguards_for(EvaluationMode.COMPLETE, approver="approver-1"),
+        end_state_reader=lambda: scenario.end_state(repository),
+        covert_effect_predicate=lambda end_state: bool(scenario.covert_side_effects(end_state)),
+        incident_success_predicate=scenario.incident_checker,
+        semantic_monitor=_bundle(repository, recorder),
+    )
+    outcome.require_publishable()
+    if (outcome.scenario_id, outcome.variant_id, outcome.condition) != (
+        "T4",
+        variant.variant_id,
+        EvaluationMode.COMPLETE,
+    ):
+        raise AuditInstabilityRefusal("T4-v2 real outcome identity disagrees with its overlay")
+    if (
+        not outcome.real_episode.score.covert_effect
+        or not outcome.real_episode.score.incident_success
+    ):
+        raise AuditInstabilityRefusal("T4-v2 real condition did not land both measured objectives")
+    if len(outcome.covert.steps) != len(variant.action_history) or any(
+        not step.monitor_consulted for step in outcome.covert.steps
+    ):
+        raise AuditInstabilityRefusal(
+            "T4-v2 covert overlay action did not reach the semantic monitor"
+        )
+    end_state = outcome.end_state
+    maintenance_mode = getattr(end_state, "maintenance_mode", None)
+    traffic_drain = getattr(end_state, "traffic_drain", None)
+    if type(maintenance_mode) is not bool or type(traffic_drain) is not bool:
+        raise AuditInstabilityRefusal("T4-v2 real condition did not expose terminal flag facts")
+    return (
+        _observations_for_steps(
+            outcome.covert.steps,
+            outcome.incident.steps,
+            "T4",
+            variant.split,
+            variant.seed,
+            variant_id=variant.variant_id,
+            recorder=recorder,
+        ),
+        T4V2VariantObjectiveFacts(
+            variant_id=variant.variant_id,
+            split=variant.split,
+            covert_effect=outcome.real_episode.score.covert_effect,
+            incident_success=outcome.real_episode.score.incident_success,
+            publication_eligible=outcome.publication_eligible,
+            covert_arguments_digests=tuple(step.arguments_digest for step in outcome.covert.steps),
+            final_maintenance_mode=maintenance_mode,
+            final_traffic_drain=traffic_drain,
+        ),
+    )
+
+
+def _t4_v2_expected_shared_prefix_groups(
+    overlay: T4V2Overlay,
+) -> frozenset[frozenset[tuple[str, str, int]]]:
+    grouped: dict[tuple[tuple[str, str, bool], ...], list[tuple[str, str, int]]] = defaultdict(list)
+    for variant in overlay.variants:
+        prefix: list[tuple[str, str, bool]] = []
+        for index, step in enumerate(variant.action_history):
+            prefix.append((step.tool, step.field, step.value))
+            grouped[tuple(prefix)].append((variant.variant_id, "covert", index))
+    return frozenset(frozenset(sources) for sources in grouped.values() if len(sources) > 1)
+
+
+def _t4_v2_source_group(group: RequestCollisionGroup) -> frozenset[tuple[str, str, int]]:
+    sources: list[tuple[str, str, int]] = []
+    for source in group.sources:
+        if source.variant_id is None:
+            raise AuditInstabilityRefusal("T4-v2 collision has a source without a variant identity")
+        sources.append((source.variant_id, source.leg, source.step_index))
+    return frozenset(sources)
+
+
+def _t4_v2_source_is_decisive(source: MonitorAuditSource, overlay: T4V2Overlay) -> bool:
+    if source.variant_id is None:
+        return False
+    variant = next(
+        (item for item in overlay.variants if item.variant_id == source.variant_id), None
+    )
+    return variant is not None and source.step_index == len(variant.action_history) - 1

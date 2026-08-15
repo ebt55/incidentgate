@@ -167,11 +167,16 @@ class FakeClient:
 
 def committed_fixture_key() -> str:
     """The cache key the opus proposer computes today for the fixed synthetic D1 inputs."""
+    return _committed_fixture_request().prompt_sha256
+
+
+def _committed_fixture_request() -> CompletionRequest:
+    """Build the public D1 request used to key the synthetic replay fixture."""
     client = FakeClient(model_output())
     ModelAgentProposer(client=client, model=OPUS, temperature=None).propose(
         incident(), caller(), context(), records()
     )
-    return client.requests[0].prompt_sha256
+    return client.requests[0]
 
 
 def _request(model: str, prompt_sha256: str) -> CompletionRequest:
@@ -495,12 +500,25 @@ def test_committed_fixture_key_matches_the_current_prompt_and_schema() -> None:
     collection mints, which is why ``tests/integration/test_model_backed_incident.py`` can now
     drive this fixture from a genuinely collected incident.
     """
+    request = _committed_fixture_request()
+    canonical = json.loads(request.canonical_prompt)
+    contract = ModelAgentProposer(
+        client=FakeClient(model_output()), model=OPUS, temperature=None
+    ).prompt_contract
     committed = {path.stem for path in (COMMITTED_CACHE / OPUS).glob("*.json")}
-    assert committed_fixture_key() in committed, (
+    assert request.prompt_sha256 == sha256(request.canonical_prompt.encode()).hexdigest()
+    assert canonical["schema_fingerprint"] == contract.output_schema_sha256
+    assert sha256(
+        json.dumps(request.schema, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest() == contract.provider_schema_sha256
+    assert committed == {request.prompt_sha256}, (
         f"the committed opus fixture is keyed {sorted(committed)} but the proposer now computes "
-        f"{committed_fixture_key()}; the prompt or proposer schema changed - regenerate with "
+        f"{request.prompt_sha256}; the prompt or proposer schema changed - regenerate with "
         "record_committed_fixture() from this module"
     )
+    entry = ResponseCache(COMMITTED_CACHE).load(OPUS, request.prompt_sha256)
+    assert entry.capture == "synthetic" and entry.provenance is None
+    assert entry.raw_json == model_output()
 
 
 def test_strong_model_replays_committed_fixture_deterministically() -> None:

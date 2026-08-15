@@ -26,9 +26,18 @@ from incidentgate.evaluation.proposer_contract_freeze import (
     main,
     write_proposer_capture_contract,
 )
-from incidentgate.evaluation.proposer_contracts import ProposerCaptureContractArtifact
+from incidentgate.evaluation.proposer_contracts import (
+    ProposerCaptureContractArtifact,
+    load_proposer_capture_contract,
+)
 
 AT = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+COMMITTED_PHASE3_HOLDOUT_V2 = (
+    Path(__file__).resolve().parents[2]
+    / "config"
+    / "proposer-capture-contracts"
+    / "phase3-proposer-holdout-v2.json"
+)
 
 
 def _row(scenario_id: str, variant_id: str, runtime: str) -> ProposerAuditObservation:
@@ -117,6 +126,27 @@ def test_freeze_derives_canonical_bindings_and_shared_identity_from_audited_requ
         binding.action_profile_id == binding.scenario_id for binding in artifact.prompt_bindings
     )
     assert all(binding.provider_schema_sha256 for binding in artifact.prompt_bindings)
+
+
+def test_committed_phase3_holdout_contract_is_a_strict_scoped_v2_artifact() -> None:
+    """The tracked holdout contract comes from the no-provider clean-tree freeze command.
+
+    It is a request-surface freeze only: its ``provider`` field binds a future capture target,
+    not evidence that a provider was contacted or that any completion was obtained.
+    """
+    artifact = load_proposer_capture_contract(COMMITTED_PHASE3_HOLDOUT_V2)
+    assert artifact.schema_version == "proposer-capture-contract-v2"
+    assert artifact.contract_id == "phase3-proposer-holdout-v2"
+    assert artifact.output_schema_sha256 is None
+    assert artifact.provider_schema_sha256 is None
+    bindings = [
+        (binding.scenario_id, binding.action_profile_id) for binding in artifact.prompt_bindings
+    ]
+    assert bindings == [
+        ("T1", "T1"),
+        ("T2", "T2"),
+        ("T4", "T4"),
+    ]
 
 
 @pytest.mark.parametrize(

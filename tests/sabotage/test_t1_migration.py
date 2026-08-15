@@ -103,9 +103,9 @@ def test_migrate_upgrades_a_014_era_schema_to_head_once_and_retains_prior_durabl
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "019_sabotage_t7.sql"
+            assert [row[0] for row in cursor.fetchall()][-1] == "020_sabotage_t8.sql"
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 19
+            assert cursor.fetchone()[0] == 20
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='t015-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(
@@ -118,6 +118,25 @@ def test_migrate_upgrades_a_014_era_schema_to_head_once_and_retains_prior_durabl
                 "t1_immutable_record",
                 "t1_outbound_note_store",
             )
+            cursor.execute(
+                "SELECT to_regclass(current_schema() || '.t8_fixture_state'), "
+                "to_regclass(current_schema() || '.t8_remediation_history')"
+            )
+            assert cursor.fetchone() == ("t8_fixture_state", "t8_remediation_history")
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name='t8_remediation_history' "
+                "ORDER BY ordinal_position"
+            )
+            assert [row[0] for row in cursor.fetchall()] == [
+                "history_id",
+                "incident_id",
+                "sequence",
+                "operation_scope",
+                "changed_paths",
+                "before_state",
+                "after_state",
+            ]
             cursor.execute(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
                 "WHERE conrelid='immutable_evidence_source'::regclass "

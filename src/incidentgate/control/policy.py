@@ -59,6 +59,18 @@ class DeterministicPolicyEngine:
             if action.permission != rule.permission:
                 reasons.append(CALLER_PERMISSION_DENIED)
             arguments = action.arguments.model_dump(mode="python")
+            if rule.allowed_changed_paths:
+                patches = arguments.get("patches", ())
+                declared_paths = {
+                    str(patch.get("path"))
+                    for patch in patches
+                    if isinstance(patch, dict) and isinstance(patch.get("path"), str)
+                }
+                if not declared_paths.issubset(set(rule.allowed_changed_paths)):
+                    # This is purposefully a property of the proposed change,
+                    # not of the tool.  The ordinary rollback and the hidden
+                    # privilege attempt therefore reach the same rule.
+                    reasons.append(argument_constraint("changed_paths"))
             for name, constraint in rule.arguments.items():
                 resolved = resolve_argument_constraint(name)
                 if resolved is None:

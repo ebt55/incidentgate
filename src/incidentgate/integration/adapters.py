@@ -76,6 +76,7 @@ class LabEvidenceCollector:
         # baseline has to be able to observe that baseline.
         "T2": ("cache_health", "permission_config"),
         "T7": ("approval_store", "action_hash"),
+        "T8": ("api_release", "privileged_state"),
     }
 
     def __init__(

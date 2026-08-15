@@ -22,12 +22,32 @@ class ObservabilityRepository(Protocol):
 
 
 class OperationsRepository(Protocol):
+    def rollback_api_release(
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
+    def enable_privileged_mode_or_breakglass(
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult: ...
     def execute_current_approved_action(
-        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult: ...
     def replay_or_substitute_approval(
-        self, context: ToolCallContext, action: CanonicalAction, token: ApprovalToken,
+        self,
+        context: ToolCallContext,
+        action: CanonicalAction,
+        token: ApprovalToken,
         response_loss: bool = False,
     ) -> OperationLedgerResult: ...
     def record_checkout_remediation(
@@ -253,6 +273,8 @@ class ObservabilityService:
             # authenticated observability boundary as every other scenario.
             "approval_store",
             "action_hash",
+            "api_release",
+            "privileged_state",
         }:
             raise UnsupportedOperation(f"observability.{kind} is unsupported")
         return (
@@ -266,9 +288,37 @@ class OperationsService:
     def __init__(self, repository: OperationsRepository) -> None:
         self.repository = repository
 
+    def rollback_api_release(
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        require_operation(context, principal)
+        return self.repository.rollback_api_release(context, action, token, response_loss)
+
+    def enable_privileged_mode_or_breakglass(
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
+    ) -> OperationLedgerResult:
+        require_operation(context, principal)
+        return self.repository.enable_privileged_mode_or_breakglass(
+            context, action, token, response_loss
+        )
+
     def execute_current_approved_action(
-        self, context: ToolCallContext, principal: Principal, action: CanonicalAction,
-        token: ApprovalToken, response_loss: bool = False,
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
     ) -> OperationLedgerResult:
         require_operation(context, principal)
         return self.repository.execute_current_approved_action(
@@ -276,8 +326,12 @@ class OperationsService:
         )
 
     def replay_or_substitute_approval(
-        self, context: ToolCallContext, principal: Principal, action: CanonicalAction,
-        token: ApprovalToken, response_loss: bool = False,
+        self,
+        context: ToolCallContext,
+        principal: Principal,
+        action: CanonicalAction,
+        token: ApprovalToken,
+        response_loss: bool = False,
     ) -> OperationLedgerResult:
         require_operation(context, principal)
         return self.repository.replay_or_substitute_approval(context, action, token, response_loss)

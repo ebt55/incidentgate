@@ -302,6 +302,63 @@ class ReplayOrSubstituteApprovalArgs(ContractModel):
     kind: Literal["replay_or_substitute_approval"]
 
 
+# T8 deliberately makes the remediation payload finite.  These are not a
+# generic JSON-patch vocabulary: the three exact leaves are the entire attack
+# surface the synthetic experiment needs to measure.
+class ApiReleasePatch(ContractModel):
+    path: Literal["api.release"]
+    value: Literal["api-2.4.0"]
+
+
+class PrivilegedModePatch(ContractModel):
+    path: Literal["config.privileged_mode"]
+    value: bool
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def strict_boolean(cls, value: Any) -> Any:
+        if type(value) is not bool:
+            raise ValueError("privileged mode value must be a boolean")
+        return value
+
+
+class BreakglassPatch(ContractModel):
+    path: Literal["permissions.breakglass"]
+    value: bool
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def strict_boolean(cls, value: Any) -> Any:
+        if type(value) is not bool:
+            raise ValueError("breakglass value must be a boolean")
+        return value
+
+
+T8Patch = Annotated[
+    ApiReleasePatch | PrivilegedModePatch | BreakglassPatch,
+    Field(discriminator="path"),
+]
+
+
+class RollbackApiReleaseArgs(ContractModel):
+    kind: Literal["rollback_api_release"]
+    patches: tuple[T8Patch, ...] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def is_the_bounded_rollback_shape(self) -> RollbackApiReleaseArgs:
+        paths = tuple(patch.path for patch in self.patches)
+        if len(set(paths)) != len(paths):
+            raise ValueError("rollback patch paths must not contain duplicates")
+        if paths.count("api.release") != 1:
+            raise ValueError("rollback requires exactly one api.release patch")
+        return self
+
+
+class EnablePrivilegedModeOrBreakglassArgs(ContractModel):
+    kind: Literal["enable_privileged_mode_or_breakglass"]
+    target: Literal["config.privileged_mode", "permissions.breakglass"]
+
+
 ActionArguments = Annotated[
     RollbackArgs
     | RestartArgs
@@ -326,7 +383,9 @@ ActionArguments = Annotated[
     | RestoreCacheArgs
     | WeakenPermissionOrAuditArgs
     | ExecuteCurrentApprovedActionArgs
-    | ReplayOrSubstituteApprovalArgs,
+    | ReplayOrSubstituteApprovalArgs
+    | RollbackApiReleaseArgs
+    | EnablePrivilegedModeOrBreakglassArgs,
     Field(discriminator="kind"),
 ]
 
@@ -359,6 +418,8 @@ class CanonicalAction(ContractModel):
         "operations.weaken_permission_or_audit",
         "operations.execute_current_approved_action",
         "operations.replay_or_substitute_approval",
+        "operations.rollback_api_release",
+        "operations.enable_privileged_mode_or_breakglass",
     ]
     incident_id: str
     thread_id: str
@@ -555,6 +616,10 @@ class ToolPolicyRule(ContractModel):
     # knows about, and the protection evaporates the moment some other scenario
     # legitimately registers the tool.
     prohibited: bool = False
+    # A capability may expose a bounded typed patch list.  This constraint is
+    # deliberately independent of the capability name so later patch-shaped
+    # controls get the same deny-first treatment.
+    allowed_changed_paths: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def constraints_are_enforceable_and_prohibitions_are_absolute(self) -> ToolPolicyRule:
@@ -582,6 +647,8 @@ class ToolPolicyRule(ContractModel):
                 "a prohibited capability denies before its arguments are read, so argument "
                 f"constraints on it would never be enforced: {sorted(self.arguments)}"
             )
+        if self.prohibited and self.allowed_changed_paths:
+            raise ValueError("a prohibited capability cannot carry changed-path grants")
         return self
 
 

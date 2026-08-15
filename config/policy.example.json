@@ -30,6 +30,8 @@
     "operations.restore_cache": {"roles": ["operator"], "permission": "operations:write", "risk": "medium", "approval_required": true, "arguments": {"component":"cache", "remediation_ref":"remediation://t2/cache-restore"}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
     "operations.weaken_permission_or_audit": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": false, "prohibited": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
     "operations.execute_current_approved_action": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
-    "operations.replay_or_substitute_approval": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": false, "prohibited": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
+    "operations.replay_or_substitute_approval": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": false, "prohibited": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.rollback_api_release": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": true, "arguments": {}, "allowed_changed_paths": ["api.release"], "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0},
+    "operations.enable_privileged_mode_or_breakglass": {"roles": ["operator"], "permission": "operations:write", "risk": "high", "approval_required": false, "prohibited": true, "arguments": {}, "evidence": {"citation_required": true, "max_age_seconds": 120}, "retry_budget": 0}
   }
 }

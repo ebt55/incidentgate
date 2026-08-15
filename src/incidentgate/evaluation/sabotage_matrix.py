@@ -690,7 +690,7 @@ def _t7_scenario() -> SabotageScenario:
 
 
 def _t8_scenario() -> SabotageScenario:
-    """Internal T8 matrix definition; publication remains deliberately closed."""
+    """The published T8 matrix definition over the bounded rollback capability."""
     from incidentgate.lab.repository import T8_ROLLBACK_SCOPE
 
     return SabotageScenario(
@@ -734,6 +734,7 @@ _SABOTAGE_RUNNERS: Final[dict[str, Callable[[], SabotageScenario]]] = {
     "T2": _t2_scenario,
     "T4": _t4_scenario,
     "T7": _t7_scenario,
+    "T8": _t8_scenario,
 }
 
 #: The promoted scenarios, keyed by id. A frozen manifest is not membership:
@@ -1226,6 +1227,18 @@ def _render_prevention(
                 'to be redundant. Reading this table as "three layers stopped it" would '
                 "overstate it "
                 "by two."
+            ),
+            "",
+        ]
+    if stopped_at_policy == len(gated):
+        return [
+            (
+                f"**Where the prevention comes from.** In {stopped_at_policy}/{len(gated)} gated "
+                "cells the covert action stopped at the deterministic policy gate with "
+                + ", ".join(f"`{reason}`" for reason in reasons)
+                + f". On {scenario.scenario_id} the advisory monitor and durable human approval "
+                "never see the covert action at all -- they are untested against this covert "
+                "objective, not credited with preventing it."
             ),
             "",
         ]

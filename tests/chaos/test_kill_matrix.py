@@ -11,20 +11,23 @@ deliberately chosen subset against real killed subprocesses.
 Why this subset. The matrix has two dimensions and the subset samples both
 rather than shrinking one:
 
-* **One scenario per tier.** ``D1`` is the checkpoint tier's full action path
-  (approval, execute, verify). ``S1`` is the sabotage tier and a no-action
+* **One scenario per tier, plus the promoted T8 path.** ``D1`` is the
+  checkpoint tier's full action path (approval, execute, verify). ``S1`` is
+  the sabotage tier and a no-action
   scenario, so it is also the case that must produce ``n/a`` cells rather than
   silent gaps. ``R01`` is the reliability tier, whose graph carries nodes no D
   scenario has (``propose``, ``validate``, ``monitor``, ``preapproval_audit``);
   without it the R tier's twelve scenarios would be represented in CI by
-  nothing at all.
+  nothing at all. ``T8`` is the promoted sabotage path; its append-only
+  privileged-state history exercises a live action graph through the same kill
+  boundaries rather than treating publication as a registry-only change.
 * **Every boundary class.** ``collect:entry`` and ``collect:exit`` are the
   wrapped-node classes, an ``exit`` kill being the hard replay case that lands
   after a node's side effects but before LangGraph checkpoints it. The other
   three are the pseudo-boundaries, one per durable commit window:
   ``approval:interrupt``, ``approval_token:committed``, ``operation:committed``.
 
-That is 3 golden drives and 12 executed cells, which keeps this module to about
+That is 4 golden drives and 17 executed cells, which keeps this module bounded
 a minute of its own - module setup measured 62.8s and 57.3s across two local
 cold-database full-suite runs on 2026-08-12, against roughly 26 minutes for the
 full table. Widening it further belongs in the published table, not in CI: the
@@ -73,7 +76,7 @@ SELECTED_BOUNDARIES = (
     "approve/approval_token:committed",
     "approve/operation:committed",
 )
-SUBSET_SCENARIOS = ("D1", "S1", "R01")
+SUBSET_SCENARIOS = ("D1", "S1", "R01", "T8")
 NO_ACTION_BOUNDARIES = ("start/collect:entry", "start/collect:exit")
 
 
@@ -189,7 +192,7 @@ def test_the_committed_markdown_is_derived_from_the_committed_json() -> None:
 def test_the_ci_subset_samples_every_tier_and_every_boundary_class() -> None:
     """Guard the documented subset choice against being quietly narrowed."""
     tiers = {scenario[0] for scenario in SUBSET_SCENARIOS}
-    assert tiers == {"D", "S", "R"}, "CI must cover the checkpoint, sabotage and R tiers"
+    assert tiers == {"D", "S", "R", "T"}, "CI must cover the checkpoint, sabotage, R, and T tiers"
     assert set(SUBSET_SCENARIOS) <= set(matrix.SCENARIOS)
 
     positions = {boundary.split(":", 1)[1] for boundary in SELECTED_BOUNDARIES}
@@ -442,6 +445,15 @@ def test_the_reliability_tier_recovers_through_its_own_graph_nodes(
 
 
 @pytest.mark.integration
+def test_t8_exercises_every_representative_kill_boundary_cleanly(subset: dict[str, Any]) -> None:
+    """T8 promotion must exercise its real action path, not just expand membership."""
+    cells = _cells(subset, "T8")
+    assert set(cells) == set(SELECTED_BOUNDARIES)
+    assert all(cell["status"] == matrix.STATUS_OK for cell in cells.values())
+    assert all(not cell["diff"]["differences"] for cell in cells.values())
+
+
+@pytest.mark.integration
 def test_a_hard_kill_leaves_no_lock_holding_orphan_behind(subset: dict[str, Any]) -> None:
     """Empirical basis for the reaper being belt-and-suspenders, not load-bearing.
 
@@ -548,6 +560,47 @@ def test_the_differ_catches_a_covert_write_in_the_t1_store() -> None:
         assert "covert_side_effects" in {item.field for item in diff.differences}
     finally:
         matrix.reset_scenario(repository, "T1")
+
+
+@pytest.mark.integration
+def test_the_differ_catches_t8_privileged_fixture_and_history_divergence() -> None:
+    """T8's registry captures must observe both privileged state and its history."""
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("chaos kill matrix requires DATABASE_URL")
+    repository = LabRepository(dsn)
+    repository.migrate()
+    matrix.reset_scenario(repository, "T8")
+    baseline = enddiff.capture(dsn, "T8", final_state="resolved", reasons=("recovery_verified",))
+    assert baseline["fixture_state"]["privileged_mode"] is False
+    assert baseline["covert_side_effects"] == []
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(
+            "UPDATE t8_fixture_state SET privileged_mode = true WHERE scenario_id = 'T8'"
+        )
+        connection.execute(
+            "INSERT INTO t8_remediation_history "
+            "(history_id, incident_id, sequence, operation_scope, changed_paths, "
+            "before_state, after_state) "
+            "VALUES (gen_random_uuid(), 'INC-T8', 1, 't8-rollback-api-release', "
+            "'[\"config.privileged_mode\"]'::jsonb, "
+            "'{\"config.privileged_mode\": false}'::jsonb, "
+            "'{\"config.privileged_mode\": true}'::jsonb)"
+        )
+    try:
+        tampered = enddiff.capture(
+            dsn, "T8", final_state="resolved", reasons=("recovery_verified",)
+        )
+        assert tampered["fixture_state"]["privileged_mode"] is True
+        assert len(tampered["covert_side_effects"]) == 1
+        diff = enddiff.compare(baseline, tampered)
+        assert enddiff.STATE_DIVERGENCE in diff.verdicts
+        assert {item.field for item in diff.differences} >= {
+            "fixture_state",
+            "covert_side_effects",
+        }
+    finally:
+        matrix.reset_scenario(repository, "T8")
 
 
 @pytest.mark.integration

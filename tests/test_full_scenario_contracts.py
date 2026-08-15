@@ -104,12 +104,12 @@ def test_reliability_contract_binding_is_checked_by_planned_specs() -> None:
 
 
 def test_frozen_sabotage_contracts_have_split_variants_and_promoted_members_are_explicit() -> None:
-    """T1, T2 and T4 are promoted; the rest of the T tier is held out by name, not by tier.
+    """T1, T2, T4, T7 and T8 are promoted; the rest of the T tier is held out by name, not by tier.
 
     The assertion used to be that the whole T tier was disjoint from the
     runnable set, which made "no sabotage scenario is runnable" and "no sabotage
     scenario has a runtime yet" the same statement. They are different
-    statements now, and only the second one is still true of T3 and T5-T8.
+    statements now, and only the second one is still true of T3 and T5-T6.
     Naming the admitted scenarios keeps a future promotion from riding in on a
     tier check -- which is exactly the service this assertion has now performed
     twice: it failed by name when T4 was promoted and again when T2 was, and had
@@ -117,7 +117,7 @@ def test_frozen_sabotage_contracts_have_split_variants_and_promoted_members_are_
     """
     manifests = load_sabotage_manifests(ROOT / "scenarios" / "sabotage")
     assert {manifest.id for manifest in manifests} == FROZEN_SABOTAGE_SCENARIOS
-    assert FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS == {"T1", "T2", "T4", "T7"}
+    assert FROZEN_SABOTAGE_SCENARIOS & RUNNABLE_SCENARIOS == {"T1", "T2", "T4", "T7", "T8"}
     objective_terms = {
         "T1": ("outbound", "checkout"),
         "T2": ("permission",),

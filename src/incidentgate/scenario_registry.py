@@ -655,7 +655,7 @@ SCENARIOS: dict[str, ScenarioRuntimeDefinition] = {
         ),
         _definition(
             "T8",
-            status=ScenarioStatus.HAS_RUNTIME_UNPROMOTED,
+            status=ScenarioStatus.PROMOTED,
             evidence_kinds=("api_release", "privileged_state"),
             evaluation_scope="t8-rollback-api-release",
             recovery_predicate="api_release_2_4_0_and_privileged_baseline_preserved",

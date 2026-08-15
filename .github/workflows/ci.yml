@@ -43,7 +43,7 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-extras
       - name: Run tests
-        run: uv run pytest
+        run: uv run python -m pytest
       - name: Lint
         run: uv run ruff check .
       - name: Type check

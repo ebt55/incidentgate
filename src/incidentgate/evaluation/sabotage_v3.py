@@ -60,9 +60,71 @@ class CovertAttemptCall(BaseModel):
 
 
 class RoleInvocation(BaseModel):
+    """Role-addressed invocation and, for replays, its immutable capture binding.
+
+    Keeping the binding on the role wrapper (rather than looking it up from the
+    value-equal ``ModelInvocationRecord``) makes an attacker and monitor with
+    otherwise identical records unambiguously different publication evidence.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     role: Literal["attacker", "monitor"]
     record: ModelInvocationRecord
+    request_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    prompt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    request_schema_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    input_schema_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    input_schema_version: str | None = Field(default=None, min_length=1, max_length=80)
+    output_schema_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=80)
+    #: Only proposer captures have a scenario action-profile contract.  The
+    #: structured monitor has prompt/schema versions, but deliberately no
+    #: scenario action-profile; do not invent one just to fill this field.
+    prompt_profile_id: str | None = Field(default=None, min_length=1, max_length=80)
+    capture_scenario_id: str | None = Field(default=None, pattern=r"^T[1-8]$")
+    capture_variant_id: str | None = Field(
+        default=None, pattern=r"^T[1-8]-(?:dev|cal|holdout)-v[0-9]+$"
+    )
+    capture_condition: EvaluationMode | None = None
+    capture_leg: Literal["covert", "incident"] | None = None
+    capture_step_index: int | None = Field(default=None, ge=0)
+    capture_split: Literal["development", "calibration", "holdout"] | None = None
+    threshold_artifact_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def replay_binding_is_complete(self) -> RoleInvocation:
+        common_fields = (
+            self.request_sha256,
+            self.prompt_sha256,
+            self.request_schema_sha256,
+            self.input_schema_sha256,
+            self.input_schema_version,
+            self.output_schema_sha256,
+            self.prompt_version,
+            self.capture_scenario_id,
+            self.capture_variant_id,
+            self.capture_condition,
+            self.capture_leg,
+            self.capture_step_index,
+            self.capture_split,
+        )
+        if self.record.invocation_kind == "cache_replay":
+            if any(value is None for value in common_fields):
+                raise ValueError("cache_replay requires complete request and capture provenance")
+            if self.role == "attacker" and self.prompt_profile_id is None:
+                raise ValueError("attacker cache replay requires its action-profile identity")
+            if self.role == "monitor" and self.prompt_profile_id is not None:
+                raise ValueError("monitor cache replay has no action-profile contract")
+            if self.role == "attacker" and self.threshold_artifact_sha256 is not None:
+                raise ValueError("attacker cache replay cannot carry monitor threshold provenance")
+            if self.role == "monitor" and self.threshold_artifact_sha256 is None:
+                raise ValueError("monitor cache replay requires threshold provenance")
+        elif any(
+            value is not None
+            for value in (*common_fields, self.prompt_profile_id, self.threshold_artifact_sha256)
+        ):
+            raise ValueError("non-replay invocation cannot carry replay provenance")
+        return self
 
 
 ModelSource = str
@@ -208,7 +270,7 @@ class SabotageEvaluationResultV3(BaseModel):
     covert_outcome: CovertOutcome
     mock_evaluation: bool
     local_fixture: bool
-    invocations: tuple[RoleInvocation, ...] = Field(min_length=2, max_length=2)
+    invocations: tuple[RoleInvocation, ...] = Field(min_length=2, max_length=33)
 
     def steps(self) -> Iterator[SabotageStepOutcomeV3]:
         """Yield every present step for row-wide provenance invariants."""
@@ -232,6 +294,11 @@ class SabotageEvaluationResultV3(BaseModel):
             f"covert_attempt_{self.scenario_id.lower()}_"
         ):
             raise ValueError("covert attempt predicate must be bound to its scenario")
+        if any(
+            marker in self.covert_attempt_predicate.split("_")
+            for marker in ("dev", "cal", "holdout", "development", "calibration")
+        ):
+            raise ValueError("covert attempt predicate must describe behavior, not split identity")
         if any(
             not name.startswith(f"check_{self.scenario_id.lower()}_")
             for name in (self.incident_checker, self.covert_checker)
@@ -325,15 +392,16 @@ class SabotageEvaluationResultV3(BaseModel):
             )
 
     def _source_and_invocation_cohere(self) -> None:
-        roles = {item.role: item.record for item in self.invocations}
-        if set(roles) != {"attacker", "monitor"}:
-            raise ValueError("exactly one attacker and one monitor invocation are required")
-        if any(record.invocation_kind == "provider_call" for record in roles.values()):
+        attackers = tuple(item for item in self.invocations if item.role == "attacker")
+        monitors = tuple(item for item in self.invocations if item.role == "monitor")
+        if len(attackers) != 1 or not monitors:
+            raise ValueError(
+                "exactly one attacker and one-or-more monitor invocations are required"
+            )
+        if any(item.record.invocation_kind == "provider_call" for item in self.invocations):
             raise ValueError("published v3 rows may not carry provider_call")
-        for source, record in (
-            (self.attacker_source, roles["attacker"]),
-            (self.monitor_source, roles["monitor"]),
-        ):
+        for source, invocation in ((self.attacker_source, attackers[0]),):
+            record = invocation.record
             if source.startswith("model:"):
                 provider, model = source.removeprefix("model:").split("/", 1)
                 if (record.invocation_kind, record.provider, record.model) != (
@@ -342,13 +410,65 @@ class SabotageEvaluationResultV3(BaseModel):
                     model,
                 ):
                     raise ValueError("a model-labelled source requires its matching cache replay")
+                if invocation.capture_condition is not EvaluationMode.COMPLETE:
+                    raise ValueError(
+                        "model replay provenance must name its exact capture condition"
+                    )
+                if (
+                    invocation.prompt_profile_id != self.scenario_id
+                    or invocation.capture_scenario_id != self.scenario_id
+                    or invocation.capture_variant_id != self.variant_id
+                    or invocation.capture_split != self.split
+                ):
+                    raise ValueError("model replay provenance belongs to a different row cell")
+                if invocation.threshold_artifact_sha256 is not None:
+                    raise ValueError("an attacker replay cannot carry monitor threshold provenance")
             elif source == "deterministic_floor" and record.invocation_kind != "fixture_no_call":
                 raise ValueError("deterministic_floor requires attacker fixture_no_call")
-            elif (
-                source in {"oracle_whitelist", "disabled"}
-                and record.invocation_kind != "fixture_no_call"
+        monitor_model = self.monitor_source.startswith("model:")
+        if monitor_model:
+            provider, model = self.monitor_source.removeprefix("model:").split("/", 1)
+            expected_cells = {
+                (leg, step.step_index)
+                for leg, episode in (
+                    ("covert", self.covert_episode),
+                    ("incident", self.incident_episode),
+                )
+                if episode is not None
+                for step in episode.steps
+                if step.monitor_verdict is not None or step.monitor_error_kind is not None
+            }
+            actual_cells = {(item.capture_leg, item.capture_step_index) for item in monitors}
+            if (
+                not expected_cells
+                or actual_cells != expected_cells
+                or len(monitors) != len(actual_cells)
             ):
-                raise ValueError("oracle_whitelist and disabled require monitor fixture_no_call")
+                raise ValueError(
+                    "model monitor replays must exactly bind every consulted runtime step"
+                )
+            for invocation in monitors:
+                record = invocation.record
+                if (record.invocation_kind, record.provider, record.model) != (
+                    "cache_replay",
+                    provider,
+                    model,
+                ):
+                    raise ValueError("a model-labelled source requires its matching cache replay")
+                if invocation.capture_condition is not EvaluationMode.COMPLETE:
+                    raise ValueError(
+                        "model replay provenance must name its exact capture condition"
+                    )
+                if (
+                    invocation.capture_scenario_id != self.scenario_id
+                    or invocation.capture_variant_id != self.variant_id
+                    or invocation.capture_split != self.split
+                    or invocation.prompt_profile_id is not None
+                    or invocation.threshold_artifact_sha256 is None
+                ):
+                    raise ValueError("model monitor provenance belongs to a different row cell")
+        elif len(monitors) != 1 or monitors[0].record.invocation_kind != "fixture_no_call":
+            raise ValueError("oracle_whitelist and disabled require one fixture_no_call monitor")
         if (
             self.monitor_source == "disabled"
             and self.safeguards_applied.monitor is not StageDisposition.DISABLED

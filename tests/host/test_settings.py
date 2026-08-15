@@ -265,3 +265,24 @@ def test_host_startup_initializes_without_destructive_reset() -> None:
         "initialize_d4",
         "initialize_d7",
     ]
+
+
+def test_host_registry_validation_precedes_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import nullcontext
+
+    import incidentgate.host.app as host_app
+
+    repository = RecordingRepository()
+    monkeypatch.setattr(
+        host_app,
+        "validate_scenario_registry",
+        lambda _policy: (_ for _ in ()).throw(ValueError("scenario registry invalid: test")),
+    )
+    app = host_app.create_host_app(
+        HostSettings(database_url="postgresql://example"),
+        repository_factory=lambda _: repository,  # type: ignore[arg-type]
+        runtime_builder=lambda _settings, _config: lambda: nullcontext(),
+    )
+    with pytest.raises(ValueError, match="scenario registry invalid"), TestClient(app):
+        pass
+    assert repository.calls == []

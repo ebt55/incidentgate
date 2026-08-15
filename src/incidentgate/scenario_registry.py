@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from incidentgate.contracts import PolicyConfiguration
 from incidentgate.reasons import (
     AMBIGUOUS_EVIDENCE_HUMAN_REVIEW_RECOMMENDED,
     DNS_NXDOMAIN_NETWORK_OWNER_REQUIRED,
@@ -713,6 +714,97 @@ def operation_spec_by_tool() -> dict[str, Any]:
 def scope_by_tool() -> dict[str, str]:
     """The ledger namespace each tool name commits into."""
     return {tool: spec.operation_scope for tool, spec in operation_spec_by_tool().items()}
+
+
+def validate_scenario_registry(policy: PolicyConfiguration) -> None:
+    """Reject a registry/policy disagreement before a host prepares fixtures.
+
+    Operation specs intentionally remain lazy at module import: they carry SQL
+    and live beside the database driver.  Validation is the one explicit
+    composition boundary that forces them, after the host has loaded its policy.
+    """
+    from incidentgate.lab.repository import registered_operation_specs
+
+    declared_scopes: set[str] = set()
+    declared_tools: set[str] = set()
+    for key, definition in SCENARIOS.items():
+        if key != definition.scenario_id:
+            raise ValueError("scenario registry invalid: mapping key does not match scenario id")
+        if definition.incident_id != f"INC-{definition.scenario_id}":
+            raise ValueError("scenario registry invalid: incident does not match scenario id")
+
+        operations = definition.operations()
+        if definition.status is ScenarioStatus.FROZEN_CONTRACT_ONLY:
+            if (
+                operations
+                or definition.proposer is not None
+                or definition.fixture_capture is not None
+                or definition.evaluation_scope is not None
+                or definition.recovery_predicate is not None
+                or definition.recovery_evidence_kinds
+            ):
+                raise ValueError(
+                    "scenario registry invalid: frozen scenario declares runtime facts"
+                )
+            continue
+
+        if definition.status is ScenarioStatus.PROMOTED and definition.fixture_capture is None:
+            raise ValueError("scenario registry invalid: promoted scenario has no fixture capture")
+        if definition.scenario_id in FROZEN_SABOTAGE_SCENARIOS and (
+            definition.status is ScenarioStatus.PROMOTED and definition.covert_capture is None
+        ):
+            raise ValueError(
+                "scenario registry invalid: promoted sabotage scenario has no covert capture"
+            )
+
+        if definition.episode_policy is EpisodePolicy.NO_ACTION:
+            if (
+                operations
+                or definition.proposer is not None
+                or definition.evaluation_scope is not None
+                or definition.recovery_predicate is not None
+                or definition.recovery_evidence_kinds
+            ):
+                raise ValueError(
+                    "scenario registry invalid: no-action scenario declares action facts"
+                )
+            continue
+
+        if not operations:
+            raise ValueError("scenario registry invalid: action scenario has no operations")
+        if (
+            definition.evaluation_scope is None
+            or definition.evaluation_scope not in {spec.operation_scope for spec in operations}
+            or definition.proposer is None
+            or not definition.evidence_kinds
+            or not definition.allowed_evidence_sources
+            or definition.recovery_predicate is None
+            or not definition.recovery_evidence_kinds
+        ):
+            raise ValueError("scenario registry invalid: action scenario is incomplete")
+        for spec in operations:
+            if (
+                spec.scenario_id != definition.scenario_id
+                or spec.incident_id != definition.incident_id
+            ):
+                raise ValueError(
+                    "scenario registry invalid: operation does not match scenario identity"
+                )
+            if spec.operation_scope in declared_scopes:
+                raise ValueError("scenario registry invalid: operation scope is duplicated")
+            declared_scopes.add(spec.operation_scope)
+            declared_tools.add(spec.tool_name)
+
+    registered = registered_operation_specs()
+    if declared_scopes != {spec.operation_scope for spec in registered}:
+        raise ValueError("scenario registry invalid: registered operation is not declared")
+    if declared_tools != set(policy.tools):
+        raise ValueError("scenario registry invalid: policy tools do not match operations")
+    for spec in registered:
+        if policy.tools[spec.tool_name].permission != spec.required_permission:
+            raise ValueError(
+                "scenario registry invalid: policy permission does not match operation"
+            )
 
 
 def is_runnable(value: str) -> bool:

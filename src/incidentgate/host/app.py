@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
@@ -11,7 +12,12 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from incidentgate.contracts import IncidentIdentity, IncidentState, MonitorVerdict
+from incidentgate.contracts import (
+    IncidentIdentity,
+    IncidentState,
+    MonitorVerdict,
+    PolicyConfiguration,
+)
 from incidentgate.control import (
     AnthropicAdvisoryMonitor,
     FixtureMonitor,
@@ -23,7 +29,7 @@ from incidentgate.control.ports import ProposalGenerator
 from incidentgate.control.response_cache import CacheBackedCompletionClient, ResponseCache
 from incidentgate.integration import IncidentRuntime
 from incidentgate.lab.repository import LabRepository
-from incidentgate.scenario_registry import RUNNABLE_SCENARIOS
+from incidentgate.scenario_registry import RUNNABLE_SCENARIOS, validate_scenario_registry
 from incidentgate.telemetry import TelemetryConfig
 from incidentgate.ui import create_ui_app
 
@@ -256,6 +262,10 @@ def create_host_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        policy = PolicyConfiguration.model_validate(
+            json.loads((Path(__file__).parents[3] / "config" / "policy.example.json").read_text())
+        )
+        validate_scenario_registry(policy)
         repository.migrate()
         repository.initialize_d1_if_absent()
         # No-action fixtures are initialized lazily by their explicit prepare

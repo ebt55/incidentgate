@@ -24,6 +24,7 @@ are, with the finding named. That is the honest form -- see
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
@@ -46,6 +47,7 @@ from incidentgate.scenario_registry import (
     ScenarioStatus,
     operation_spec_by_tool,
     scope_by_tool,
+    validate_scenario_registry,
 )
 
 PROMOTED = sorted(
@@ -56,11 +58,14 @@ PROMOTED = sorted(
 ACTING = sorted(ACTION_TAKING_SCENARIOS)
 
 
-def _policy_tools() -> set[str]:
-    config = PolicyConfiguration.model_validate(
+def _policy() -> PolicyConfiguration:
+    return PolicyConfiguration.model_validate(
         json.loads((Path(__file__).parents[1] / "config" / "policy.example.json").read_text())
     )
-    return set(config.tools)
+
+
+def _policy_tools() -> set[str]:
+    return set(_policy().tools)
 
 
 def _protocol_capabilities() -> set[str]:
@@ -95,6 +100,50 @@ def test_the_registry_names_exactly_the_methods_the_repository_protocol_declares
     """``lab/service.py``'s structural contract, checked as a set rather than by type."""
     expected = {spec.tool_name.removeprefix("operations.") for spec in registered_operation_specs()}
     assert expected == _protocol_capabilities()
+
+
+def test_the_current_registry_is_complete_against_the_loaded_policy() -> None:
+    validate_scenario_registry(_policy())
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "definition"),
+    (
+        ("D1", lambda: replace(SCENARIOS["D1"], evaluation_scope=None)),
+        (
+            "D1",
+            lambda: replace(
+                SCENARIOS["D1"], evidence_kinds=(), allowed_evidence_sources=frozenset()
+            ),
+        ),
+        ("S1", lambda: replace(SCENARIOS["S1"], proposer="DeterministicD1Proposer")),
+        ("D1", lambda: replace(SCENARIOS["D1"], incident_id="INC-OTHER")),
+    ),
+    ids=("partial-action", "missing-action-evidence", "malformed-no-action", "incident-mismatch"),
+)
+def test_partial_runtime_definitions_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, scenario_id: str, definition: Any
+) -> None:
+    monkeypatch.setitem(SCENARIOS, scenario_id, definition())
+    with pytest.raises(ValueError, match="scenario registry invalid"):
+        validate_scenario_registry(_policy())
+
+
+@pytest.mark.parametrize("mismatch", ("tool", "permission"))
+def test_policy_capability_mismatches_fail_closed(mismatch: str) -> None:
+    policy = _policy()
+    if mismatch == "tool":
+        tools = dict(policy.tools)
+        tools.pop("operations.rollback")
+    else:
+        tools = {
+            **policy.tools,
+            "operations.rollback": policy.tools["operations.rollback"].model_copy(
+                update={"permission": "operations:read"}
+            ),
+        }
+    with pytest.raises(ValueError, match="scenario registry invalid"):
+        validate_scenario_registry(policy.model_copy(update={"tools": tools}))
 
 
 # ---------------------------------------------------------------------------

@@ -93,6 +93,7 @@ PROBE_SPEC = OperationSpec(
     # evidence surface costs.
     incident_id="INC-D1",
     tool_name="operations.rollback",
+    required_permission="operations:write",
     arguments_type=RollbackArgs,
     validate_arguments=lambda action: None,
     fixture_lock_sql=f"SELECT * FROM {PROBE_TABLE} WHERE scenario_id='PROBE' FOR UPDATE",

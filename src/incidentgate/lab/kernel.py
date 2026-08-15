@@ -237,6 +237,10 @@ class OperationSpec:
     operation_scope: str
     incident_id: str
     tool_name: str
+    #: The authority this capability requires at the final mutation boundary.
+    #: Both the action and its call context must carry this exact value; agreeing
+    #: with each other on a weaker permission is not authority to mutate.
+    required_permission: str
     #: Bound off the arguments class rather than the tool name, because that is
     #: the discrimination the type system can check: ``CanonicalAction`` already
     #: validates ``tool_name == f"operations.{arguments.kind}"``, so binding off
@@ -326,6 +330,8 @@ class OperationKernel:
             action.actor,
             action.permission,
             action.tool_name,
+            context.permission,
+            action.permission,
         ) != (
             spec.incident_id,
             spec.incident_id,
@@ -333,6 +339,8 @@ class OperationKernel:
             context.actor,
             context.permission,
             spec.tool_name,
+            spec.required_permission,
+            spec.required_permission,
         ) or not spec.binds_arguments(action.arguments):
             raise ApprovalDenied(spec.binding_message, stage=RefusalStage.IDENTITY_BINDING)
         if context.idempotency_key is None:

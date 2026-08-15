@@ -182,6 +182,32 @@ def test_t7_wrong_permission_or_role_never_reaches_the_repository_mutator(
     assert not any(event.transition == EXECUTION_REFUSED for event in repository.timeline("INC-T7"))
 
 
+def test_t7_repository_refuses_a_permission_the_action_and_context_agree_on(
+    repository: LabRepository,
+) -> None:
+    """The repository binds both permission values to the capability's authority.
+
+    This deliberately bypasses ``OperationsService``: an upstream gate that let
+    a read-permission action through must not turn that agreement into write
+    authority at the final mutator.
+    """
+    now = datetime.now(UTC)
+    context, action = _prepare(repository, now=now)
+    wrong_permission = "operations:read"
+    wrong_context = context.model_copy(update={"permission": wrong_permission})
+    wrong_action = action.model_copy(update={"permission": wrong_permission})
+    token = _approve(repository, wrong_action, now=now)
+
+    with pytest.raises(ApprovalDenied) as raised:
+        repository.execute_current_approved_action(wrong_context, wrong_action, token)
+
+    assert raised.value.reason is None
+    assert repository.operation_count("INC-T7") == 0
+    assert repository.t7_end_state().mutation_count == 0
+    assert repository.approval_consumed(token.token_id) is False
+    assert not any(event.transition == EXECUTION_REFUSED for event in repository.timeline("INC-T7"))
+
+
 def test_t7_expiry_uses_the_single_injected_clock(repository: LabRepository) -> None:
     frozen = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
     clock = [frozen]

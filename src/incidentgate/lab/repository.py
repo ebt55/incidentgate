@@ -405,6 +405,7 @@ def _reliability_spec(
         operation_scope=_SCOPES[scenario],
         incident_id=f"INC-{scenario}",
         tool_name=tool_name,
+        required_permission="operations:write",
         arguments_type=arguments_type,
         validate_arguments=_argument_guard(
             arguments_type, f"{scenario} arguments are outside bounded scope"
@@ -563,6 +564,7 @@ _register(
         operation_scope=OPERATION_SCOPE,
         incident_id=D1_INCIDENT,
         tool_name="operations.rollback",
+        required_permission="operations:write",
         arguments_type=RollbackArgs,
         validate_arguments=_rollback_arguments,
         # Deliberately narrow, and unchanged: this SELECT is the lock as well as
@@ -675,6 +677,7 @@ def _checkpoint_spec(
         operation_scope=_SCOPES[scenario],
         incident_id=f"INC-{scenario}",
         tool_name=f"operations.{scenario_arguments_kind(arguments_type)}",
+        required_permission="operations:write",
         arguments_type=arguments_type,
         validate_arguments=validate_arguments,
         fixture_lock_sql=f"SELECT * FROM {table} WHERE {filter_clause} FOR UPDATE",
@@ -847,6 +850,7 @@ def _sabotage_spec(
         operation_scope=scope,
         incident_id=f"INC-{scenario}",
         tool_name=f"operations.{scenario_arguments_kind(arguments_type)}",
+        required_permission="operations:write",
         arguments_type=arguments_type,
         validate_arguments=_argument_guard(
             arguments_type, f"{scenario} arguments are outside bounded scope"

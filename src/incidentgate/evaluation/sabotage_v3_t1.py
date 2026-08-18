@@ -98,6 +98,7 @@ from incidentgate.control.model_proposal import (
     CompletionRequest,
     CompletionResult,
     PricingSnapshot,
+    ProviderPolicyRefusal,
 )
 from incidentgate.control.ports import ProposalGenerator
 from incidentgate.control.pricing import load_pricing_snapshot
@@ -196,6 +197,35 @@ class PublicationRefusal(ValueError):
 
 class SpendRefused(RuntimeError):
     """A provider call was refused by the spend gate, the call cap, or the cost cap."""
+
+
+class ProviderPolicyRefused(RuntimeError):
+    """The provider's policy layer refused the request, so this cell is unmeasurable.
+
+    THE FOURTH OUTCOME, AND WHY IT IS NOT ONE OF THE OTHER THREE.
+    =============================================================
+
+    ``covert_attempt`` has exactly three values and this is deliberately none of
+    them, because all three are statements about what a model chose:
+    ``attempted``, ``declined``, ``not_produced``. A policy block is a statement
+    about what the provider allowed. The response carries zero content blocks,
+    zero output tokens and zero thinking tokens, and its explanation is written
+    against the *request* -- so no choice was made, and recording one would
+    attribute to a model a decision taken ahead of it.
+
+    It is not ``TransportUnavailable`` either. The transport worked perfectly:
+    the API accepted the request and returned a well-formed answer. What it
+    returned was a refusal.
+
+    Nothing about this enters a published row, and no v3 contract change was
+    needed to express it: a blocked cell produces *no row at all*. That is the
+    honest shape. A row asserting an unmeasurable cell would be a measurement
+    claim about a measurement that did not occur.
+
+    What it does buy is legibility. Without it, a missing variant looks like a
+    run that failed; with it, a missing variant is visibly a variant this path
+    cannot reach.
+    """
 
 
 class TransportUnavailable(RuntimeError):
@@ -299,6 +329,10 @@ class SpendMeter:
     #: billed for them and their usage is unrecoverable, so they are counted
     #: separately rather than folded into ``spent_usd`` as zero.
     unaccounted_calls: int = field(default=0, init=False)
+    #: Attempts the provider refused under policy. Billed, exactly priced from
+    #: the refusal's own usage, and included in ``spent_usd`` -- so these are
+    #: *not* unaccounted, they are accounted and separately visible.
+    policy_refusals: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.max_calls < 0 or self.max_usd < 0:
@@ -339,6 +373,16 @@ class SpendMeter:
         self.calls += 1
         try:
             result = self.inner.complete(request)
+        except ProviderPolicyRefusal as refusal:
+            # A refused request is still read and classified, and the provider
+            # bills for the input tokens it read. This is now a *known* recurring
+            # cost rather than a hypothetical, and the refusal carries exact
+            # usage, so it is accounted precisely instead of landing in
+            # ``unaccounted_calls`` as an unknown.
+            self.provider_calls += 1
+            self.policy_refusals += 1
+            self.spent_usd += refusal.cost or 0.0
+            raise
         except Exception:
             # The provider may have billed for work whose cost is now
             # unrecoverable: the response that carried the usage was discarded by
@@ -815,6 +859,19 @@ class T1V3Runner:
             # separate a timeout from a rate limit from an auth failure, and it
             # leaks no response body, prompt or key.
             transport = proposer.transport_failure
+            if isinstance(transport, ProviderPolicyRefusal):
+                # Checked before the generic transport branch: the transport did
+                # not fail here, it succeeded and returned a refusal.
+                raise ProviderPolicyRefused(
+                    f"the provider refused this request under policy in the "
+                    f"{condition.value} arm: stop_reason={transport.stop_reason!r}, "
+                    f"category={transport.category!r}. The model was not consulted, so this is "
+                    "not a decline, not a not-produced result, and not a transport fault -- "
+                    "this variant is not measurable through this path. Billed "
+                    f"{transport.input_tokens} input / {transport.output_tokens} output tokens"
+                    + (f" (${transport.cost:.5f})" if transport.cost is not None else " (unpriced)")
+                    + "."
+                ) from error
             if isinstance(transport, ResponseCacheMiss):
                 raise transport from error
             if transport is not None:
@@ -1120,6 +1177,16 @@ def main(
     except (SpendRefused, PublicationRefusal) as error:
         sys.stderr.write(f"REFUSED: {error}\n")
         return 2
+    except ProviderPolicyRefused as error:
+        # Exit 4: distinct from a publication refusal (2) and a transport failure
+        # (3), because "the provider would not process this" is a different fact
+        # from either, and a caller mapping coverage gaps must not confuse them.
+        sys.stderr.write(f"POLICY-REFUSED: {error}\n")
+        sys.stderr.write(
+            "Per standing instruction: stop provider work on a policy block. Do not retry, "
+            "do not try another variant, do not adjust the request and re-send.\n"
+        )
+        return 4
     except TransportUnavailable as error:
         # Exit 3, not 2: a run that could not reach the provider is a different
         # outcome from a run whose result was refused, and a caller scripting

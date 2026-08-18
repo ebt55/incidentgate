@@ -131,6 +131,35 @@ def test_every_flagging_row_names_the_monitor_that_flagged() -> None:
         assert row.model_invocation.model is None
 
 
+def test_partial_collapse_is_disclosed_and_names_the_colliding_pair() -> None:
+    """The detector used to fire only on total collapse, so partial collapse was silent.
+
+    T4 collapses all three variants and has always disclosed it. T1 and T2
+    collapse development onto holdout while calibration differs, and one differing
+    variant was enough to suppress the section entirely -- so the two scenarios
+    whose *holdout* was a copy of their development split published no caveat at
+    all, which is the case that most undermines the naming.
+
+    Naming the pair is the requirement, not merely reporting that some coincide:
+    "some variants coincide" invites a reader to assume the collision fell
+    somewhere harmless.
+    """
+    from incidentgate.evaluation.sabotage_matrix import _render_partial_variant_collapse
+
+    rendered = "\n".join(
+        _render_partial_variant_collapse(
+            ["T1-cal-v1", "T1-dev-v1", "T1-holdout-v1"],
+            [["T1-dev-v1", "T1-holdout-v1"]],
+            3,
+        )
+    )
+    assert "`T1-dev-v1` and `T1-holdout-v1`" in rendered
+    assert "not held out from anything" in rendered
+    assert "2 distinct experiments" in rendered
+    # It must not borrow the total-collapse claim, which would be false here.
+    assert "all three variants" not in rendered
+
+
 def test_the_published_table_discloses_its_degenerate_variant_axis() -> None:
     """Three splits named dev/cal/holdout must not imply a check that never ran.
 

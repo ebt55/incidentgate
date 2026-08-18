@@ -396,6 +396,73 @@ class PricingSnapshot:
         return model in self.input_usd_per_token and model in self.output_usd_per_token
 
 
+class ProviderPolicyRefusal(Exception):
+    """The provider refused the request under policy. The model was not consulted.
+
+    WHY THIS IS NOT A ValueError, A ProposalError, OR A MODEL OBSERVATION
+    ====================================================================
+
+    Anthropic can answer a request with ``stop_reason="refusal"`` and a
+    ``stop_details`` block naming the policy category. That is a well-formed
+    response carrying a decision, and it is none of the things this codebase
+    previously had a slot for:
+
+    * not a transport fault -- the API accepted the request and answered it;
+    * not a truncation -- ``max_tokens`` is handled separately and still is;
+    * not a malformed body -- the body is empty *by design*, not by accident;
+    * and above all **not a decline**. A decline means the model understood the
+      task and chose otherwise. Here the refusal is raised against the *request*,
+      the response carries zero content, zero output tokens and zero thinking
+      tokens, and there is no evidence the model was consulted at all.
+
+    Collapsing it into ``ValueError("incomplete response")`` is what previously
+    made a documented policy decision indistinguishable from a parse error: three
+    real capture attempts were billed, blocked, and reported as the model
+    producing nothing. The category the provider named never reached a log.
+
+    So the fact survives to the caller, in bounded non-leaking fields, while the
+    gate chain still fails closed: ``ModelAgentProposer`` catches this like any
+    other failure and raises ``ProposalError``, so a blocked request can never
+    become a proposal. Callers that need to tell a policy block apart from an
+    outage recover this exception from the injected-client seam.
+
+    The usage figures are carried because the provider bills for classifying a
+    request it then refuses -- the input tokens are real work -- and a spend meter
+    that dropped them would under-report a *known, recurring* cost.
+    """
+
+    _MAX_TEXT = 400
+
+    def __init__(
+        self,
+        *,
+        stop_reason: str,
+        category: str | None,
+        explanation: str | None,
+        input_tokens: int,
+        output_tokens: int,
+        cost: float | None,
+        currency: str | None,
+        pricing_snapshot: str,
+    ) -> None:
+        # Provider-authored policy text only. The prompt is never included: this
+        # travels into logs and reports, and the request is the one thing that
+        # must not.
+        self.stop_reason = stop_reason[: self._MAX_TEXT]
+        self.category = None if category is None else category[: self._MAX_TEXT]
+        self.explanation = None if explanation is None else explanation[: self._MAX_TEXT]
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cost = cost
+        self.currency = currency
+        self.pricing_snapshot = pricing_snapshot
+        super().__init__(
+            f"provider refused the request under policy "
+            f"(stop_reason={self.stop_reason!r}, category={self.category!r}); "
+            f"the model was not consulted"
+        )
+
+
 class AnthropicCompletionClient:
     """Real transport: bounded, secret-free, structured output against the pinned anthropic SDK."""
 
@@ -434,6 +501,39 @@ class AnthropicCompletionClient:
 
         return Anthropic(api_key=self._api_key, timeout=self._timeout_seconds, max_retries=0)
 
+    def _policy_refusal(
+        self, response: Any, request: CompletionRequest, stop_reason: str
+    ) -> ProviderPolicyRefusal:
+        """Lift a provider policy refusal into a typed fact, usage included.
+
+        The usage is the point as much as the category. A refused request is
+        still classified, and classification bills for the input tokens it read,
+        so a refusal that reported no usage would leave a real and *recurring*
+        cost invisible to every meter downstream. The observed shape is complete
+        usage with ``output_tokens`` of zero, which prices exactly.
+        """
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None)
+        explanation = getattr(details, "explanation", None)
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "input_tokens", None)
+        output_tokens = getattr(usage, "output_tokens", None)
+        input_tokens = input_tokens if isinstance(input_tokens, int) else 0
+        output_tokens = output_tokens if isinstance(output_tokens, int) else 0
+        priced = self._pricing.prices(request.model)
+        return ProviderPolicyRefusal(
+            stop_reason=stop_reason,
+            category=category if isinstance(category, str) else None,
+            explanation=explanation if isinstance(explanation, str) else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=(
+                self._pricing.cost(request.model, input_tokens, output_tokens) if priced else None
+            ),
+            currency=self._pricing.currency if priced else None,
+            pricing_snapshot=self._pricing.snapshot_id,
+        )
+
     def complete(self, request: CompletionRequest) -> CompletionResult:
         kwargs: dict[str, Any] = {
             "model": request.model,
@@ -453,8 +553,17 @@ class AnthropicCompletionClient:
             # budget bug, not a transport or parser failure. Name it distinctly instead of
             # hiding it behind the generic reasons; the string is fixed, so nothing leaks.
             raise ProposalError(PROPOSAL_MODEL_OUTPUT_TRUNCATED)
+        if stop_reason == "refusal":
+            # A policy decision, not a malformed response. See ProviderPolicyRefusal:
+            # this used to fall through to the generic ValueError below, which made a
+            # documented refusal indistinguishable from a parse error and lost the
+            # category the provider named.
+            raise self._policy_refusal(response, request, stop_reason)
         if stop_reason != "end_turn":
-            raise ValueError("incomplete response")
+            # Every other unexpected stop reason still fails closed, but says which one
+            # it was. The value is a short provider enum, so naming it leaks nothing and
+            # is the difference between a diagnosable failure and an opaque one.
+            raise ValueError(f"incomplete response (stop_reason={stop_reason!r})")
         content = getattr(response, "content", None)
         if not isinstance(content, list) or len(content) != 1:
             raise ValueError("non-text response")

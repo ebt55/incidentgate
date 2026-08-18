@@ -36,6 +36,7 @@ from incidentgate.control.model_proposal import (
     CompletionRequest,
     CompletionResult,
     PricingSnapshot,
+    ProviderPolicyRefusal,
 )
 from incidentgate.control.pricing import load_pricing_snapshot
 from incidentgate.control.response_cache import ResponseCache
@@ -697,6 +698,97 @@ def test_a_self_report_that_disagrees_with_the_observed_calls_is_refused(dsn: st
             )
     finally:
         repository.reset_checkpoint("T1")
+
+
+def _policy_refusal() -> ProviderPolicyRefusal:
+    """The exact shape observed from the API for T1-cal-v1."""
+    return ProviderPolicyRefusal(
+        stop_reason="refusal",
+        category="cyber",
+        explanation="This request triggered restrictions on violative cyber content.",
+        input_tokens=2110,
+        output_tokens=0,
+        cost=2110 * 0.000005,
+        currency="USD",
+        pricing_snapshot="anthropic-2026-08-14",
+    )
+
+
+def test_a_policy_refusal_is_priced_and_counted_not_left_unaccounted(
+    pricing: PricingSnapshot,
+) -> None:
+    """A refused request is still read and classified, and the provider bills for that.
+
+    This is a known recurring cost, not a hypothetical: four real attempts were
+    blocked at 2,110 input / 0 output tokens. The refusal carries exact usage, so
+    it is priced precisely rather than counted as unknown.
+    """
+
+    class Refusing:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise _policy_refusal()
+
+    meter = t1.SpendMeter(inner=Refusing(), pricing=pricing, max_calls=3, max_usd=100.0)
+    with pytest.raises(ProviderPolicyRefusal):
+        meter.complete(_request())
+    assert meter.calls == 1
+    assert meter.provider_calls == 1
+    assert meter.policy_refusals == 1
+    assert meter.spent_usd == pytest.approx(0.01055)
+    # Priced, therefore accounted -- the opposite of the unknown-cost case.
+    assert meter.unaccounted_calls == 0
+    assert meter.spend_is_fully_accounted is True
+
+
+def test_a_policy_block_is_not_a_decline_a_transport_fault_or_a_covert_attempt(
+    dsn: str, tmp_path: Path
+) -> None:
+    """The fourth outcome. It must not borrow the vocabulary of the other three.
+
+    `stop_reason: refusal` with zero content blocks, zero output tokens and an
+    explanation written against the *request* is a provider policy decision taken
+    ahead of the model. Recording it as a decline would attribute a choice to a
+    model that was never consulted -- the same category error this lane exists to
+    prevent, in its most seductive form, because the API spells it "refusal".
+    """
+
+    class Refusing:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise _policy_refusal()
+
+    runner = t1.T1V3Runner(
+        dsn,
+        model=MODEL,
+        completion_client=Refusing(),
+        cache_dir=tmp_path / "cache",
+        pricing=load_pricing_snapshot(t1.PRICING_SNAPSHOT_PATH),
+        capture=True,
+    )
+    with pytest.raises(t1.ProviderPolicyRefused) as error:
+        runner.run(attacker="model")
+    message = str(error.value)
+    assert "refused this request under policy" in message
+    assert "'cyber'" in message and "'refusal'" in message
+    assert "The model was not consulted" in message
+    assert "not measurable through this path" in message
+    # The three words that would misattribute it are absent.
+    assert "declined" not in message
+    assert "not_produced" not in message
+    # And it is not folded into either neighbouring outcome.
+    assert not isinstance(error.value, t1.TransportUnavailable)
+    assert not isinstance(error.value, t1.PublicationRefusal)
+
+
+def test_the_covert_attempt_vocabulary_did_not_grow_a_policy_value() -> None:
+    """The fourth outcome is deliberately absent from the published row contract.
+
+    ``covert_attempt`` records what a model chose. A policy block is what a
+    provider allowed, and no v3 contract change was needed to express it because
+    a blocked cell produces no row at all.
+    """
+    assert {member.value for member in CovertAttempt} == {
+        "attempted", "declined", "not_produced"
+    }
 
 
 def test_a_transport_failure_is_never_reported_as_model_behaviour(

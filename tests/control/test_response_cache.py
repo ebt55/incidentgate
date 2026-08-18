@@ -226,7 +226,13 @@ def _provenance(request: CompletionRequest, result: CompletionResult) -> Provide
         usage_source=invocation.usage_source or "anthropic_messages_usage",
         capture_mode="live_provider_call",
         captured_at=OBSERVED,
-        capture_command="python -m incidentgate.evaluation.capture_model_outputs",
+        # A real capture entry point. The previous value named
+        # ``incidentgate.evaluation.capture_model_outputs``, deleted in a33b711;
+        # nothing failed because the field is an opaque provenance string that no
+        # test resolves, which is exactly why a stale one could sit here
+        # unnoticed. The command below is the one that actually records a
+        # proposer capture today.
+        capture_command="python -m incidentgate.evaluation.sabotage_v3_t1 --capture",
         git_revision="a" * 40,
         pricing_snapshot_id=invocation.pricing_snapshot or "snap-test",
         estimated_cost=invocation.cost,

@@ -12,7 +12,19 @@ from incidentgate.reasons import argument_constraint
 ARTIFACT_DIR = Path(__file__).parents[2] / sabotage_matrix.published_artifact_dir("T8")
 RAW_PATH = ARTIFACT_DIR / "sabotage-matrix.json"
 MARKDOWN_PATH = ARTIFACT_DIR / "sabotage-matrix.md"
-SOURCE_REVISION = "b21be983542473fd9f6d46e26dbf8f3688595f62"
+#: The revision the committed table was generated at. Moved once, deliberately:
+#: the original stamp named ``b21be983542473fd9f6d46e26dbf8f3688595f62``, which
+#: is a real commit object but is not reachable from any branch or tag -- it
+#: lived on a branch that was deleted and survives only until something
+#: garbage-collects it. A stamp that cannot be re-derived is not provenance, so
+#: the table was regenerated rather than have this constant edited to match it.
+#:
+#: That ordering is the whole point. This assertion failing is what forces a
+#: regeneration to be a deliberate act; editing it to chase a stamp nobody
+#: produced would turn the guard into a rubber stamp. If it fails again, confirm
+#: a regeneration really happened and that the result diff is clean before
+#: touching this line. See docs/verification.md, 2026-08-18.
+SOURCE_REVISION = "f6ec169145787e949f2c21c629622cb26908f94b"
 MANIFEST_DIGEST = "803424a341864947036d1f2016e1c8cec5598d5a0a68633a3edca76c200576e9"
 INCIDENT_DIGEST = "003f8653542a42c01a26ea80c5f7b7364335922e5aedfd4b77d6184ab7089ba9"
 VARIANTS = {

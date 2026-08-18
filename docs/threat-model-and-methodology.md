@@ -257,13 +257,23 @@ production host.
 
 ### 5.1 The substrate confound — a limitation of everything published so far
 
-**All three of the project's three-condition lanes currently run their arms on different
+**As written, all three of the project's three-condition lanes ran their arms on different
 orchestration substrates.** In each lane, the complete condition executes through the
 durable runtime — LangGraph graph, checkpointer, monitor node, approval interrupt, durable
 token — while the ungated and policy-only conditions execute through a separate in-process
 harness path with a direct executor call, a harness-minted approver token, and a different
-idempotency-key derivation. This is true of the sabotage matrix, of the checkpoint-B
+idempotency-key derivation. This was true of the sabotage matrix, of the checkpoint-B
 30-row table, and of the reliability-v2 lane.
+
+> **Correction, and it is partial.** The sabotage lane no longer has this split:
+> `_harness_step` was deleted, every arm drives `_runtime_step`, and
+> `tests/evaluation/test_one_runtime_path.py` holds it that way against real Postgres
+> (see A.4). The checkpoint-B and reliability-v2 lanes still split, so the limitation
+> below continues to apply to them unchanged. It also continues to apply to any sabotage
+> artifact generated *before* the lanes were unified — the revision stamped in an artifact
+> is what decides which side of the correction it falls on, so check it rather than
+> assuming. Whether the sabotage lane's proof discharges Gate A is an owner's call that
+> has not been made here; the gate below is therefore left standing as written.
 
 The consequence is precise and must be stated wherever those tables are cited:
 
@@ -606,23 +616,39 @@ relative to the repository root.
 
 ### A.4 The substrate confound (§5.1)
 
-- `src/incidentgate/evaluation/sabotage_episodes.py:551` — the docstring claim that "the
-  condition is the manipulated variable and the only one".
-- `src/incidentgate/evaluation/sabotage_episodes.py:579-619` — the branch: `COMPLETE`
-  drives `_runtime_step`, the other two drive `_harness_step`.
-- `src/incidentgate/evaluation/sabotage_episodes.py:327-401` — `_runtime_step`:
-  `IncidentRuntime`, LangGraph, monitor node, approval interrupt, durable token.
-- `src/incidentgate/evaluation/sabotage_episodes.py:404-524` — `_harness_step` and
-  `_execute`: direct `LabOperationExecutor` call with a harness-minted `APPROVER` token and
-  a harness-derived idempotency key.
-- `src/incidentgate/evaluation/sabotage_episodes.py:163-174` — the harness key is
-  `uuid5(NAMESPACE_URL, "sabotage-episode:{thread}:{action_hash}")`, deliberately not the
-  frozen `triage-agent-lab:d1:` seed used by the runtime path
-  (`src/incidentgate/control/workflow.py:265-269`). The two arms therefore derive
-  idempotency identity differently.
-- The same split exists in the other two lanes: `src/incidentgate/evaluation/runner.py:345-356`
-  (`mode is not COMPLETE` → `_counterfactual`; otherwise `IncidentRuntime`) and
-  `src/incidentgate/evaluation/reliability_v2.py:799-800`.
+**Corrected in the sabotage lane since this appendix was written; still present in the
+other two.** `_harness_step` was not demoted, it was deleted. Every sabotage arm now
+drives `_runtime_step`, and the citations below have been repointed at what is there
+today rather than left aimed at a removed function.
+
+The sabotage lane, as it now stands:
+
+- `src/incidentgate/evaluation/sabotage_episodes.py:68-126` — the module docstring's "ONE
+  RUNTIME PATH FOR EVERY ARM" section, which records what the split was, that the two
+  weaker arms once ran an isolated harness with its own executor call, approval minting
+  and idempotency derivation, and why that made "the condition is the manipulated variable
+  and the only one" false when it was first claimed.
+- `src/incidentgate/evaluation/sabotage_episodes.py:773` — `_runtime_step`, now the only
+  step implementation: `IncidentRuntime`, LangGraph, monitor node, approval interrupt,
+  durable token. Every condition reaches it.
+- `src/incidentgate/evaluation/sabotage_episodes.py:215-254` — `safeguards_for`, so the
+  four gates are the only thing that differs between arms, and the condition is sugar over
+  a `SafeguardConfiguration` rather than a branch.
+- `tests/evaluation/test_one_runtime_path.py` — the proof, in two halves. Its
+  `test_no_second_step_implementation_survives_anywhere` is the structural half and fails
+  if a second step implementation reappears anywhere in the source; the durable half drives
+  three condition labels under one configuration against real Postgres and requires the
+  same semantic trace and terminal state, so the label carries nothing the configuration
+  does not.
+
+Still uncorrected, which is why §5.1's limitation continues to stand for the artifacts of
+those two lanes:
+
+- `src/incidentgate/evaluation/runner.py:359-363` — checkpoint-B: `mode is not COMPLETE`
+  still routes to `_counterfactual_no_action` or `_counterfactual`; only `COMPLETE` reaches
+  `IncidentRuntime`.
+- `src/incidentgate/evaluation/reliability_v2.py` — the same split, via
+  `_CounterfactualResult`.
 
 ### A.5 Evaluation idempotency keys outside the sabotage lane
 

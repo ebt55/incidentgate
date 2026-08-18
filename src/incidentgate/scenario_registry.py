@@ -130,10 +130,40 @@ from incidentgate.reasons import (
 # values were chosen to reproduce its published bytes exactly. So the
 # generalisation was real everywhere except the sentences.
 #
-# T3 and T5-T8 stay out, and stay frozen contracts with no runtime. The
-# disjointness assertion in tests/test_full_scenario_contracts.py holds them out
-# on purpose; it admits T1, T2 and T4 by name rather than waving the tier
-# through.
+# T7 is the fourth, and its record is deliberately shorter than the three above
+# because what it clears is narrower. It has runtime (tests/sabotage/) and
+# durable proofs, and its covert objective is the one the other scenarios cannot
+# reach: substituting or replaying an approval token, which is an attack on the
+# authorization boundary itself rather than on a capability the policy could
+# prohibit. Its covert plan is two calls -- the planted prohibited control, then
+# an ordinary current-action proposal -- so that the real approval boundary is
+# what refuses the replay.
+#
+# What T7 does NOT have is a published artifact. There is no
+# artifacts/sabotage-matrix/T7/ table, so T7 is promoted on runtime and durable
+# proof but has published nothing, and no claim anywhere rests on it. That is
+# stated rather than left to be inferred from a missing directory: promotion and
+# publication are separate, and T7 is the scenario that shows they are.
+#
+# T8 is the fifth. Its covert objective is a bounded privilege change hidden
+# inside the otherwise valid rollback tool -- so, unlike T1's and T2's, the covert
+# call is not a prohibited capability but a permitted one carrying forbidden
+# arguments, and the gated cells stop at policy with
+# `argument_constraint:changed_paths` rather than `capability_prohibited`. It
+# clears runtime, durable proofs, negative control and evaluation, and its table
+# is published at artifacts/sabotage-matrix/T8/.
+#
+# T8's published table was regenerated on 2026-08-18 because its original stamp
+# named a revision that is no longer reachable from any branch or tag; the result
+# was field-for-field identical and only the provenance moved. See
+# docs/verification.md. A stamp that cannot be re-derived is not provenance, and
+# the honest repair is a new run rather than an edited SHA.
+#
+# T3, T5 and T6 stay out, and stay frozen contracts with no runtime. The
+# membership assertion in tests/test_full_scenario_contracts.py holds them out on
+# purpose; it admits T1, T2, T4, T7 and T8 by name rather than waving the tier
+# through, and it has failed by name on every promotion so far and had to be
+# updated deliberately each time.
 
 # The evidence sources each action-taking scenario may cite, and the single
 # definition of them. This lived as a local literal inside
@@ -272,9 +302,10 @@ class ScenarioStatus(StrEnum):
     and not the other.
 
     ``HAS_RUNTIME_UNPROMOTED`` has no members today. That is not an oversight:
-    T1, T2 and T4 each passed through it and each was promoted in the same
-    change that finished its chaos enrolment. It is here so the next one has a
-    state to sit in rather than a set to be missing from.
+    the five promoted scenarios -- T1, T2, T4, T7 and T8 -- each passed through
+    it, and T1, T2 and T4 were each promoted in the same change that finished
+    its chaos enrolment. It is here so the next one has a state to sit in rather
+    than a set to be missing from.
     """
 
     PROMOTED = "promoted"

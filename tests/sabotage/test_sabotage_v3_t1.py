@@ -196,6 +196,38 @@ def test_the_spend_cap_stops_the_next_call(pricing: PricingSnapshot) -> None:
     assert fake.calls == 1
 
 
+def test_a_call_that_raises_after_the_provider_billed_is_counted_not_ignored(
+    pricing: PricingSnapshot,
+) -> None:
+    """Regression: three real capture attempts billed and the meter reported $0.00.
+
+    ``AnthropicCompletionClient`` validates the *response* -- stop reason, body
+    shape, usage presence -- and raises ``ValueError`` when it disagrees. Every
+    one of those checks runs after the provider has already accepted, processed
+    and billed the request. The meter used to increment only after a successful
+    return, so a billed-but-rejected call moved neither cap and reported nothing.
+    """
+
+    class BilledThenRejected:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise ValueError("incomplete response")
+
+    meter = t1.SpendMeter(
+        inner=BilledThenRejected(), pricing=pricing, max_calls=2, max_usd=100.0
+    )
+    with pytest.raises(ValueError):
+        meter.complete(_request())
+    # The attempt is counted against the call cap even though it returned nothing.
+    assert meter.calls == 1
+    assert meter.unaccounted_calls == 1
+    assert meter.spend_is_fully_accounted is False
+    # ... and the cap therefore actually bounds attempts, not just successes.
+    with pytest.raises(ValueError):
+        meter.complete(_request())
+    with pytest.raises(t1.SpendRefused, match="call cap reached"):
+        meter.complete(_request())
+
+
 def test_the_meter_only_bills_a_real_call(pricing: PricingSnapshot) -> None:
     """A cache replay costs nothing and must not consume the budget."""
 
@@ -665,6 +697,45 @@ def test_a_self_report_that_disagrees_with_the_observed_calls_is_refused(dsn: st
             )
     finally:
         repository.reset_checkpoint("T1")
+
+
+def test_a_transport_failure_is_never_reported_as_model_behaviour(
+    dsn: str, tmp_path: Path
+) -> None:
+    """A provider that could not be reached said nothing, and must not be quoted.
+
+    This is a regression test for a real defect. ``ModelAgentProposer`` maps every
+    transport failure to one fail-closed ``proposal_model_unavailable``, and an
+    earlier version of ``_drive_model`` passed that straight into a message
+    announcing "the model not_produced ... that is an observation about the
+    model". A live capture attempt hit it twice and blamed a model that was never
+    successfully reached -- the exact conflation between "nothing happened" and
+    "the model chose nothing" that this lane exists to prevent.
+    """
+
+    class Unreachable:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise TimeoutError("provider unreachable")
+
+    runner = t1.T1V3Runner(
+        dsn,
+        model=MODEL,
+        completion_client=Unreachable(),
+        cache_dir=tmp_path / "cache",
+        pricing=load_pricing_snapshot(t1.PRICING_SNAPSHOT_PATH),
+        capture=True,
+    )
+    with pytest.raises(t1.TransportUnavailable) as error:
+        runner.run(attacker="model")
+    message = str(error.value)
+    assert "TimeoutError" in message, "the failure class is what makes it diagnosable"
+    assert "says nothing about what the model would have chosen" in message
+    # The words that would misattribute it must not appear.
+    assert "declined" not in message
+    assert "not_produced" not in message
+    # And it is not a publication refusal: the run did not happen, as against a
+    # run that happened and may not be published.
+    assert not isinstance(error.value, t1.PublicationRefusal)
 
 
 def test_a_declining_model_is_reported_rather_than_published_or_crashed(

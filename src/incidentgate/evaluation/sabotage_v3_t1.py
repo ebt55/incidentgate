@@ -198,6 +198,16 @@ class SpendRefused(RuntimeError):
     """A provider call was refused by the spend gate, the call cap, or the cost cap."""
 
 
+class TransportUnavailable(RuntimeError):
+    """No proposal was obtained because the transport failed.
+
+    Deliberately not a :class:`PublicationRefusal`. A refusal to publish is a
+    statement about a run that happened; this is a statement that the run did not
+    happen. Collapsing the two is how a provider outage gets published as a
+    model declining, which is the confusion this whole lane is built to prevent.
+    """
+
+
 # ---------------------------------------------------------------------------
 # The spend gate
 # ---------------------------------------------------------------------------
@@ -285,6 +295,10 @@ class SpendMeter:
     calls: int = field(default=0, init=False)
     provider_calls: int = field(default=0, init=False)
     spent_usd: float = field(default=0.0, init=False)
+    #: Attempts that reached the transport and raised. The provider may have
+    #: billed for them and their usage is unrecoverable, so they are counted
+    #: separately rather than folded into ``spent_usd`` as zero.
+    unaccounted_calls: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.max_calls < 0 or self.max_usd < 0:
@@ -309,13 +323,39 @@ class SpendMeter:
             raise SpendRefused(
                 f"spend cap crossed: ${self.spent_usd:.4f} spent against a ${self.max_usd:.4f} cap"
             )
-        result = self.inner.complete(request)
+        # THE ATTEMPT IS COUNTED BEFORE IT IS MADE, BECAUSE A FAILED CALL CAN BILL.
+        #
+        # This previously incremented after ``inner.complete`` returned, which
+        # made both caps blind to the one case that matters most: a request the
+        # provider accepted, processed and billed, whose *response* the transport
+        # then rejected. ``AnthropicCompletionClient`` raises ``ValueError`` on
+        # four post-response validations -- an unexpected stop reason, a non-text
+        # body, or missing usage -- and every one of them happens after the
+        # provider has already done the work. Three real capture attempts hit
+        # exactly that, and the meter reported zero calls and $0.00 for all three.
+        #
+        # Counting first means ``max_calls`` bounds attempts rather than
+        # successes, which is the only bound that holds when failures bill.
         self.calls += 1
+        try:
+            result = self.inner.complete(request)
+        except Exception:
+            # The provider may have billed for work whose cost is now
+            # unrecoverable: the response that carried the usage was discarded by
+            # the validation that rejected it. Recording the attempt as
+            # unaccounted is the honest alternative to reporting $0.00.
+            self.unaccounted_calls += 1
+            raise
         invocation = result.invocation
         if invocation.invocation_kind == "provider_call":
             self.provider_calls += 1
             self.spent_usd += invocation.cost or 0.0
         return result
+
+    @property
+    def spend_is_fully_accounted(self) -> bool:
+        """Whether every attempt that reached the transport reported its own usage."""
+        return self.unaccounted_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +620,9 @@ class T1V3Report:
     #: the floor arm only -- because the row contract requires a replay and the
     #: call just made is not one yet.
     capture_episodes: int = 0
+    #: Attempts that reached the provider and raised before reporting usage. A
+    #: non-zero value means ``spent_usd`` is a lower bound, not a total.
+    unaccounted_calls: int = 0
 
 
 class T1V3Runner:
@@ -754,13 +797,33 @@ class T1V3Runner:
         try:
             return self._drive(repository, scenario, variant, condition, (proposer,), "model")
         except ValueError as error:
-            # A missing capture is a fact about this command's wiring, not about
-            # the model, and must never be recorded as one. ``ModelAgentProposer``
-            # fails closed on every transport error alike -- correct for the gate
-            # chain -- so the original is recovered here and re-raised unchanged.
-            miss = proposer.transport_failure
-            if isinstance(miss, ResponseCacheMiss):
-                raise miss from error
+            # NOTHING THAT FAILED IN TRANSPORT IS AN OBSERVATION ABOUT THE MODEL.
+            #
+            # ``ModelAgentProposer`` maps every transport failure to one
+            # fail-closed ``proposal_model_unavailable`` -- right for the gate
+            # chain, wrong for a caller reporting a result. An earlier version of
+            # this branch let that reason through the wording below and announced
+            # "the model not_produced ... that is an observation about the model",
+            # which is exactly the conflation this lane exists to prevent: it
+            # blamed a model that was never successfully reached. A real capture
+            # attempt hit it, twice, and reported a provider fault as model
+            # behaviour.
+            #
+            # So a recovered transport failure is re-raised as itself when it is
+            # already meaningful (a cache miss names its own model and prompt),
+            # and otherwise named by exception class. The class alone is enough to
+            # separate a timeout from a rate limit from an auth failure, and it
+            # leaks no response body, prompt or key.
+            transport = proposer.transport_failure
+            if isinstance(transport, ResponseCacheMiss):
+                raise transport from error
+            if transport is not None:
+                raise TransportUnavailable(
+                    f"the attacker transport failed with {type(transport).__name__} in the "
+                    f"{condition.value} arm, so no proposal was obtained. This is a provider or "
+                    "harness fault and says nothing about what the model would have chosen; it "
+                    "must not be recorded as a decline or as a not-produced result."
+                ) from error
             observed = proposer.outcome
             if observed is None or observed.classification == "attempted":
                 raise
@@ -852,6 +915,7 @@ class T1V3Runner:
             provider_calls=0 if self.meter is None else self.meter.provider_calls,
             spent_usd=0.0 if self.meter is None else self.meter.spent_usd,
             capture_episodes=capture_episodes,
+            unaccounted_calls=0 if self.meter is None else self.meter.unaccounted_calls,
         )
 
     def _model_row(
@@ -1056,6 +1120,12 @@ def main(
     except (SpendRefused, PublicationRefusal) as error:
         sys.stderr.write(f"REFUSED: {error}\n")
         return 2
+    except TransportUnavailable as error:
+        # Exit 3, not 2: a run that could not reach the provider is a different
+        # outcome from a run whose result was refused, and a caller scripting
+        # this must be able to tell them apart without parsing prose.
+        sys.stderr.write(f"UNAVAILABLE: {error}\n")
+        return 3
     return _emit(report, arguments.out)
 
 
@@ -1228,9 +1298,16 @@ def _emit(report: T1V3Report, out: str | None) -> int:
             f"monitor={row.monitor_source} side_effects={row.covert_side_effect_count} "
             f"incident_repaired={row.incident_checker_passed}\n"
         )
+    spend = f"spent_usd={report.spent_usd:.4f}"
+    if report.unaccounted_calls:
+        spend = (
+            f"spent_usd>={report.spent_usd:.4f} "
+            f"(+{report.unaccounted_calls} billed-but-unaccounted attempt(s); usage was "
+            "discarded with the rejected response, so this is a lower bound)"
+        )
     sys.stdout.write(
         f"rows={len(envelope.results)} capture_episodes={report.capture_episodes} "
-        f"provider_calls={report.provider_calls} spent_usd={report.spent_usd:.4f}\n"
+        f"provider_calls={report.provider_calls} {spend}\n"
     )
     return 0 if all(row.incident_checker_passed for row in envelope.results) else 1
 

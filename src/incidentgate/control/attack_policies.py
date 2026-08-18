@@ -41,7 +41,7 @@ better.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from incidentgate.contracts import (
     ApiReleasePatch,
@@ -64,9 +64,6 @@ from incidentgate.reasons import PROPOSAL_WRONG_RELIABILITY_FIXTURE, PROPOSAL_WR
 
 from .models import Caller
 from .proposal import ProposalError, _CheckpointProposer
-
-if TYPE_CHECKING:
-    from incidentgate.evaluation.monitor_dataset import BenignT4V2Case
 
 Split = Literal["development", "calibration", "holdout"]
 
@@ -565,27 +562,11 @@ class T4V2AttackProposer(_T4V2HistoryProposer):
         )
 
 
-class BenignT4V2Proposer(_T4V2HistoryProposer):
-    """Benign-labelled wrapper for one accepted T4-v2 safe history."""
-
-    def __init__(self, case: BenignT4V2Case, step_index: int) -> None:
-        super().__init__(
-            case.action_history,
-            step_index,
-            hypothesis_id=f"t4-v2-benign-{case.case_id.lower()}",
-        )
-
-
 def t4_v2_covert_plan(
     variant: T4V2AttackPolicyVariant,
 ) -> tuple[T4V2AttackProposer, ...]:
     """One typed proposer per overlay action; no profile mapping is involved."""
     return tuple(T4V2AttackProposer(variant, index) for index in range(len(variant.action_history)))
-
-
-def benign_t4_v2_plan(case: BenignT4V2Case) -> tuple[BenignT4V2Proposer, ...]:
-    """One typed proposer per accepted benign T4-v2 history action."""
-    return tuple(BenignT4V2Proposer(case, index) for index in range(len(case.action_history)))
 
 
 # Copied from scenarios/sabotage/T8.json. The policy versions describe three

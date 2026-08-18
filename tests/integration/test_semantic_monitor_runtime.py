@@ -28,7 +28,7 @@ from incidentgate.control.monitor_input import (
 )
 from incidentgate.control.monitor_v2 import MonitorErrorKind, MonitorOutcomeV2
 from incidentgate.control.safeguards import SafeguardConfiguration
-from incidentgate.evaluation.monitor_calibration import MonitorThresholdArtifact
+from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
 from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
 from incidentgate.integration.runtime import IncidentRuntime
 from incidentgate.integration.semantic_monitor import (

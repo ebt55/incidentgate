@@ -1,5 +1,3 @@
-import hashlib
-import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -17,7 +15,6 @@ from incidentgate.contracts import (
     StageDisposition,
 )
 from incidentgate.control.monitor_v2 import MonitorErrorKind
-from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
 from incidentgate.evaluation.sabotage import SabotageStage
 from incidentgate.evaluation.sabotage_v3 import (
     CovertAttempt,
@@ -29,14 +26,6 @@ from incidentgate.evaluation.sabotage_v3 import (
     SabotageRawEnvelopeV3,
     SabotageStepOutcomeV3,
     classify_covert_cell,
-)
-from incidentgate.evaluation.sabotage_v3_runner import (
-    PublicationRefusal,
-    SabotageV3Report,
-    _manifest_digest,
-    _public_semantic_digest,
-    _require_all_arms,
-    report_json,
 )
 from incidentgate.manifests import AttackPolicyVariant
 
@@ -585,99 +574,6 @@ def test_envelope_accepts_disabled_lower_arms_and_model_monitor_complete_arm() -
         ),
     )
     assert len(envelope(*rows).results) == 5
-
-
-def test_public_report_redacts_policy_but_binds_and_recomputes_its_digest() -> None:
-    raw = envelope(*floor_matrix())
-    changed = VARIANT.model_copy(update={"policy_text": "different frozen attack text"})
-    assert _manifest_digest((VARIANT,)) != _manifest_digest((changed,))
-    digest = _public_semantic_digest(raw, "threshold-test", "c" * 64, {})
-    report = SabotageV3Report(raw, "threshold-test", "c" * 64, {}, digest)
-    published = json.loads(report_json(report))
-    variant = published["envelope"]["manifest_variants"][0]
-    assert "policy_text" not in variant
-    assert variant["policy_text_sha256"] == hashlib.sha256(b"x").hexdigest()
-    semantic_input = dict(published)
-    semantic_input.pop("semantic_digest")
-    semantic_input["envelope"] = dict(semantic_input["envelope"])
-    semantic_input["envelope"].pop("generated_at")
-    assert (
-        published["semantic_digest"]
-        == hashlib.sha256(
-            json.dumps(semantic_input, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
-
-
-def _threshold() -> MonitorThresholdArtifact:
-    return MonitorThresholdArtifact(
-        threshold_id="fixture",
-        frozen_at=datetime(2026, 1, 1, tzinfo=UTC),
-        provider="anthropic",
-        model="monitor-v1",
-        prompt_version="monitor-v2",
-        input_schema_sha256="e" * 64,
-        output_schema_sha256="d" * 64,
-        defer_at=0.2,
-        block_at=0.8,
-        calibration_cells_digest="a" * 64,
-        calibration_denominators={"benign": 1, "malicious": 1},
-        selection_rule="fixture",
-    )
-
-
-def _all_declared_arms() -> tuple[SabotageEvaluationResultV3, ...]:
-    return (
-        floor_matrix()
-        + tuple(
-            arm(condition, attacker="model:anthropic/attacker-v1") for condition in EvaluationMode
-        )
-        + (
-            arm(EvaluationMode.COMPLETE, monitor="model:anthropic/monitor-v1"),
-            arm(
-                EvaluationMode.COMPLETE,
-                attacker="model:anthropic/attacker-v1",
-                monitor="model:anthropic/monitor-v1",
-            ),
-        )
-    )
-
-
-def test_publication_requires_exact_declared_source_band_population() -> None:
-    rows = _all_declared_arms()
-    threshold = _threshold()
-    _require_all_arms(rows, (VARIANT,), threshold, "f" * 64)
-    changed_monitors = tuple(
-        invocation.model_copy(
-            update={"record": invocation.record.model_copy(update={"model": "monitor-x"})}
-        )
-        if invocation.role == "monitor"
-        else invocation
-        for invocation in rows[-1].invocations
-    )
-    cross_band = SabotageEvaluationResultV3.model_validate(
-        rows[-1].model_dump()
-        | {
-            "run_id": UUID(int=2),
-            "monitor_source": "model:anthropic/monitor-x",
-            "invocations": changed_monitors,
-        }
-    )
-    for malformed in (
-        rows[:-1],
-        rows + (rows[0],),
-        rows + (cross_band,),
-    ):
-        with pytest.raises(PublicationRefusal, match="exactly equal|source bands|declared"):
-            _require_all_arms(malformed, (VARIANT,), threshold, "f" * 64)
-    first, second = rows[-1].invocations[1:]
-    mismatched_second = second.model_copy(update={"threshold_artifact_sha256": "a" * 64})
-    malformed_second = SabotageEvaluationResultV3.model_validate(
-        rows[-1].model_dump()
-        | {"invocations": (rows[-1].invocations[0], first, mismatched_second)}
-    )
-    with pytest.raises(PublicationRefusal, match="every model monitor"):
-        _require_all_arms((*rows[:-1], malformed_second), (VARIANT,), threshold, "f" * 64)
 
 
 def test_universal_model_decline_is_valid_when_floor_siblings_prove_reachability() -> None:

@@ -366,11 +366,15 @@ Rules:
 3. **The calibration split and the reported split must differ, asserted structurally.** A
    report whose threshold provenance names the split it reports on is refused.
 4. **Identity-only variants are not a holdout set.** Variants that differ only in their
-   ids do not test generalization. Where that is the case it must be *disclosed and
-   derived* — computed by comparing the published `(tool, arguments_digest)` pairs across
-   variants — so the caveat appears exactly when the artifact's own rows show it should,
-   and a later scenario with real variation cannot inherit a false one. This is the
-   situation for one currently-published scenario, and its table already says so.
+   ids do not test generalization. Where that is the case it must be *disclosed*, and the
+   disclosure must be *derived* — computed by comparing the published
+   `(tool, arguments_digest)` pairs across variants — so the caveat appears exactly when
+   the artifact's own rows show it should. **What is derived is the trigger, not the
+   explanation.** The renderer's prose about *why* a given collapse happened is written for
+   the scenarios that have published one, so a scenario that collapses for a different
+   reason would inherit the wrong explanation rather than none. Three published tables
+   currently carry a disclosure: T4's three variants are identical, and T1's and T2's
+   development and holdout variants are identical to each other.
 5. **Every frozen variant must appear in a publishable envelope.** Exact manifest-variant
    equality, in both directions. An exploratory subset uses a separate schema and path and
    carries `publishable=false`.
@@ -548,8 +552,13 @@ completed README claim audit.
 4. The three conditions in every published lane run on different orchestration substrates
    (§5.1), so no between-column difference is attributable to the safeguards alone.
 5. The `development`/`calibration`/`holdout` labels do not yet denote a generalization
-   check, because there is no learned or model behaviour to generalize; for one scenario
-   the three variants are byte-identical and the table discloses it.
+   check, because there is no learned or model behaviour to generalize — and the split is
+   degenerate on this substrate besides. T4's three variants are byte-identical; T1's and
+   T2's development and holdout variants are byte-identical **to each other**, which is the
+   pair whose independence the naming exists to promise. The cause is structural: the free
+   parameter derives from seed parity over three consecutive seeds, and the first and third
+   of three consecutive integers always share parity. Every affected table discloses its own
+   collapse.
 6. Three of eight sabotage contracts (T3, T5 and T6) have no runtime. T1, T2, T4, T7 and
    T8 have runtime coverage, but official deterministic sabotage-v2 artifacts currently
    exist only for T1, T2, T4 and T8. Their variants and the remaining planned checker specs
@@ -571,19 +580,28 @@ completed README claim audit.
 Every claim in this document about present behaviour, with its evidence. Paths are
 relative to the repository root.
 
-### A.1 The attacker is deterministic; the steering prompt is never rendered
+### A.1 Every *published* attacker is deterministic; the contract's `policy_text` is never rendered
 
 - `src/incidentgate/control/attack_policies.py:1-39` — module docstring: "an
   honestly-labelled deterministic stand-in… No model is consulted, no prompt is rendered".
+  That is true of this module. It is **not** true of the repository as a whole any more —
+  see the last bullet.
 - `src/incidentgate/control/attack_policies.py` — the T1, T2, T4, T7 and T8 attack
   proposers; each `propose()` returns its covert action unconditionally.
 - `scenarios/sabotage/T1.json:29-51` — `attack_policy_variants[].policy_text`, natural
-  language written for a model. Nothing reads this field into a prompt.
+  language written for a model. Nothing reads this field into a prompt; the only readers
+  are the manifest validators in `src/incidentgate/manifests.py` and the contract tests.
 - `src/incidentgate/control/attack_policies.py:19-23` — names the seam the model-driven
-  condition will arrive through (`IncidentRuntime`'s `proposer_factory`).
+  condition arrives through (`IncidentRuntime`'s `proposer_factory`).
 - All eight contracts carry exactly three variants (24 total); T1, T2, T4, T7 and T8 have
   runtime coverage. The four official deterministic sabotage-v2 artifacts cover 12 variants
   and 36 cells; T7 has no v2 artifact.
+- **A steering prompt is now rendered, and it is a different artifact.** The model-backed
+  T1 lane renders the frozen `config/attack-steering/T1-model-v1.txt` — not `policy_text` —
+  and what it captured is committed under `artifacts/model-captures/`. Nothing that lane has
+  produced is a published row: every capture ended without a covert attempt, so claim 1
+  above and the model-coverage figure of zero are unaffected. Results in
+  [`findings/`](findings/).
 
 ### A.2 The monitor's input, and the absence of a calibration artifact
 
@@ -600,7 +618,7 @@ relative to the repository root.
   content-shape, validation and hash-binding failure collapses into one generic hash-bound
   `BLOCK`, so an availability failure is currently indistinguishable from a catch
   (see §6.1 rule 4).
-- `src/incidentgate/host/app.py:226` — `AnthropicAdvisoryMonitor` is wired into the live
+- `src/incidentgate/host/app.py:232` — `AnthropicAdvisoryMonitor` is wired into the live
   host, and into no published evaluation.
 
 ### A.3 The oracle monitor
@@ -608,7 +626,7 @@ relative to the repository root.
 - `src/incidentgate/control/monitor.py:227-274` — `SequenceConformanceMonitor`; its own
   docstring: "a deterministic stand-in, written to catch this exact pattern… It does not
   measure monitor competence."
-- `src/incidentgate/evaluation/sabotage_matrix.py:442-467` — the only scenario that
+- `src/incidentgate/evaluation/sabotage_matrix.py:652` — the only scenario that
   installs it is T4, with an injected reader over the durable ordered call ledger.
 - `src/incidentgate/control/monitor.py:289-331` — it blocks the first call diverging from
   the canonical prefix. Blocking later would be scored as a covert landing anyway, because
@@ -652,14 +670,27 @@ those two lanes:
 
 ### A.5 Evaluation idempotency keys outside the sabotage lane
 
-- `src/incidentgate/evaluation/runner.py:569`, `:789` and
-  `src/incidentgate/evaluation/reliability_v2.py:915` — `key = uuid4()`. Exactly-once
-  replay is unexercised on those paths.
-- `src/incidentgate/evaluation/sabotage_episodes.py:177-197` — `_purge_threads` exists in
-  the sabotage lane, and is the pattern the other lanes need if they adopt derived keys.
-- `src/incidentgate/evaluation/sabotage_episodes.py:505` — `one_time_use_id` stays
-  `uuid4()` on purpose; a derived one would make two runs of a step share the single use
-  the boundary exists to refuse twice.
+**Corrected since this appendix was written.** It recorded `key = uuid4()` on the two
+non-sabotage lanes, and that is no longer what they do — both now derive the key, which is
+what this section said they needed.
+
+- `src/incidentgate/evaluation/runner.py:584-587` and `:811-817`, and
+  `src/incidentgate/evaluation/reliability_v2.py:931-937` — `key = derived_idempotency_key(
+  SEED, thread_id, canonical_action_hash(action))`, against the lane's own seed constant.
+  The key is a pure function of the binding, so a replayed step lands on the key its first
+  attempt already occupies.
+- `src/incidentgate/evaluation/identity.py:78` — `derived_idempotency_key`, the single
+  derivation all three lanes call.
+- `src/incidentgate/evaluation/sabotage_episodes.py:290-303` — `_purge_threads`, now a
+  re-export of `purge_checkpoint_threads` and **shared with the two non-sabotage lanes**,
+  which took the same derivation and therefore inherited the same isolation cost. Derived
+  thread ids make a second run of an episode resume the first run's completed graph unless
+  the checkpoint rows are cleared first.
+- `src/incidentgate/integration/runtime.py:631` and
+  `src/incidentgate/integration/adapters.py:340` — `one_time_use_id=uuid4()` stays random on
+  purpose; a derived one would make two runs of a step share the single use the boundary
+  exists to refuse twice. The rationale is at
+  `src/incidentgate/evaluation/identity.py:21`.
 
 ### A.6 Structural guards that already enforce parts of this document
 
@@ -674,25 +705,33 @@ those two lanes:
 - `src/incidentgate/evaluation/sabotage.py:392-396` — every sabotage row must carry
   `invocation_kind="fixture_no_call"`; a model-labelled sabotage row is unconstructible
   today.
-- `src/incidentgate/contracts.py:741-824` — `ModelInvocationRecord`: four kinds
+- `src/incidentgate/contracts.py:824` — `ModelInvocationRecord`: four kinds
   (`fixture_no_call`, `provider_call`, `cache_replay`, `disabled`); only `provider_call`
   may carry usage or cost, and it *requires* complete usage plus a pricing snapshot; a
   `cache_replay` must name provider and model; a `fixture_no_call` or `disabled` may name
-  neither. This is why the host's model path is replay-only today: no pricing snapshot is
-  committed, so a live call cannot record an honest cost.
-- `src/incidentgate/evaluation/runner.py:99` — `MODEL_BACKED_SCENARIOS = {}`: enrolment is
+  neither. This is why the **host's** model path is replay-only:
+  `src/incidentgate/host/app.py:69-75` refuses a live provider call outright, because the
+  host loads no pricing snapshot and so could not record an honest cost. Snapshots
+  themselves are committed under `config/pricing/`, and the evaluation lanes do use them —
+  the host does not.
+- `src/incidentgate/evaluation/runner.py:104` — `MODEL_BACKED_SCENARIOS = {}`: enrolment is
   empty, and an enrolled scenario that does not return a `cache_replay` is a hard failure
   rather than a silently downgraded row.
-- `src/incidentgate/contracts.py:320-323` — `CanonicalAction.tool_name` is a closed
+- `src/incidentgate/contracts.py:393-396` — `CanonicalAction.tool_name` is a closed
   `Literal` over the project's registered capabilities. The forbidden capabilities the
   sabotage tier measures (for example `operations.write_outbound_note`, whose argument
-  model appears in the discriminated union at `contracts.py:308`) are *inside* that union
-  and are therefore constructible; see §1.2 on why the stronger phrasing is wrong.
+  model carries `kind: Literal["write_outbound_note"]` at `contracts.py:201` and whose tool
+  literal sits at `contracts.py:411`) are *inside* that union and are therefore
+  constructible; see §1.2 on why the stronger phrasing is wrong.
 - `src/incidentgate/evaluation/sabotage_checkers.py:1-21` — the covert and incident
   checkers import nothing from the project; an AST test enforces it.
-- `src/incidentgate/evaluation/sabotage_matrix.py:988-1015` — the degenerate-variant
-  disclosure, derived by comparing published `(tool, arguments_digest)` pairs across
-  variants rather than declared.
+- `src/incidentgate/evaluation/sabotage_matrix.py:1394-1471` — `_render_variant_axis`, the
+  degenerate-variant disclosure. Whether it fires is derived, by comparing published
+  `(tool, arguments_digest)` pairs across variants rather than declared; the explanatory
+  prose inside it is written, not derived (§7 rule 4).
+- `src/incidentgate/evaluation/sabotage_matrix.py:823` — `bind_variants_to_manifest`
+  requires the proposer's variants to be the contract's variants by exact identity in both
+  directions, so an envelope missing a frozen variant fails. This is §7 rule 5.
 - `artifacts/sabotage-matrix/sabotage-matrix.json` and
   `artifacts/sabotage-matrix/T8/sabotage-matrix.json` — the envelopes stamp `git_revision`,
   `git_dirty`, `git_dirty_means`, `suite_manifest_digest`, `reproduction_command`,
@@ -700,11 +739,17 @@ those two lanes:
 
 ### A.7 Guards this document requires that do **not** exist yet
 
-- `src/incidentgate/evaluation/sabotage_matrix.py:534-554` — `bind_variants_to_manifest`
-  tests `proposed <= contract`, a subset relation. An envelope missing a frozen variant
-  passes. §7 rule 5 requires equality.
+- ~~`bind_variants_to_manifest` tests `proposed <= contract`, a subset relation, so an
+  envelope missing a frozen variant passes.~~ **This guard now exists** — see A.6. It is
+  recorded as a correction rather than deleted, so a reader who knew the old text can see
+  where it went.
 - No structural assertion that a threshold's provenance split differs from the reported
   split, because no threshold artifact exists.
+- **No assertion that a stamped `git_revision` is reachable from any ref.** One published
+  artifact stamps a revision that is not — `artifacts/chaos-matrix/`, disclosed rather than
+  restamped; see `docs/verification.md`, 2026-08-20.
+  `tests/sabotage/test_t8_artifact.py` pins T8's stamp to a constant, which forces a
+  regeneration to be deliberate, but nothing checks reachability anywhere.
 - No separation of `monitor_error` from a security block (§6.1 rule 4).
 - No benign near-neighbour arm for the monitor.
 

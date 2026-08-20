@@ -54,15 +54,15 @@ Every site in the codebase that compares two timestamps or derives a duration.
 | --- | --- | --- | --- | --- | --- |
 | 1 | `lab/approval.py:62` `now < request.requested_at` | Host (injected) | Host (same `IncidentRuntime.approve` call) | No | None — same clock, same call |
 | 2 | `lab/approval.py:65` `now >= request.expires_at` | Host (injected) | Host (`now + approval_ttl`, 5 min) | No | None |
-| 3 | `control/evidence.py:81` `record.expires_at <= now` | DB row, but **host-written** `observed_at + 120 s` | Host (injected) | No (after fix) | None while the value is far from the boundary; **inverts within the skew band of the boundary** |
-| 4 | `control/evidence.py:83` `(now - record.observed_at) > max_age_seconds` | Host (injected) | DB row, host-written | No (after fix) | Same as #3 |
+| 3 | `control/evidence.py:91` `record.expires_at <= now` | DB row, but **host-written** `observed_at + 120 s` | Host (injected) | No (after fix) | None while the value is far from the boundary; **inverts within the skew band of the boundary** |
+| 4 | `control/evidence.py:93` `(now - record.observed_at).total_seconds() > max_age_seconds` | Host (injected) | DB row, host-written | No (after fix) | Same as #3 |
 | 5 | `lab/repository.py` `validate()` `approval["expires_at"] <= now` | DB row, host-written | Host — **was inline `datetime.now(UTC)`, now injected** | **Was mixed** | Token expiry judged against a different clock than the one that stamped it |
 | 6 | `lab/repository.py` `_validate_approval` `approval["expires_at"] <= now` | DB row, host-written | Host — **was inline, now injected** | **Was mixed** | Same, on the mutation path |
 | 7 | `lab/repository.py` `_validate_evidence` `evidence_records.expires_at > %s` | DB row, host-written | Host — **was inline, now injected** | **Was mixed** | Evidence judged stale/fresh against a clock that did not write it |
 | 8 | `lab/repository.py` `begin_collection_attempt` `now >= started + time_budget` | Host (injected) | `collection_runs.started_at`, host-written, no DB default | No | None |
 | 9 | `lab/repository.py` D6 `run["deadline_at"] <= now` | `d6_collection_runs.deadline_at`, host-written | Host (injected) | No | None — 180 s budget |
 | 10 | `lab/repository.py` `d6_resume_state` `now >= run["deadline_at"]` | Host (injected) | Host-written row | No | None |
-| 11 | `chaos/matrix.py:372` `state_change < now() - interval` | DB (`pg_stat_activity`) | DB (`now()`) | No | None — **both sides are the database's own clock, which is correct** |
+| 11 | `chaos/matrix.py:378` `state_change < now() - interval` | DB (`pg_stat_activity`) | DB (`now()`) | No | None — **both sides are the database's own clock, which is correct** |
 | 12 | `db/001_d1.sql:27` `CHECK (expires_at > observed_at)` | Host-written | Host-written | No | None — same row, same writer |
 | 13 | `db/001_d1.sql:55` `CHECK (approved_at >= requested_at AND approved_at < expires_at)` | Host-written | Host-written | No | None |
 | 14 | `audit_timeline` ordering | — | — | No (since migration 014) | None — ordering is by the `sequence` identity column, not by any clock |
@@ -120,19 +120,22 @@ loudly.
 
 ## Recommended follow-up (not done here — a schema/wire decision)
 
-Drop `DEFAULT now()` from `immutable_evidence_source.observed_at` in a migration
-`015`, making the column `NOT NULL` with no default so the trap cannot be reached
-by forgetting. This was deliberately **not** bundled with the correctness fix
-because it is a schema change requiring:
+Drop `DEFAULT now()` from `immutable_evidence_source.observed_at`, making the
+column `NOT NULL` with no default so the trap cannot be reached by forgetting.
+This was deliberately **not** bundled with the correctness fix because it is a
+schema change requiring:
 
-- a new entry in `LabRepository.migrate()`'s migration tuple;
-- `tests/reliability/test_r01_r04_migration.py:79` `range(1, 15)` → `range(1, 16)`;
-- `tests/reliability/test_r05_r08_migration.py:45` and
-  `tests/reliability/test_r09_r12_migration.py:66`, which assert the last applied
-  migration is `014_audit_insertion_sequence.sql`;
+- a new migration file and a new entry in `LabRepository.migrate()`'s migration
+  tuple. **The number has moved since this was written**: `015` was taken by
+  `db/015_sabotage_t1.sql` and the head is now `db/020_sabotage_t8.sql`, so the
+  next free number is `021`;
+- `tests/reliability/test_r01_r04_migration.py:79` `range(1, 21)` → `range(1, 22)`;
+- `tests/reliability/test_r05_r08_migration.py:46` and
+  `tests/reliability/test_r09_r12_migration.py:69`, which assert the last applied
+  migration is `020_sabotage_t8.sql` and that the count is 20;
 - explicit `observed_at` values in the three test inserts that currently omit it
   (`tests/reliability/test_r01_r04_migration.py:47`,
-  `tests/integration/test_checkpoint_b_deferred_runtime.py:547` and `:582`).
+  `tests/integration/test_checkpoint_b_deferred_runtime.py:553` and `:588`).
 
 It changes no value that the chaos differ compares and no idempotency key,
 because no production writer omits the column today.

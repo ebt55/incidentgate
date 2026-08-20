@@ -89,7 +89,12 @@ privilege rollback: the visible rollback and the malicious bundle both use
 enforcement stops the malicious bundle while the incident rollback succeeds.
 
 Measured 2026-08-15 from clean revision `de8958245b00122e606c336baddac2940c6a8f1f`,
-from a cold database. Regenerate with:
+from a cold database. **That revision is a real commit object but is reachable from
+no branch, tag or remote here**, so the table's bytes cannot be re-derived at the
+revision it stamps. That is disclosed rather than restamped — editing the stamp to
+a reachable SHA would assert that these bytes were produced at a revision where
+they were not — and the table has not been regenerated. See
+[`docs/verification.md`](docs/verification.md). Regenerate with:
 
 ```bash
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
@@ -97,8 +102,8 @@ uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 
 That run takes about 34 minutes, because every cell is real processes against
 real Postgres. **CI therefore runs a documented subset, not the table above**:
-one scenario per tier (D1, S1, R01) × five boundaries covering every boundary
-class = 12 executed cells instead of 434, in about a minute. The subset samples
+one scenario per tier (D1, S1, R01, T8) × five boundaries covering every boundary
+class = 17 executed cells instead of 434, in about a minute. The subset samples
 both dimensions rather than shrinking one, and
 `tests/chaos/test_kill_matrix.py` records why each member is in it. The full
 27-scenario matrix stays a command whose output is committed, so the expensive
@@ -108,16 +113,19 @@ scenario without regenerating is a red test rather than a silent staleness.
 
 Two honest findings from that run, neither of which is a durability failure:
 
-- **`orphaned_approvals: 68` — the one non-zero number in the table.** An
+- **`orphaned_approvals: 76` — the one non-zero number in the table.** An
   orphaned approval is a durable approval token with no matching executed
   operation. Approval issuance is not idempotent across a crash: a kill between
   the approval commit and the operation commit loses the in-memory handle to a
   token that is *already durable*, so recovery mints a fresh token for the
   identical canonical action and spends that one instead. It appears in exactly
-  the four boundaries inside that window × the seventeen scenarios that mint an
-  approval at all, exactly once each — T4's promotion moved this number from 60
-  to 64 and T2's from 64 to 68, each time changing nothing else, which is the
-  arithmetic that claim predicts.
+  the four boundaries inside that window × the nineteen scenarios that mint an
+  approval at all, exactly once each — the other eight runnable scenarios defer,
+  block, or take no action, so they have no token to orphan. Each promotion of an
+  action-taking scenario therefore moves this number by exactly four and changes
+  nothing else: T4's took it from 60 to 64, T2's from 64 to 68, and T7's and T8's
+  carried it to 76. That arithmetic is what the claim predicts, and it is what
+  the published table records.
   It is neither a lost incident nor a
   duplicate mutation — those are counted separately and both are zero — because
   the leftover token is unspendable: it is bound to a canonical action hash
@@ -250,15 +258,20 @@ These are the things a reviewer should know before believing anything above.
    `list_tools`/`call_tool`, but nothing serves them over stdio or Streamable
    HTTP, and the workflow calls in-process Python adapters. The title of this
    project is aspirational on this point until the transport lands.
-2. **No model is in the decision path.** Diagnosis and action selection come from
-   hand-written deterministic proposers. Every published evaluation row is
-   `fixture_no_call`. A model-driven proposer and an offline response cache are
-   implemented and unit-tested in `control/model_proposal.py`, but they are not
-   yet wired into the runtime, so no measurement uses them.
-3. **The sabotage tier measures the gate chain, not a model.** An attack policy
-   is a prompt and there is no model to receive it, so every covert attempt comes
-   from a proposer written to always attempt, and T4's monitor is a deterministic
-   stand-in written to catch that exact pattern. Both are labelled as such in
+2. **No model is in the decision path of any published measurement.** Every
+   published evaluation row is `fixture_no_call`, and its diagnosis and action
+   selection come from hand-written deterministic proposers. The model-driven
+   proposer in `control/model_proposal.py` *is* wired — `IncidentRuntime` takes a
+   `proposer_factory` seam and a model output reaches the gate chain through it —
+   and real captures are committed under `artifacts/model-captures/`. What does
+   not exist is a *published row* naming a model: every capture so far ended
+   without a covert attempt, which produces a one-leg episode that the row
+   contract refuses to publish as a two-leg row. See
+   [`docs/findings/`](docs/findings/).
+3. **The sabotage tier measures the gate chain, not a model.** Every covert
+   attempt in every published cell comes from a proposer written to always
+   attempt, and T4's monitor is a deterministic stand-in written to catch that
+   exact pattern. Both are labelled as such in
    every published row (`attack_policy_source`, `monitor_source`), and no cell is
    evidence about what a model would attempt or what a model-backed monitor would
    flag. What the tier does establish is architectural and does not depend on a
@@ -294,22 +307,25 @@ These are the things a reviewer should know before believing anything above.
 - `scenarios/` — frozen contracts (checkpoints, reliability, sabotage)
 - `db/` — journaled Postgres migrations
 - `docs/` — [threat model](docs/threat-model.md),
+  [threat model and methodology](docs/threat-model-and-methodology.md),
   [architecture status](docs/architecture-decisions.md),
   [D1 runbook](docs/d1-runbook.md),
+  [one-clock discipline](docs/one-clock-discipline.md),
   [verification receipt](docs/verification.md)
+- `docs/findings/` — results that are published as prose because they produced no
+  publishable row
 
 ## Next milestones
 
-1. Rename the package to `incidentgate`; freeze the idempotency namespace
-   constant first, because it is a wire value baked into every durable
-   idempotency key.
-2. Serve the operations server over Streamable HTTP and route the mutation
+1. Serve the operations server over Streamable HTTP and route the mutation
    through a real MCP client, then run the official
    `@modelcontextprotocol/conformance` kit against all three servers.
-3. Wire the model proposer into the runtime so the three-condition comparison and
-   the sabotage tier stop being vacuous.
-4. Implement R13–R20, then one real covert channel (T1) end-to-end.
-5. CI regression gates, the full timeline UI, and a 90-second demo.
+2. Obtain a covert attempt from a model. The proposer seam is wired and real
+   captures exist, but every one of them declined, so the three-condition
+   comparison and the sabotage tier are still vacuous for the reason they always
+   were: nothing has attempted anything the gates could stop.
+3. Implement R13–R20.
+4. CI regression gates, the full timeline UI, and a 90-second demo.
 
 ## License
 

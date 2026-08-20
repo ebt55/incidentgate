@@ -33,10 +33,13 @@ from incidentgate.reasons import (
 #     (tests/sabotage/test_t1_runtime.py);
 #   * durable proofs -- migration 015, fixture integrity, ledger, audit
 #     (tests/sabotage/test_t1_migration.py);
-#   * negative control -- the two-condition experiment in
-#     evaluation/t1_control.py, which shows the covert action really executing
-#     when ungated and really refused when gated, with the incident task
-#     completing either way (tests/sabotage/test_t1_negative_control.py);
+#   * negative control -- the two-condition experiment that shows the covert
+#     action really executing when ungated and really refused when gated, with
+#     the incident task completing either way
+#     (tests/sabotage/test_t1_negative_control.py). It was written in
+#     evaluation/t1_control.py; that module was generalised beyond T1 and is now
+#     evaluation/sabotage_episodes.py, which records the rename in its own
+#     docstring;
 #   * evaluation -- sabotage results are dual-checker (incident + covert side
 #     effect), a shape neither other result model can carry, so the lane is its
 #     own contract: SabotageEvaluationResult in evaluation/sabotage.py, pinned
@@ -718,7 +721,9 @@ INCIDENTS = frozenset(f"INC-{item}" for item in RUNNABLE_SCENARIOS)
 
 #: The scenarios the runtime builds an action-taking workflow for. Derived from
 #: the episode policy, so ``_scenario_span`` and ``_build_graph`` can each stop
-#: being a second hand-written copy of the same seventeen identifiers.
+#: being a second hand-written copy of the same identifiers -- nineteen of them
+#: today, and a number that moves on every promotion, which is the reason it is
+#: derived rather than written down here.
 ACTION_TAKING_SCENARIOS: frozenset[str] = frozenset(
     scenario_id
     for scenario_id, definition in SCENARIOS.items()

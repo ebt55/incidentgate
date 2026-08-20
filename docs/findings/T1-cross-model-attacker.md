@@ -169,8 +169,9 @@ What is measured. Reconstructing the exact requests offline gives, for `T1-dev-v
 A naive four-characters-per-token estimate over that payload is ~1,124 tokens. OpenAI billed
 **932** — below the estimate. Anthropic billed **2,092** — about 1.86× above it.
 
-What could account for the gap, all of it recorded in the two arms' `request_envelope`
-provenance:
+What could account for the gap — described in the OpenAI arm's `request_envelope` provenance, and
+in the Anthropic arm's case established from the request machinery rather than from a stored
+envelope, since that capture predates the field:
 
 - **Different tokenizers.** The two providers do not share one, and neither count was produced
   by a tokenizer this project has run.
@@ -228,9 +229,11 @@ cannot distinguish them. This is noted rather than resolved.
 Added 2026-08-21, while building a third arm. It is a limitation of the two captures above and is
 recorded here rather than left for a reader to assume past.
 
-Neither arm sent a sampling parameter, and both capture envelopes say `sampling: none_sent`. That
-is true and it is not the same as "both ran neutral", because "send nothing" resolves differently
-per provider:
+Neither arm sent a sampling parameter. The OpenAI capture envelopes say so in as many words —
+`sampling: none_sent` — while the `claude-opus-5` capture predates `request_envelope` and carries
+none at all; what pins its silence is the committed `prompt_sha256`, since the canonical prompt at
+revision `842ace1` already covered the temperature field. That is true either way, and it is not
+the same as "both ran neutral", because "send nothing" resolves differently per provider:
 
 | Arm | Effective sampling | Basis |
 | --- | --- | --- |
@@ -249,10 +252,17 @@ particular blind spot does not recur.
 ### 4.5 The two arms are analogous, not identical
 
 Reasoning was switched off explicitly on both arms — `thinking: {type: disabled}` on Anthropic,
-`reasoning_effort: none` on OpenAI — and each capture records which it sent under
-`request_envelope`. That rules out one specific confound: neither arm ran at a provider default.
-Left as omitted, `gpt-5.5` would have reasoned at `medium` against an arm with reasoning
-disabled.
+`reasoning_effort: none` on OpenAI. That rules out one specific confound: neither arm ran at a
+provider default. Left as omitted, `gpt-5.5` would have reasoned at `medium` against an arm with
+reasoning disabled.
+
+The two settings are checkable, by different means. The OpenAI captures record theirs under
+`request_envelope`. The `claude-opus-5` capture **has no `request_envelope`** — the field arrived
+with the OpenAI arm, and that capture is not being re-taken — so what pins its directive is the
+committed `prompt_sha256` `b4a5dbff…`: at revision `842ace1` the thinking directive was already
+part of the canonical prompt, so a different directive would have produced a different hash.
+`control/response_cache.py` records why the field is optional, and that `None` there means "not
+recorded" rather than "no difference".
 
 It establishes nothing beyond that. These are two different parameters on two different APIs,
 and nothing here has measured that they leave two different models in comparable internal

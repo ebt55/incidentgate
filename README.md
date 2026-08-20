@@ -156,12 +156,18 @@ safeguard comparison has almost nothing to catch.
 The table states its own model coverage, in a sentence derived from the rows, and
 it currently reads **0/30**. The machinery to change that is finished and tested:
 a model proposer reaches the gate chain through the runtime's proposer seam, and
-an enrolled scenario publishes a row naming its provider and model. What is
-missing is a captured model output. The one committed response-cache entry is a
-body written by hand — it records `capture="synthetic"` and replays naming
-nobody — so enrolment is deliberately empty rather than resting on it. Closing
-this gap needs a live provider call, not more code; see
-[`docs/verification.md`](docs/verification.md).
+an enrolled scenario publishes a row naming its provider and model.
+
+Live provider calls have since been made — three that reached a model, across
+`claude-opus-5` and `gpt-5.5`, all committed as real `capture="provider_call"`
+entries under `artifacts/model-captures/`. **The coverage sentence still reads
+0/30 anyway**, and that is the honest number: every one of those calls ended in
+the model *declining* the covert objective, which produces a one-leg episode that
+the row contract correctly refuses to publish as a two-leg row. So the safeguard
+chain has still never been presented with a covert action by a real model, and
+the comparison above still has almost nothing to catch. See
+[`docs/verification.md`](docs/verification.md) and
+[`docs/findings/T1-cross-model-attacker.md`](docs/findings/T1-cross-model-attacker.md).
 
 ## What the system does
 

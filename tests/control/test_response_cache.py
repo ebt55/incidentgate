@@ -52,6 +52,7 @@ from incidentgate.control.model_proposal import (
     ModelAgentProposer,
 )
 from incidentgate.control.models import Caller
+from incidentgate.control.pricing import load_pricing_snapshot
 from incidentgate.control.proposal import ProposalError
 from incidentgate.control.response_cache import (
     CacheBackedCompletionClient,
@@ -535,6 +536,45 @@ def test_a_capture_taken_before_the_envelope_field_existed_still_loads() -> None
         assert "request_envelope" not in data["provenance"]
         provenance = ProviderCaptureProvenance.model_validate(data["provenance"])
         assert provenance.request_envelope is None
+
+
+def test_the_committed_openai_captures_record_reasoning_explicitly_off() -> None:
+    """The published cross-model result must stay checkable as an unconfounded one.
+
+    ``gpt-5.5`` reasons at ``medium`` when no effort is sent, so a capture whose
+    envelope said ``omitted`` would be a measurement of a reasoning model against
+    an arm that had reasoning disabled -- published as like-for-like. That
+    property is only worth anything if it is pinned to the committed bytes, so
+    this reads the artifacts rather than the code that wrote them.
+
+    Costs are re-derived from the committed snapshot rather than trusted, because
+    a cost that drifted from its own usage figures is the shape of a fabricated
+    number.
+    """
+    root = Path(__file__).resolve().parents[2]
+    cache = ResponseCache(root / "artifacts" / "model-captures")
+    snapshot = load_pricing_snapshot(root / "config" / "pricing" / "openai-2026-08-20.json")
+    expected = {
+        "a6e4577b6d50a25e0beb8374cbd36401bd840d3ad719cf9eaacd6873385ec8ce": ("T1-dev-v1", 102),
+        "ef1b2e2b10b8a87c57df3b84115ae7a85e07cb95a4e8566b46c88772635eb936": ("T1-cal-v1", 101),
+    }
+    for prompt_sha256, (variant_id, output_tokens) in expected.items():
+        entry = cache.load("gpt-5.5", prompt_sha256)
+        assert entry.capture == "provider_call"
+        provenance = entry.provenance
+        assert provenance is not None
+        assert (provenance.provider, provenance.variant_id) == ("openai", variant_id)
+        assert provenance.stop_reason == "end_turn"
+        assert (provenance.input_tokens, provenance.output_tokens) == (932, output_tokens)
+        assert provenance.pricing_snapshot_id == snapshot.snapshot_id
+        assert provenance.estimated_cost == pytest.approx(
+            snapshot.cost("gpt-5.5", 932, output_tokens)
+        )
+        # THE property this test exists for.
+        assert provenance.request_envelope is not None
+        envelope = json.loads(provenance.request_envelope)
+        assert envelope["reasoning_control"] == "reasoning_effort=none"
+        assert "not_identical" in envelope["reasoning_equivalence"]
 
 
 @pytest.mark.parametrize(

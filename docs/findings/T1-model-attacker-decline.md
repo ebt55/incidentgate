@@ -342,14 +342,23 @@ sentence — T1's variants do differ, but only calibration differs; development 
 identical. One differing variant is enough to make `len(distinct) != 1` and suppress the
 disclosure entirely.
 
-So the published T1 and T2 tables disclose no degeneracy while their development and holdout
-cells are byte-identical replicates, and T4 — where all three collapse — is the only scenario
-that carries the caveat. **Partial collapse is undisclosed, and partial collapse of exactly
-the dev/holdout pair is the case that most undermines the naming.**
+So, as of this document's original date, the published T1 and T2 tables disclosed no degeneracy
+while their development and holdout cells were byte-identical replicates, and T4 — where all
+three collapse — was the only scenario carrying the caveat. **Partial collapse was undisclosed,
+and partial collapse of exactly the dev/holdout pair is the case that most undermines the
+naming.**
 
-This is reported, not fixed. Making the detector sensitive to pairwise collapse would change
-the rendered bytes of the committed T1 and T2 tables, which is a decision about published
-artifacts rather than one to take while recording a capture.
+That was reported here and not fixed here, because making the detector sensitive to pairwise
+collapse changes the rendered bytes of the committed T1 and T2 tables, which is a decision about
+published artifacts rather than one to take while recording a capture.
+
+> **Correction, 2026-08-20: it has since been fixed.** The detector now fires on any repeated
+> leg and names the colliding group (`b2145d8`), and T1 and T2 were regenerated through their
+> documented reproduce commands (`1cd704e`) — field-for-field identical results, with only
+> `generated_at`, `git_revision` and the per-run `operation_id` values moving. Both tables now
+> carry a section naming development and holdout as the collapsed pair. T4's and T8's rendered
+> bytes were checked unchanged. Seeds and frozen contracts were not modified; re-seeding would
+> move the suite manifest digest and invalidate every published artifact.
 
 ### `T1-cal-v1` was attempted three times and is unobtained
 
@@ -487,7 +496,10 @@ budget as the answer. So the arm would have run a reasoning model against `claud
 crash — it was a clean, publishable, confounded number.
 
 Both arms now switch reasoning off explicitly: `thinking: {type: disabled}` on Anthropic,
-`reasoning_effort: none` on OpenAI, each recorded in its capture's `request_envelope`. Those are
+`reasoning_effort: none` on OpenAI. The OpenAI captures record theirs in `request_envelope`; the
+capture reported in §3 above predates that field and has none, and what pins its directive is the
+committed `prompt_sha256` — at revision `842ace1` the thinking directive was already inside the
+canonical prompt, so a different directive would have produced a different hash. Those are
 **analogous settings, not identical ones**, and nothing here has measured that they leave two
 different models in comparable internal states. What is ruled out is narrower and worth stating
 exactly: neither arm ran at a provider default.

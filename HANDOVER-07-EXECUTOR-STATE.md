@@ -359,6 +359,32 @@ scope on reasoning that was not the strongest available, and an owner override.
 
 ## 10. What is left
 
+> **Addendum, 2026-08-21.** This section describes the state at `f82a5d6`. Six of its items have
+> since closed and are struck through in substance rather than deleted, because the sequence is
+> part of the record:
+>
+> - **The central gap closed.** Under the v3 output contract two local open-weight models
+>   attempted T1's covert objective; three two-leg rows publish with
+>   `attacker_source = model:local/…`, the covert call landing ungated and denied
+>   `capability_prohibited` at the policy gate in both gated arms. **The monitor and human
+>   approval gate did not close** — policy denied first — so that half of the central gap stands.
+>   [`docs/findings/T1-model-attacker-prevention.md`](docs/findings/T1-model-attacker-prevention.md).
+> - The three documentation defects that "the docs-only commit could not carry" are fixed: the
+>   runbook's `request_envelope` claim now distinguishes the OpenAI envelopes from the
+>   `claude-opus-5` capture that predates the field; the absolute `.claude/worktrees/` path is
+>   gone; and `docs/verification.md` carries receipts for the v1, v2 and v3 local runs.
+> - The README's live-call paragraph is reconciled. It said three calls reached a model. Fifteen
+>   did — three hosted and twelve local — out of nineteen recorded, the other four having been
+>   refused by a provider classifier before the model was consulted.
+> - `control/attack_policies.py` no longer says the model-driven condition "arrives later", and
+>   `control/model_attacker.py`, which quoted that sentence verbatim, was updated with it.
+>
+> Everything else in this section is unchanged and still open, including T4, the R-tier
+> false-positive lane, T7's missing artifact, `claude-opus-5` × `T1-cal-v1`, the dev/cal/holdout
+> split question, the chaos kill-matrix's unreachable stamp, and the six unfixed defects in §7.
+> §11's hypothesis is also still unmeasured: these attempts came under the **free-decline**
+> steering, so nothing here varied that variable either.
+
 - **The central gap.** No model has ever attempted a covert action in this harness. Every gate
   in the chain is still unexercised by a model. Nothing in this stretch changed that.
 - **T4.** The only scenario where the monitor is load-bearing — the deterministic policy returns

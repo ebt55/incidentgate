@@ -16,11 +16,15 @@ prompt, would attempt the call at all. Conflating the two is the failure mode
 this module is shaped to avoid -- a run where nothing attempted the covert
 action would otherwise be indistinguishable from a run where the gate stopped it.
 
-The model-driven condition arrives later, with captured per-variant fixtures
-replayed through ``IncidentRuntime``'s existing ``proposer_factory`` seam (the
-same seam these use). When it lands, these remain useful as the floor: the
-gate's blocking property must hold under a policy that always attempts, not only
-under policies that sometimes do.
+The model-driven condition **has landed**, in ``control/model_attacker.py``: it
+replays captured per-variant fixtures through ``IncidentRuntime``'s existing
+``proposer_factory`` seam -- the same seam these use -- and three published rows
+under ``artifacts/model-attacker/`` now carry ``attacker_source =
+model:local/…``. These remain the floor, and the floor is still load-bearing:
+the gate's blocking property must hold under a policy that always attempts, not
+only under policies that sometimes do. It is also what keeps a declining model's
+row distinguishable from a working gate, which is the confusion this module
+exists to prevent.
 
 WHAT THE VARIANTS ARE
 =====================

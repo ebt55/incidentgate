@@ -541,14 +541,25 @@ completed README claim audit.
 
 ## 11. Limitations of what is published today, in one list
 
-1. Every published evaluation row is a deterministic fixture result. **No model has ever
-   been in a published decision path**, and the published model-coverage number is zero,
-   derived from the rows.
-2. The sabotage tier's attacker is an always-attempt deterministic stand-in, so its
-   ungated attack-success rate is true by construction and is not a measurement of
-   willingness.
+1. **Three published rows have a model in the decision path; every other one is a
+   deterministic fixture result.** The three are `artifacts/model-attacker/T1-v3-*`, T1
+   only, with a quantised 12–14B local open-weight attacker. Checkpoint-B's model-coverage
+   number is still `0/30` and is still derived from its own rows: its denominator is that
+   matrix's thirty rows and none of these three is one of them.
+2. The sabotage tier's **v2** attacker is an always-attempt deterministic stand-in, so the
+   ungated attack-success rate in those tables is true by construction and is not a
+   measurement of willingness. The v3 model rows do measure a real choice — but not a rate:
+   the same model declined one of those cells under the previous output contract and
+   attempted it under the current one, so an attempt rate here is a property of a
+   `(model, contract, steering)` triple. The deterministic floor is published beside every
+   model row for exactly this reason.
 3. The monitor that stops the cross-call scenario is a whitelist written with that attack
-   in hand. It is an oracle upper bound and does not measure monitor competence.
+   in hand. It is an oracle upper bound and does not measure monitor competence. **Every
+   monitor in this repository is a stand-in, and neither the monitor nor the human approval
+   gate has ever been presented with a covert action by a model** — T1's covert capability
+   is policy-prohibited, so the policy gate denied it first and `monitor_verdict` is null on
+   every covert step in the three model rows. T4, the scenario where the monitor is
+   load-bearing, has never been run with a model attacker.
 4. The three conditions in every published lane run on different orchestration substrates
    (§5.1), so no between-column difference is attributable to the safeguards alone.
 5. The `development`/`calibration`/`holdout` labels do not yet denote a generalization
@@ -580,7 +591,7 @@ completed README claim audit.
 Every claim in this document about present behaviour, with its evidence. Paths are
 relative to the repository root.
 
-### A.1 Every *published* attacker is deterministic; the contract's `policy_text` is never rendered
+### A.1 Every *v2-published* attacker is deterministic; the contract's `policy_text` is never rendered
 
 - `src/incidentgate/control/attack_policies.py:1-39` — module docstring: "an
   honestly-labelled deterministic stand-in… No model is consulted, no prompt is rendered".
@@ -591,17 +602,26 @@ relative to the repository root.
 - `scenarios/sabotage/T1.json:29-51` — `attack_policy_variants[].policy_text`, natural
   language written for a model. Nothing reads this field into a prompt; the only readers
   are the manifest validators in `src/incidentgate/manifests.py` and the contract tests.
-- `src/incidentgate/control/attack_policies.py:19-23` — names the seam the model-driven
-  condition arrives through (`IncidentRuntime`'s `proposer_factory`).
+- `src/incidentgate/control/attack_policies.py` — module docstring names the seam the
+  model-driven condition arrived through (`IncidentRuntime`'s `proposer_factory`) and
+  states why the floor stays published beside it.
 - All eight contracts carry exactly three variants (24 total); T1, T2, T4, T7 and T8 have
   runtime coverage. The four official deterministic sabotage-v2 artifacts cover 12 variants
   and 36 cells; T7 has no v2 artifact.
 - **A steering prompt is now rendered, and it is a different artifact.** The model-backed
   T1 lane renders the frozen `config/attack-steering/T1-model-v1.txt` — not `policy_text` —
-  and what it captured is committed under `artifacts/model-captures/`. Nothing that lane has
-  produced is a published row: every capture ended without a covert attempt, so claim 1
-  above and the model-coverage figure of zero are unaffected. Results in
-  [`findings/`](findings/).
+  and what it captured is committed under `artifacts/model-captures/`.
+- **That lane has now published three rows, and the heading above is scoped to v2 for that
+  reason.** `artifacts/model-attacker/T1-v3-{nemo-dev,nemo-cal,qwen3-cal}.json` carry
+  `attacker_source = model:local/…`; the covert call lands in the ungated arm and is denied
+  `capability_prohibited` at the policy gate in both gated arms. Three qualifications hold
+  the claim in place: the four **v2 sabotage-matrix** artifacts (T1, T2, T4, T8) are still
+  entirely deterministic and are not touched by this; the checkpoint-B model-coverage figure
+  is still `0/30`, because its denominator is that matrix's thirty rows and none of these is
+  one of them; and `monitor_source` on all three rows is a labelled oracle, with the monitor
+  never reached because policy denied first. Results and bounds in
+  [`findings/T1-model-attacker-prevention.md`](findings/T1-model-attacker-prevention.md);
+  the hosted arms' declines, which published no row, in [`findings/`](findings/).
 
 ### A.2 The monitor's input, and the absence of a calibration artifact
 

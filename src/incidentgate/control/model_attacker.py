@@ -5,9 +5,12 @@ WHAT THIS IS, AND WHAT IT REPLACES
 
 ``control/attack_policies.py`` holds the deterministic floor: proposers that
 always issue the covert action because they are written to. Its module docstring
-names the successor exactly -- "the model-driven condition arrives later, with
-captured per-variant fixtures replayed through ``IncidentRuntime``'s existing
-``proposer_factory`` seam (the same seam these use)" -- and this is it.
+names this module as its successor -- captured per-variant fixtures replayed
+through ``IncidentRuntime``'s existing ``proposer_factory`` seam, the same seam
+those proposers use -- and this is it. The floor is not retired by it: it stays
+published as the control column beside every model row, because a gate's
+blocking property has to hold under a proposer that always attempts and not only
+under one that sometimes does.
 
 :class:`ModelAttackProposer` is a ``ProposalGenerator`` (see ``ports.py``) like
 every other proposer in this project, so the gate chain cannot tell it apart

@@ -30,10 +30,8 @@ structured output    ``output_config.format``       ``response_format.json_schem
 usage field names    ``input_tokens``/``output_``   ``prompt_tokens``/``completion_``
 refusal surface      ``stop_reason="refusal"``      ``message.refusal`` or
                      + ``stop_details.category``    ``finish_reason``
-reasoning            ``thinking={"type":            no parameter sent; the
-                     "disabled"}`` -- off, so the   provider default applies, so
-                     whole budget is the answer     the budget covers reasoning
-                                                    *and* the answer
+reasoning            ``thinking={"type":            ``reasoning_effort="none"``
+                     "disabled"}``                  -- explicitly off on both
 ===================  =============================  ==============================
 
 None of that is a content difference and none of it is hidden:
@@ -42,25 +40,38 @@ arms can see exactly what was not identical and judge for themselves, and
 ``sabotage_v3_t1`` writes that descriptor into the capture provenance so it
 travels with the captured bytes rather than living only in this docstring.
 
-THE REASONING ROW IS THE ONE THAT COSTS SOMETHING, AND IT IS NOT WORKED AROUND
-=============================================================================
+THE REASONING ROW, AND WHY OMITTING THE PARAMETER WAS NOT AN OPTION
+==================================================================
 
-The Anthropic arm disables thinking outright, so its 2048-token budget is 2048
-tokens of JSON. This arm sends no reasoning parameter, so a GPT-5-family model
-reasons at the provider's default and those tokens are billed as output tokens
-and drawn from the same ``max_completion_tokens``. The two budgets are the same
-number and they do not buy the same thing.
+An earlier revision of this module sent no reasoning parameter and described the
+result as the provider default applying. That was true and it was not harmless.
+Per OpenAI's reasoning guide, gpt-5.5 defaults to ``medium``, and reasoning
+tokens are billed as output tokens and drawn from the same budget as the answer.
+So the arm would have run gpt-5.5 reasoning at medium against claude-opus-5 with
+thinking explicitly disabled -- a confound on the one cell whose entire value is
+that both models met identical conditions.
 
-Sending an effort parameter to close the gap was rejected: its accepted values
-for this model are not verifiable without spending, and this project does not
-put unverified values in a request whose whole purpose is provenance. Raising
-the budget was rejected for the opposite reason -- the output budget is one of
-the things held identical across the two arms on purpose.
+The failure mode worth naming is that it would not have looked like a failure.
+Truncation was the loud outcome; a *successful* call producing a clean,
+publishable, confounded number was the quiet one.
 
-So the gap is left open and published. If reasoning consumes the budget the
-provider returns ``finish_reason: "length"``, which the branch below reports as
-``proposal_model_output_truncated``: a named, billed failure that is visibly not
-a decline and visibly not a short answer.
+So this arm sends ``reasoning_effort="none"`` explicitly, and neither arm relies
+on a default. The flat field name is the Chat Completions spelling, confirmed
+from the API reference; the Responses API spells the same control
+``reasoning: {effort: ...}``, so a move to that endpoint has to change the field
+name and the endpoint together.
+
+That makes the two arms **analogous, not identical** -- both explicitly off, on
+two different parameters of two different APIs -- and the envelope descriptor
+records exactly that weaker claim. Nothing here has measured that the two
+settings leave the two models in comparable internal states, and calling them
+equivalent would assert something no one checked.
+
+The output budget stays at 2048 on both arms. With reasoning off it is ample:
+the Anthropic capture's answer was 224 tokens. If it is ever exhausted anyway
+the provider returns ``finish_reason: "length"``, which the branch below reports
+as ``proposal_model_output_truncated`` -- a named, billed failure that is
+visibly not a decline and visibly not a short answer.
 
 STRICT SCHEMA IS DELIBERATELY OFF
 =================================
@@ -111,8 +122,14 @@ _POLICY_FINISH_REASONS: Final = frozenset({"content_filter"})
 #: The one value that means the model completed normally.
 _COMPLETE_FINISH_REASON: Final = "stop"
 
+#: The Chat Completions reasoning control: a flat string field, not the Responses
+#: API's ``reasoning: {effort: ...}`` object. Confirmed from the API reference on
+#: 2026-08-20. Named as a constant because the request, the capability table and
+#: the published envelope all have to agree on it.
+_REASONING_EFFORT_FIELD: Final = "reasoning_effort"
 
-def openai_envelope_descriptor() -> dict[str, str]:
+
+def openai_envelope_descriptor(reasoning: dict[str, str] | None = None) -> dict[str, str]:
     """Publish exactly how this provider's envelope differs from Anthropic's.
 
     Recorded rather than absorbed. A reader comparing a claude row against a gpt
@@ -128,13 +145,25 @@ def openai_envelope_descriptor() -> dict[str, str]:
         "structured_output_strict": "false",
         "usage_fields": "prompt_tokens,completion_tokens",
         "refusal_surface": "message.refusal|finish_reason",
-        # The one entry that is a limitation rather than a renaming. No
-        # reasoning-effort parameter is sent, so the provider default applies and
-        # the output budget is shared between reasoning and the answer -- unlike
-        # the Anthropic arm, which disables thinking and spends the whole budget
-        # on the answer. Recorded because a reader comparing token counts across
-        # the two arms would otherwise be comparing two different quantities.
-        "reasoning_control": "none_sent:provider_default_shares_output_budget",
+        # The exact reasoning setting that went out, so a reader can see that
+        # this arm did not run at the provider's `medium` default. Recorded as
+        # the wire field name rather than the directive shape, because the wire
+        # field is what the provider was actually asked.
+        "reasoning_control": (
+            f"{_REASONING_EFFORT_FIELD}:omitted:provider_default_applies"
+            if reasoning is None
+            else f"{_REASONING_EFFORT_FIELD}={reasoning.get('effort', 'unknown')}"
+        ),
+        # See the matching note in ``anthropic_envelope_descriptor``: both arms
+        # switch reasoning off explicitly, and that is the whole of the
+        # equivalence. Two different parameters on two different APIs are not
+        # shown to leave two models in comparable internal states, and the record
+        # must not imply otherwise.
+        "reasoning_equivalence": (
+            "not_set:provider_default_applies"
+            if reasoning is None
+            else "explicitly_off:analogous_to_the_other_arm_not_identical"
+        ),
         "sampling": "none_sent",
     }
 
@@ -200,20 +229,34 @@ class OpenAICompletionClient:
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.thinking is not None:
-            # ``request.thinking`` is an Anthropic request shape with no OpenAI
-            # equivalent, and there is no honest translation of it: the nearest
-            # OpenAI control is a reasoning-effort value this project has not
-            # verified for this model. So a set directive is a capability-table
-            # error, and it fails closed and loudly rather than being dropped.
+            # ``request.thinking`` is an Anthropic request shape, and this
+            # endpoint has no such field. The reasoning control here is
+            # ``reasoning_effort`` and it arrives on its own field, so a thinking
+            # directive means the capability table sent this model to the wrong
+            # provider's accessor.
             #
             # Dropping it silently is the tempting version and the wrong one. A
             # caller that asked for thinking to be disabled and was not told the
             # request went out without that instruction would compare two arms
-            # believing a parameter held on both.
+            # believing a parameter held on both -- which is exactly how this arm
+            # nearly shipped running at the provider's default.
             raise ValueError(
                 "an Anthropic thinking directive cannot be sent to OpenAI; the capability "
                 "table entry for this model is wrong"
             )
+        if request.reasoning is not None:
+            effort = request.reasoning.get("effort")
+            if set(request.reasoning) != {"effort"} or not isinstance(effort, str) or not effort:
+                # A malformed directive must not degrade into an omitted one:
+                # omission is `medium` here, so "we could not read the setting"
+                # and "reason at the default" would become the same request.
+                raise ValueError(
+                    "an OpenAI reasoning directive must be exactly {'effort': <non-empty str>}"
+                )
+            # Flattened at the call site, because this is the one place that
+            # knows the endpoint. Chat Completions takes a flat string; the
+            # Responses API takes the nested object the directive already is.
+            kwargs[_REASONING_EFFORT_FIELD] = effort
         response = self._get_client().chat.completions.create(**kwargs)
         request_id = getattr(response, "_request_id", None)
         choices = getattr(response, "choices", None)

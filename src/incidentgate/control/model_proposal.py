@@ -74,6 +74,7 @@ from incidentgate.reasons import (
 
 from .model_capabilities import (
     model_accepts_sampling,
+    reasoning_directive,
     thinking_directive,
     thinking_headroom_tokens,
 )
@@ -354,10 +355,25 @@ class CompletionRequest:
     user_content: str
     max_tokens: int
     temperature: float | None
+    #: Anthropic's reasoning control. None for every other provider.
     thinking: dict[str, str] | None
     schema: dict[str, Any]
     canonical_prompt: str
     prompt_sha256: str
+    #: OpenAI's reasoning control, as ``{"effort": ...}``. None for every other
+    #: provider.
+    #:
+    #: A second field rather than a second meaning for ``thinking``, because the
+    #: two are different parameters with different names and different value
+    #: vocabularies. One field carrying both shapes would have to be
+    #: disambiguated by sniffing its keys, and every guard that protects one arm
+    #: from the other's parameter would become a guess about which shape it was
+    #: looking at.
+    #:
+    #: Defaulted so that adding it changed no existing construction site -- and,
+    #: more importantly, so that no existing request's canonical bytes moved. See
+    #: ``_build_request`` for why that mattered.
+    reasoning: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -473,7 +489,7 @@ class ProviderPolicyRefusal(Exception):
 ANTHROPIC_PROVIDER = "anthropic"
 
 
-def anthropic_envelope_descriptor() -> dict[str, str]:
+def anthropic_envelope_descriptor(thinking: dict[str, str] | None = None) -> dict[str, str]:
     """Publish the API envelope this transport sends, in the same keys its siblings use.
 
     This exists so that "the two arms saw the same prompt in different envelopes"
@@ -481,9 +497,9 @@ def anthropic_envelope_descriptor() -> dict[str, str]:
     its own envelope for the comparison to have two sides; a descriptor published
     only by the newcomer would leave a reader inferring this one from a docstring.
 
-    Every value here is a fact about the request ``complete`` below actually
-    builds, so a change to that method that is not reflected here is a defect,
-    and ``tests/control/test_model_proposer.py`` pins the pairing.
+    ``thinking`` is the directive the request actually carried, so the recorded
+    value is an observation rather than a description of what this transport
+    usually does.
     """
     return {
         "provider": ANTHROPIC_PROVIDER,
@@ -493,14 +509,25 @@ def anthropic_envelope_descriptor() -> dict[str, str]:
         "structured_output_strict": "true",
         "usage_fields": "input_tokens,output_tokens",
         "refusal_surface": "stop_reason|stop_details.category",
-        # The counterpart of the OpenAI arm's open reasoning gap. A `thinking`
-        # parameter exists and its value is decided per model id by
-        # `model_capabilities`, so for a "send_disabled" model such as
-        # claude-opus-5 reasoning is off and the whole output budget is
-        # available to the JSON object. The OpenAI arm has no such control in
-        # its request at all, which is the asymmetry both descriptors exist to
-        # make visible.
-        "reasoning_control": "thinking_parameter:per_model_capability_table",
+        "reasoning_control": (
+            "thinking:omitted"
+            if thinking is None
+            else f"thinking.type={thinking.get('type', 'unknown')}"
+        ),
+        # THE CLAIM IS ANALOGY, NOT IDENTITY, AND THE WEAKER ONE IS THE TRUE ONE.
+        #
+        # Both arms switch reasoning off explicitly, neither relies on a
+        # provider default, and that is as far as the equivalence goes. They are
+        # different parameters on different APIs, and nothing here has measured
+        # that "thinking disabled" and "reasoning_effort none" leave the two
+        # models in comparable internal states. A reader is entitled to weigh
+        # that themselves, which they cannot do if the record calls the two
+        # arms identical.
+        "reasoning_equivalence": (
+            "not_set:provider_default_applies"
+            if thinking is None
+            else "explicitly_off:analogous_to_the_other_arm_not_identical"
+        ),
         "sampling": "none_sent",
     }
 
@@ -589,6 +616,18 @@ class AnthropicCompletionClient:
             kwargs["temperature"] = request.temperature
         if request.thinking is not None:
             kwargs["thinking"] = request.thinking
+        if request.reasoning is not None:
+            # The mirror of the guard on the OpenAI transport. ``reasoning`` is
+            # OpenAI's control and this endpoint has no such field, so a request
+            # carrying one was built from a capability-table row that named the
+            # wrong provider. Failing here is the only way that stays visible:
+            # the Messages API would ignore an unknown key, the call would
+            # succeed, and the arm would quietly run at whatever Anthropic's
+            # default is while the record claimed a setting was applied.
+            raise ValueError(
+                "an OpenAI reasoning directive cannot be sent to Anthropic; the capability "
+                "table entry for this model is wrong"
+            )
         response = self._get_client().messages.create(**kwargs)
         stop_reason = getattr(response, "stop_reason", None)
         if stop_reason == "max_tokens":
@@ -681,6 +720,10 @@ class ModelAgentProposer:
         # shape surfaces as a recorded ProposalError terminal with no action, so the failure is
         # visible rather than indistinguishable from a real verdict.
         self._thinking = thinking_directive(model)
+        # At most one of these is ever set: the capability table dispatches a
+        # model to its own provider's reasoning control and returns None from the
+        # other accessor. Neither arm is left to a provider default.
+        self._reasoning = reasoning_directive(model)
         self._max_tokens = self._OUTPUT_TOKENS + thinking_headroom_tokens(model)
         self._steering_prompt = steering_prompt
         self._action_profile = action_profile
@@ -829,19 +872,36 @@ class ModelAgentProposer:
         if len(user_content.encode("utf-8")) > self._MAX_REQUEST_BYTES:
             raise ProposalError(PROPOSAL_REQUEST_TOO_LARGE)
         system = self._system_prompt()
+        canonical_fields: dict[str, Any] = {
+            "system": system,
+            "user": user_content,
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+            "thinking": self._thinking,
+            "schema_fingerprint": self._output_schema_fingerprint,
+        }
+        # ``reasoning`` APPEARS ONLY WHEN THERE IS ONE, AND THAT IS NOT TIDINESS.
+        #
+        # The cache keys on this hash, so a reasoning setting has to be in it:
+        # two requests differing only in effort must not collide on one cache
+        # entry. But adding an unconditional ``"reasoning": null`` would change
+        # the canonical bytes for *every* model, including the Anthropic ones,
+        # moving the committed claude-opus-5 capture to a hash nothing has ever
+        # been captured at.
+        #
+        # That capture is a billed provider call, and the finding document
+        # records that it was taken once and will not be taken again. Re-keying
+        # it would not invalidate a regenerable fixture the way a schema change
+        # does -- it would destroy the only real measurement this project holds.
+        #
+        # A key that exists exactly when a directive was sent is also the more
+        # honest record: it states what went out, rather than asserting a null
+        # for a parameter the request never had.
+        if self._reasoning is not None:
+            canonical_fields["reasoning"] = self._reasoning
         canonical = json.dumps(
-            {
-                "system": system,
-                "user": user_content,
-                "model": self._model,
-                "max_tokens": self._max_tokens,
-                "temperature": self._temperature,
-                "thinking": self._thinking,
-                "schema_fingerprint": self._output_schema_fingerprint,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
+            canonical_fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         )
         return (
             CompletionRequest(
@@ -851,6 +911,7 @@ class ModelAgentProposer:
                 max_tokens=self._max_tokens,
                 temperature=self._temperature,
                 thinking=self._thinking,
+                reasoning=self._reasoning,
                 schema=_provider_schema(self._output_model),
                 canonical_prompt=canonical,
                 prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),

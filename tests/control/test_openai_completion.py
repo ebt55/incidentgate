@@ -20,7 +20,12 @@ from typing import Any
 
 import pytest
 
-from incidentgate.control.model_capabilities import capability, is_known_model
+from incidentgate.control.model_capabilities import (
+    capability,
+    is_known_model,
+    reasoning_directive,
+    thinking_directive,
+)
 from incidentgate.control.model_proposal import (
     CompletionRequest,
     PricingSnapshot,
@@ -49,6 +54,11 @@ def pricing() -> PricingSnapshot:
 
 
 def request() -> CompletionRequest:
+    """Shaped exactly as ``ModelAgentProposer`` builds it for this model.
+
+    ``reasoning`` is set, not omitted, because omission is what the capability
+    table now exists to prevent: on gpt-5.5 sending nothing means ``medium``.
+    """
     return CompletionRequest(
         model=MODEL,
         system="steering + base system prompt",
@@ -56,6 +66,7 @@ def request() -> CompletionRequest:
         max_tokens=2048,
         temperature=None,
         thinking=None,
+        reasoning={"effort": "none"},
         schema={"type": "object", "properties": {}},
         canonical_prompt="canonical",
         prompt_sha256="a" * 64,
@@ -156,11 +167,15 @@ def test_the_request_carries_the_prompt_bytes_unchanged_in_openais_envelope() ->
     assert "temperature" not in call and "top_p" not in call
     # And no Anthropic-shaped fields leaked across.
     assert "max_tokens" not in call and "system" not in call and "thinking" not in call
+    # Reasoning off, sent explicitly, in the flat Chat Completions spelling --
+    # not the Responses API's nested `reasoning: {effort: ...}` object.
+    assert call["reasoning_effort"] == "none"
+    assert "reasoning" not in call
 
 
 def test_the_envelope_difference_is_published_rather_than_absorbed() -> None:
     """A reader comparing two arms must be able to see what was not identical."""
-    descriptor = openai_envelope_descriptor()
+    descriptor = openai_envelope_descriptor({"effort": "none"})
     assert descriptor["provider"] == PROVIDER
     assert descriptor["system_channel"] == "developer_role_message"
     assert descriptor["output_budget_field"] == "max_completion_tokens"
@@ -175,40 +190,104 @@ def test_both_arms_describe_the_same_facts_so_the_two_can_be_compared() -> None:
     other is a fact one arm stated and the other left to inference, which is the
     condition this pair of descriptors exists to remove.
     """
-    assert set(openai_envelope_descriptor()) == set(anthropic_envelope_descriptor())
-    assert anthropic_envelope_descriptor()["provider"] == "anthropic"
+    openai = openai_envelope_descriptor({"effort": "none"})
+    anthropic = anthropic_envelope_descriptor({"type": "disabled"})
+    assert set(openai) == set(anthropic)
+    assert anthropic["provider"] == "anthropic"
 
 
-def test_the_reasoning_asymmetry_is_stated_and_not_papered_over() -> None:
-    """The one envelope entry that is a limitation rather than a renaming.
+def test_the_recorded_envelope_names_the_exact_reasoning_setting_that_was_sent() -> None:
+    """The record must distinguish "off" from "whatever the provider does by default".
 
-    The Anthropic arm can switch thinking off, so its 2048-token budget is 2048
-    tokens of answer. This arm sends no reasoning control, so the same number
-    covers reasoning and answer together. Publishing the two budgets as equal
-    without this entry would be the quiet version of that difference.
+    Those are the two outcomes the confound turned on, and on this model they
+    look identical in every other field of the request.
     """
-    openai_control = openai_envelope_descriptor()["reasoning_control"]
-    assert openai_control.startswith("none_sent")
-    assert "output_budget" in openai_control
-    assert openai_control != anthropic_envelope_descriptor()["reasoning_control"]
+    assert (
+        openai_envelope_descriptor({"effort": "none"})["reasoning_control"]
+        == "reasoning_effort=none"
+    )
+    assert (
+        anthropic_envelope_descriptor({"type": "disabled"})["reasoning_control"]
+        == "thinking.type=disabled"
+    )
+    # And an arm that sent nothing must say so, rather than inheriting the
+    # reassuring wording of one that did.
+    omitted = openai_envelope_descriptor()["reasoning_control"]
+    assert omitted == "reasoning_effort:omitted:provider_default_applies"
+
+
+def test_the_two_arms_are_recorded_as_analogous_and_never_as_identical() -> None:
+    """The weaker claim is the true one, and it is the one that gets published.
+
+    Both arms switch reasoning off explicitly, which rules out the specific
+    confound of one running at a provider default. It does not establish that
+    ``thinking: disabled`` and ``reasoning_effort: none`` leave two different
+    models in comparable internal states, and nothing in this project has
+    measured that. A descriptor claiming equivalence would be asserting it.
+    """
+    for descriptor in (
+        openai_envelope_descriptor({"effort": "none"}),
+        anthropic_envelope_descriptor({"type": "disabled"}),
+    ):
+        equivalence = descriptor["reasoning_equivalence"]
+        assert equivalence == "explicitly_off:analogous_to_the_other_arm_not_identical"
+        assert "identical" in equivalence and "not_identical" in equivalence
+    # An arm that set nothing makes no analogy claim at all.
+    assert openai_envelope_descriptor()["reasoning_equivalence"] == (
+        "not_set:provider_default_applies"
+    )
+
+
+def test_this_model_is_never_run_at_the_providers_reasoning_default() -> None:
+    """The confound this row was rewritten to remove, asserted at its source.
+
+    gpt-5.5 defaults to ``medium``. Omitting the parameter would have measured a
+    reasoning model against ``claude-opus-5`` with thinking disabled and
+    published it as like-for-like -- and it would have done so through a call
+    that succeeded, so nothing downstream could have caught it.
+    """
+    assert is_known_model(MODEL)
+    assert capability(MODEL).thinking == "send_effort_none"
+    assert reasoning_directive(MODEL) == {"effort": "none"}
+    # The Anthropic accessor must not answer for this model, and vice versa.
+    assert thinking_directive(MODEL) is None
+    assert reasoning_directive("claude-opus-5") is None
+    assert thinking_directive("claude-opus-5") == {"type": "disabled"}
 
 
 def test_an_anthropic_thinking_directive_fails_closed_instead_of_being_dropped() -> None:
-    """A parameter with no honest translation must not be silently discarded.
+    """A parameter this endpoint does not have must not be silently discarded.
 
-    The capability table records this model as sending none, so this cannot fire
-    on a correct table. If it ever does, the table is wrong, and a caller that
-    asked for thinking to be disabled has to learn that the request went out
-    without it -- otherwise two arms get compared on a parameter that held on
-    only one of them.
+    The capability table sends this model to ``reasoning_directive``, so this
+    cannot fire on a correct table. If it ever does, the table is wrong, and a
+    caller that asked for thinking to be disabled has to learn that the request
+    went out without it -- otherwise two arms get compared on a parameter that
+    held on only one of them.
     """
-    assert is_known_model(MODEL)
-    assert capability(MODEL).thinking == "omit_is_off"
     client, fake = client_for(response(content=body()))
     thinking_request = replace(request(), thinking={"type": "disabled"})
     with pytest.raises(ValueError, match="capability table entry for this model is wrong"):
         client.complete(thinking_request)
     assert fake.calls == [], "the request must not reach the provider"
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [{}, {"effort": ""}, {"type": "disabled"}, {"effort": "none", "extra": "x"}],
+)
+def test_a_malformed_reasoning_directive_fails_closed_rather_than_degrading(
+    reasoning: dict[str, str],
+) -> None:
+    """An unreadable setting must not quietly become an omitted one.
+
+    Omission is ``medium`` on this model, so "we could not parse the directive"
+    and "reason at the default" would otherwise collapse into the same request --
+    and the resulting call would succeed.
+    """
+    client, fake = client_for(response(content=body()))
+    with pytest.raises(ValueError, match="must be exactly"):
+        client.complete(replace(request(), reasoning=reasoning))
+    assert fake.calls == []
 
 
 # ---------------------------------------------------------------------------

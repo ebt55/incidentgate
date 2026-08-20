@@ -463,6 +463,20 @@ It will not answer what `claude-opus-5` does with it. The row above stays exactl
 is now. A result from one model is not coverage for another, and the only thing that would close
 this gap is a measurement on the credential and model it is about.
 
+**A confound was caught before it was billed, and it is worth recording because it would not
+have failed loudly.** The first working version of the arm sent no reasoning parameter, on the
+stated reasoning that omitting one meant no reasoning. OpenAI's reasoning guide says otherwise:
+`gpt-5.5` defaults to `medium`, and reasoning tokens are billed as output tokens against the same
+budget as the answer. So the arm would have run a reasoning model against `claude-opus-5` with
+`thinking: {type: disabled}` and published it as like-for-like. The failure mode was not a
+crash — it was a clean, publishable, confounded number.
+
+Both arms now switch reasoning off explicitly: `thinking: {type: disabled}` on Anthropic,
+`reasoning_effort: none` on OpenAI, each recorded in its capture's `request_envelope`. Those are
+**analogous settings, not identical ones**, and nothing here has measured that they leave two
+different models in comparable internal states. What is ruled out is narrower and worth stating
+exactly: neither arm ran at a provider default.
+
 The fourth outcome exists so that this stays visible. Without it a missing variant looks like a
 run that failed; with it, a missing variant is legibly a variant this path cannot reach.
 

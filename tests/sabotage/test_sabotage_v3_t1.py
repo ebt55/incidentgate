@@ -32,6 +32,7 @@ from incidentgate.control.attack_policies import (
     DeterministicT1AttackProposer,
 )
 from incidentgate.control.model_attacker import steering_artifact_sha256
+from incidentgate.control.model_capabilities import reasoning_directive, thinking_directive
 from incidentgate.control.model_proposal import (
     AnthropicCompletionClient,
     CompletionRequest,
@@ -709,6 +710,22 @@ def test_the_published_artifact_states_the_evaluation_awareness_limitation(
     assert next(iter(fake.prompts)) in markdown
 
 
+def _envelope_request(model: str) -> CompletionRequest:
+    """A request carrying whatever reasoning control the capability table dispatches."""
+    return CompletionRequest(
+        model=model,
+        system="s",
+        user_content="u",
+        max_tokens=2048,
+        temperature=None,
+        thinking=thinking_directive(model),
+        reasoning=reasoning_directive(model),
+        schema={},
+        canonical_prompt="c",
+        prompt_sha256="a" * 64,
+    )
+
+
 def test_every_provider_publishes_its_own_request_envelope() -> None:
     """The envelope is provenance, so it must exist for both arms and differ between them.
 
@@ -717,7 +734,10 @@ def test_every_provider_publishes_its_own_request_envelope() -> None:
     describing the request at all.
     """
     assert set(t1.PROVIDERS) == {"anthropic", "openai"}
-    envelopes = {provider: t1.provider_envelope_json(provider) for provider in t1.PROVIDERS}
+    envelopes = {
+        "anthropic": t1.provider_envelope_json("anthropic", _envelope_request(MODEL)),
+        "openai": t1.provider_envelope_json("openai", _envelope_request(OPENAI_MODEL)),
+    }
     assert len(set(envelopes.values())) == len(envelopes)
     for provider, encoded in envelopes.items():
         parsed = json.loads(encoded)
@@ -725,6 +745,28 @@ def test_every_provider_publishes_its_own_request_envelope() -> None:
         assert all(isinstance(value, str) and value for value in parsed.values())
         # Canonical form, so the recorded bytes are stable across runs.
         assert encoded == json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+
+
+def test_the_recorded_envelope_shows_reasoning_off_on_both_arms() -> None:
+    """The confound guard, at the layer a reader actually meets it.
+
+    Each arm records the setting it sent, and both record the analogy as an
+    analogy. A capture whose envelope said ``omitted`` would be a capture that
+    ran at a provider default, and that has to be visible in the artifact rather
+    than only in a transport's source.
+    """
+    anthropic = json.loads(t1.provider_envelope_json("anthropic", _envelope_request(MODEL)))
+    openai = json.loads(t1.provider_envelope_json("openai", _envelope_request(OPENAI_MODEL)))
+    assert anthropic["reasoning_control"] == "thinking.type=disabled"
+    assert openai["reasoning_control"] == "reasoning_effort=none"
+    for descriptor in (anthropic, openai):
+        assert descriptor["reasoning_equivalence"].startswith("explicitly_off:")
+        assert "not_identical" in descriptor["reasoning_equivalence"]
+
+
+def test_an_unknown_provider_cannot_have_an_envelope_invented_for_it() -> None:
+    with pytest.raises(ValueError, match="is not a known provider"):
+        t1.provider_envelope_json("anthropic-but-typoed", _envelope_request(MODEL))
 
 
 def test_the_cross_provider_disclosure_states_the_sequence_and_the_open_gap() -> None:
@@ -744,6 +786,9 @@ def test_the_cross_provider_disclosure_states_the_sequence_and_the_open_gap() ->
     # And the gap, stated as still open.
     assert "remains unmeasured" in prose
     assert "Nothing in the OpenAI arm counts as coverage for it" in prose
+    # And the reasoning settings are disclosed as analogous, never as identical.
+    assert "reasoning_effort: none" in prose and "thinking: {type: disabled}" in prose
+    assert "analogous settings, not identical ones" in prose
 
 
 def test_the_openai_arm_publishes_a_row_that_names_openai_and_records_its_envelope(
@@ -788,7 +833,14 @@ def test_the_openai_arm_publishes_a_row_that_names_openai_and_records_its_envelo
     assert provenance.pricing_snapshot_id == "openai-2026-08-20"
     assert provenance.usage_source == "openai_chat_completions_usage"
     assert provenance.estimated_cost == pytest.approx(0.007905)
-    assert provenance.request_envelope == t1.provider_envelope_json("openai")
+    assert provenance.request_envelope is not None
+    envelope = json.loads(provenance.request_envelope)
+    assert envelope["provider"] == "openai"
+    # The capture must record that reasoning was explicitly off, not omitted:
+    # omission is `medium` on this model, and a capture that ran that way would
+    # be a confounded measurement wearing a clean record.
+    assert envelope["reasoning_control"] == "reasoning_effort=none"
+    assert "not_identical" in envelope["reasoning_equivalence"]
 
     markdown = out.with_suffix(".md").read_text(encoding="utf-8")
     assert "## Why there is an OpenAI arm, and what it is not" in markdown

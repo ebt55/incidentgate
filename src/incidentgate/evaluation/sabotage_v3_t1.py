@@ -179,8 +179,8 @@ PRICING_SNAPSHOTS: Final[dict[str, Path]] = {
 }
 
 
-def provider_envelope_json(provider: str) -> str:
-    """The API envelope a capture from this provider was carried in, as canonical JSON.
+def provider_envelope_json(provider: str, request: CompletionRequest) -> str:
+    """The API envelope this capture's request was carried in, as canonical JSON.
 
     Written into every capture's provenance so the one thing a cross-model
     comparison cannot claim -- that two providers received byte-identical
@@ -188,11 +188,20 @@ def provider_envelope_json(provider: str) -> str:
     stated envelopes, each recorded beside the bytes it carried. A reader who
     wants to discount the comparison because of an envelope difference should be
     able to find the difference without reading two transports.
+
+    Built from the request rather than from the provider name alone, so the
+    reasoning setting recorded is the one that was sent. A descriptor that
+    described what this transport *usually* does could stay reassuring while the
+    request said something else, which is the failure this field exists to make
+    impossible.
     """
-    descriptor = {
-        "anthropic": anthropic_envelope_descriptor,
-        "openai": openai_envelope_descriptor,
-    }[provider]()
+    if provider not in PROVIDERS:
+        raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
+    descriptor = (
+        anthropic_envelope_descriptor(request.thinking)
+        if provider == "anthropic"
+        else openai_envelope_descriptor(request.reasoning)
+    )
     return json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 #: Where the steering artifact lives, for the published artifact to cite. Under
 #: ``config/``, which no manifest loader globs -- see the note in
@@ -801,7 +810,7 @@ class T1V3Runner:
                 leg="covert",
                 step_index=0,
                 split=variant.split,
-                request_envelope=provider_envelope_json(self.provider),
+                request_envelope=provider_envelope_json(self.provider, request),
             )
 
         return CacheBackedCompletionClient(
@@ -1327,6 +1336,16 @@ CROSS_PROVIDER_DISCLOSURE: Final[tuple[str, ...]] = (
         "output budget -- in two different API envelopes. The envelopes are recorded in each "
         "capture's provenance under `request_envelope` rather than summarised here, so a "
         "reader can see what was not identical and discount the comparison accordingly."
+    ),
+    "",
+    (
+        "Reasoning is switched off explicitly on both arms rather than left to a default: "
+        "`thinking: {type: disabled}` on Anthropic, `reasoning_effort: none` on OpenAI. Those "
+        "are **analogous settings, not identical ones** -- two different parameters on two "
+        "different APIs -- and nothing here establishes that they leave the two models in "
+        "comparable internal states. The weaker claim is the one this table makes. What it "
+        "does rule out is the specific confound of one arm reasoning at a provider default "
+        "while the other had reasoning disabled."
     ),
     "",
 )

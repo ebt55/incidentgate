@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -832,6 +833,23 @@ def test_sampling_allowed_models_really_send_temperature(model: str) -> None:
     assert fake.calls[0]["temperature"] == 0
 
 
+def test_an_openai_reasoning_directive_fails_closed_on_the_anthropic_transport() -> None:
+    """The mirror of the OpenAI transport's guard, and the harder of the two to notice.
+
+    The Messages API would ignore an unknown ``reasoning`` key: the call would
+    succeed, the arm would run at whatever Anthropic's default is, and the record
+    would claim a setting had been applied. A parameter that vanishes quietly is
+    how two arms drift apart with nothing to show for it.
+    """
+    fake = FakeAnthropic(text=model_output(), input_tokens=10, output_tokens=5)
+    client = AnthropicCompletionClient(api_key="sk-secret-key", pricing=pricing(), client=fake)
+    proposer = ModelAgentProposer(client=client, model=OPUS)
+    request, _ = proposer._build_request(records())
+    with pytest.raises(ValueError, match="capability table entry for this model is wrong"):
+        client.complete(replace(request, reasoning={"effort": "none"}))
+    assert fake.calls == [], "the request must not reach the provider"
+
+
 def test_unknown_model_fails_closed_on_both_capability_axes() -> None:
     """An unlisted id costs a loud ValueError here, never an HTTP 400 or a truncation later."""
     with pytest.raises(ValueError, match="rejects sampling params"):
@@ -876,6 +894,55 @@ def test_thinking_policy_and_token_budget_follow_the_capability_table(
     canonical = json.loads(request.canonical_prompt)
     assert canonical["thinking"] == thinking
     assert canonical["max_tokens"] == expected
+    # No Anthropic model carries OpenAI's control, and the key must not gain a
+    # slot for one. See below for why the absence is load-bearing.
+    assert request.reasoning is None
+    assert "reasoning" not in canonical
+
+
+def test_an_anthropic_canonical_prompt_gained_no_reasoning_slot() -> None:
+    """THE regression guard on the only real capture this project holds.
+
+    Adding OpenAI's reasoning control could not add an unconditional
+    ``"reasoning": null`` to the canonical prompt, because that would change the
+    canonical bytes for every model and move the committed ``claude-opus-5``
+    capture to a hash nothing has been captured at. That capture is a billed
+    provider call the finding document records as taken once and not to be
+    re-taken, so re-keying it would destroy a measurement rather than invalidate
+    a regenerable fixture.
+
+    Asserted on the bytes rather than trusting the reasoning above, because the
+    failure would be silent: the run would simply miss the cache.
+    """
+    client = FakeClient(model_output())
+    ModelAgentProposer(client=client, model=OPUS).propose(
+        incident(), caller(), context(), records()
+    )
+    canonical = client.requests[0].canonical_prompt
+    assert "reasoning" not in canonical
+    assert set(json.loads(canonical)) == {
+        "system", "user", "model", "max_tokens", "temperature", "thinking", "schema_fingerprint",
+    }
+
+
+def test_a_reasoning_directive_enters_the_replay_key() -> None:
+    """Two efforts are two different requests and must not collide on one cache entry.
+
+    The absence above is only safe because the presence here is real: a model
+    whose reasoning control is set records it, so the key still separates
+    requests that differ in it.
+    """
+    client = FakeClient(model_output())
+    ModelAgentProposer(client=client, model="gpt-5.5").propose(
+        incident(), caller(), context(), records()
+    )
+    request = client.requests[0]
+    assert request.thinking is None
+    assert request.reasoning == {"effort": "none"}
+    canonical = json.loads(request.canonical_prompt)
+    assert canonical["reasoning"] == {"effort": "none"}
+    # Reasoning is off, so the budget stays where the Anthropic arm's is.
+    assert request.max_tokens == ModelAgentProposer._OUTPUT_TOKENS == 2048
 
 
 def test_opus_5_disables_thinking_and_sends_no_effort() -> None:

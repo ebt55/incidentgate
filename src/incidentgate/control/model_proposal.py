@@ -72,6 +72,7 @@ from incidentgate.reasons import (
     PROPOSAL_UNCITED_EVIDENCE,
 )
 
+from . import proposal_contract_v2
 from .model_capabilities import (
     model_accepts_sampling,
     reasoning_directive,
@@ -178,6 +179,16 @@ class _T4ProposerOutput(_ProposerOutputBase):
     arguments: _T4ProposerArguments
 
 
+#: THESE THREE ARE v1, AND v1 IS FROZEN BY SEVEN COMMITTED CAPTURES.
+#:
+#: They are also weaker on the wire than they look here. ``anthropic
+#: .transform_schema`` demotes ``const`` into a ``description`` string, so every
+#: ``Literal`` argument above leaves this process as a bare ``{"type":
+#: "string"}`` -- which is how four local captures returned schema-valid output
+#: that the validator then rejected. The fix is ``proposal_contract_v2``, which
+#: says the same literals in ``enum`` (the one keyword the transform preserves)
+#: under a new version and a new capture set. Nothing here is edited, because
+#: editing it would move ``prompt_sha256`` and orphan every committed capture.
 _SCENARIO_OUTPUT_MODELS: dict[ScenarioActionProfile, type[_ProposerOutputBase]] = {
     ScenarioActionProfile.T1: _T1ProposerOutput,
     ScenarioActionProfile.T2: _T2ProposerOutput,
@@ -197,6 +208,17 @@ _SCENARIO_PROFILE_TOOL_NAMES: dict[ScenarioActionProfile, tuple[str, ...]] = {
         "operations.set_checkout_traffic_drain",
     ),
 }
+
+
+#: Which frozen request/output contract a proposer runs.
+#:
+#: ``v1`` is what every committed capture was taken under and is the default, so
+#: no existing caller changes behaviour by omitting it. ``v2``
+#: (``proposal_contract_v2``) sends the same prompt with every frozen literal
+#: enumerated, because the provider transform demotes ``const`` into a
+#: description and a model therefore never saw it.
+ProposalContractVersion = Literal["v1", "v2"]
+PROPOSAL_CONTRACT_VERSIONS: tuple[ProposalContractVersion, ...] = ("v1", "v2")
 
 
 def scenario_action_profile(scenario_id: Literal["T1", "T2", "T4"]) -> ScenarioActionProfile:
@@ -340,7 +362,22 @@ def proposer_input_envelope_schema() -> dict[str, Any]:
 
 
 def _provider_schema(output_model: type[BaseModel] = _ProposerOutput) -> dict[str, Any]:
-    """Adapt only the provider-facing schema; local re-validation stays strict."""
+    """Adapt only the provider-facing schema; local re-validation stays strict.
+
+    "Adapt" is doing more work in that sentence than it appears to.
+    ``transform_schema`` reduces a schema to the subset the provider accepts by
+    **demoting** every keyword outside it into a ``description`` string:
+    ``const``, ``minimum``, ``maximum``, ``pattern``, ``minLength``,
+    ``maxLength`` and ``maxItems`` all become prose, and prose constrains
+    nothing -- not a strict provider, and not a sampler. ``enum``, ``minItems``,
+    ``type``, ``required`` and ``additionalProperties`` survive.
+
+    The consequence is the whole of REVIEW-07 Phase 1: what leaves here is
+    weaker than what ``_parse`` applies to the answer, so a model can return
+    schema-valid output that still fails validation. See
+    ``proposal_contract_v2`` for the version that closes it, and
+    ``proposal_contract_v2.underconstrained_fields`` for the measure.
+    """
     from anthropic import transform_schema
 
     schema: dict[str, Any] = transform_schema(output_model.model_json_schema())
@@ -730,9 +767,15 @@ class ModelAgentProposer:
         temperature: float | None = None,
         steering_prompt: str | None = None,
         action_profile: ScenarioActionProfile | None = None,
+        contract_version: ProposalContractVersion = "v1",
     ) -> None:
         if not model:
             raise ValueError("model proposer requires a model id")
+        if contract_version not in PROPOSAL_CONTRACT_VERSIONS:
+            raise ValueError(
+                f"{contract_version!r} is not a frozen proposer contract version; "
+                f"expected one of {PROPOSAL_CONTRACT_VERSIONS}"
+            )
         if temperature is not None and not 0 <= temperature <= 1:
             raise ValueError("temperature must be within [0, 1]")
         if temperature is not None and not model_accepts_sampling(model):
@@ -757,9 +800,29 @@ class ModelAgentProposer:
         self._max_tokens = self._OUTPUT_TOKENS + thinking_headroom_tokens(model)
         self._steering_prompt = steering_prompt
         self._action_profile = action_profile
-        self._output_model = (
-            _ProposerOutput if action_profile is None else _SCENARIO_OUTPUT_MODELS[action_profile]
-        )
+        self._contract_version: ProposalContractVersion = contract_version
+        # THE CONTRACT DECIDES THE MODEL, THE RENDERING AND THE VERSION TOGETHER.
+        #
+        # Three things move as one, and separating them is how a v2 request could
+        # be sent under a v1 prompt version -- or, worse, hash to a v1 cache key
+        # and replay a capture taken against a different schema. They are bound
+        # here, at the one place a proposer learns which contract it is.
+        self._output_model: type[BaseModel]
+        self._render_schema: Callable[[type[BaseModel]], dict[str, Any]]
+        self._prompt_version: str
+        if contract_version == "v2":
+            profile = None if action_profile is None else action_profile.value
+            self._output_model = proposal_contract_v2.output_model(profile)
+            self._render_schema = proposal_contract_v2.provider_schema
+            self._prompt_version = proposal_contract_v2.PROMPT_VERSION
+        else:
+            self._output_model = (
+                _ProposerOutput
+                if action_profile is None
+                else _SCENARIO_OUTPUT_MODELS[action_profile]
+            )
+            self._render_schema = _provider_schema
+            self._prompt_version = _PROMPT_VERSION
         self._output_schema_fingerprint = sha256(
             json.dumps(
                 self._output_model.model_json_schema(), sort_keys=True, separators=(",", ":")
@@ -771,8 +834,14 @@ class ModelAgentProposer:
     def __repr__(self) -> str:
         return (
             f"ModelAgentProposer(model={self._model!r}, "
-            f"steered={self._steering_prompt is not None})"
+            f"steered={self._steering_prompt is not None}, "
+            f"contract={self._contract_version!r})"
         )
+
+    @property
+    def contract_version(self) -> ProposalContractVersion:
+        """Which frozen request/output contract this proposer sends."""
+        return self._contract_version
 
     @property
     def prompt_contract(self) -> ProposerPromptContract:
@@ -782,9 +851,9 @@ class ModelAgentProposer:
         intentionally rendered as the steering prefix.  Prompt text itself is
         never exposed by this contract.
         """
-        provider_schema = _provider_schema(self._output_model)
+        provider_schema = self._render_schema(self._output_model)
         return ProposerPromptContract(
-            prompt_version=_PROMPT_VERSION,
+            prompt_version=self._prompt_version,
             model=self._model,
             system_prompt_sha256=sha256(self._system_prompt().encode("utf-8")).hexdigest(),
             input_schema_version="proposal-evidence-digest/v1",
@@ -936,6 +1005,21 @@ class ModelAgentProposer:
             canonical_fields["think"] = self._think
         if self._sampling is not None:
             canonical_fields["sampling"] = self._sampling
+        if self._contract_version != "v1":
+            # THE VERSION IS IN THE KEY, AND ONLY WHEN IT IS NOT v1.
+            #
+            # Same conditional and same reason as the three directives above: an
+            # unconditional key would move v1's canonical bytes and orphan seven
+            # committed captures that will not be re-taken.
+            #
+            # It is in the key at all because the output schema fingerprint above
+            # is *not* enough on its own to guarantee it. That fingerprint is
+            # taken over the local pydantic schema, and v2's whole change is to
+            # the rendering that leaves this process. A future contract that
+            # validated identically while sending different bytes would collide
+            # with an existing key and silently replay a capture taken against a
+            # different request. Naming the contract makes that unreachable.
+            canonical_fields["output_contract"] = self._contract_version
         canonical = json.dumps(
             canonical_fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         )
@@ -950,7 +1034,7 @@ class ModelAgentProposer:
                 reasoning=self._reasoning,
                 think=self._think,
                 sampling=self._sampling,
-                schema=_provider_schema(self._output_model),
+                schema=self._render_schema(self._output_model),
                 canonical_prompt=canonical,
                 prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),
             ),

@@ -508,6 +508,32 @@ def test_the_cli_refuses_to_capture_with_only_the_flag(
     assert "REFUSED" in capsys.readouterr().err
 
 
+def test_the_output_contract_defaults_to_the_one_every_capture_was_taken_under() -> None:
+    """Omitting the flag must change nothing, or the committed captures stop replaying."""
+    assert t1.build_parser().parse_args(["--attacker", "deterministic"]).output_contract == "v1"
+    assert t1.T1V3Runner(UNUSED_DSN).contract_version == "v1"
+
+
+def test_the_output_contract_reaches_the_proposer_that_sends_it(tmp_path: Path) -> None:
+    """The flag is only worth having if the request and its provenance both move with it."""
+    runner = t1.T1V3Runner(
+        UNUSED_DSN, model=MODEL, cache_dir=tmp_path / "cache", contract_version="v2"
+    )
+    proposer = runner._model_proposer(DEV)
+    assert proposer.contract_version == "v2"
+    assert proposer.prompt_version == "proposal/v2_attack-steering/t1/model/v1"
+    assert proposer.prompt_contract.prompt_version == "proposal/v2"
+
+
+def test_the_cli_refuses_an_output_contract_beside_the_deterministic_floor(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The floor sends no prompt, so a contract recorded beside it would name nothing."""
+    with pytest.raises(SystemExit):
+        t1.main(["--dsn", UNUSED_DSN, "--attacker", "deterministic", "--output-contract", "v2"])
+    assert "--output-contract only applies to --attacker model" in capsys.readouterr().err
+
+
 def test_the_cli_aborts_when_the_projection_exceeds_the_cap(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
@@ -783,6 +809,56 @@ def test_a_model_row_names_its_source_and_replays_a_real_capture(
     assert provenance.estimated_cost == pytest.approx(0.007315)
     assert provenance.currency == "USD"
     assert provenance.scenario_id == "T1" and provenance.leg == "covert"
+
+
+def test_a_v2_capture_publishes_under_its_own_version_and_cannot_be_crossed_with_v1(
+    dsn: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same capture-then-publish round trip, under the v2 output contract.
+
+    Two things are established together, and only together do they mean the
+    version is real. The v2 run captures and publishes end to end, recording
+    ``proposal/v2`` in both the cache entry and the row that replays it -- and a
+    v1 publish against that cache **misses**, because the contract id is inside
+    the canonical prompt. Without the second half a v2 label could sit on a body
+    produced against v1's weaker schema, which would make the whole change look
+    like it had worked when nothing had changed.
+    """
+    from incidentgate.control.response_cache import ResponseCacheMiss
+
+    cache_dir = tmp_path / "cache"
+    fake = FakeProvider()
+    common = [
+        "--dsn", dsn, "--attacker", "model", "--model", MODEL, "--cache-dir", str(cache_dir),
+        "--output-contract", "v2",
+    ]
+    assert t1.main([*common, "--capture", "--max-usd", "0.50"], completion_client=fake) == 0
+    capsys.readouterr()
+    assert fake.calls == 1 and len(fake.prompts) == 1
+    v2_prompt = next(iter(fake.prompts))
+
+    out = tmp_path / "envelope.json"
+    assert t1.main([*common, "--out", str(out)]) == 0
+    capsys.readouterr()
+    envelope = t1.SabotageRawEnvelopeV3.model_validate(
+        json.loads(out.read_text(encoding="utf-8"))
+    )
+    model_rows = [r for r in envelope.results if r.attacker_source.startswith("model:")]
+    assert len(model_rows) == 3
+    for row in model_rows:
+        attacker = next(item for item in row.invocations if item.role == "attacker")
+        assert attacker.prompt_version == "proposal/v2_attack-steering/t1/model/v1"
+        assert attacker.prompt_sha256 == v2_prompt
+
+    provenance = ResponseCache(cache_dir).load(MODEL, v2_prompt).provenance
+    assert provenance is not None
+    assert provenance.prompt_version == "proposal/v2_attack-steering/t1/model/v1"
+
+    # The negative control: v1 keys elsewhere, so it finds nothing here.
+    v1_common = [item for item in common if item not in ("--output-contract", "v2")]
+    with pytest.raises(ResponseCacheMiss) as miss:
+        t1.main(v1_common)
+    assert miss.value.prompt_sha256 != v2_prompt
 
 
 def test_the_published_artifact_states_the_evaluation_awareness_limitation(

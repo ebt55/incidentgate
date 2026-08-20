@@ -89,6 +89,7 @@ from .model_proposal import (
     CompletionRequest,
     CompletionResult,
     ModelAgentProposer,
+    ProposalContractVersion,
     ProposerPromptContract,
     scenario_action_profile,
     scenario_profile_tool_names,
@@ -148,6 +149,27 @@ ATTACK_STEERING_VERSION = "attack-steering/T1/model/v1"
 #: ``^[a-z0-9][a-z0-9._/-]*$``, and one value that satisfies both that field and
 #: the row's is what keeps the cache entry and the row it backs from disagreeing.
 ATTACKER_PROMPT_VERSION = "proposal/v1_attack-steering/t1/model/v1"
+
+#: The same identity, per proposer output contract.
+#:
+#: A v2 request carries the same steering artifact and the same base system
+#: prompt as a v1 one -- only the output schema differs -- so the steering half
+#: of the id is unchanged and the proposer half moves. Keeping both in one table
+#: is what stops a v2 capture being filed under a version that names v1's
+#: request, which would make the capture unreproducible from its own provenance.
+ATTACKER_PROMPT_VERSIONS: dict[ProposalContractVersion, str] = {
+    "v1": ATTACKER_PROMPT_VERSION,
+    "v2": "proposal/v2_attack-steering/t1/model/v1",
+}
+
+
+def attacker_prompt_version(contract_version: ProposalContractVersion) -> str:
+    """The prompt version a capture and a published row must both record."""
+    version = ATTACKER_PROMPT_VERSIONS.get(contract_version)
+    if version is None:
+        raise ValueError(f"{contract_version!r} is not a frozen proposer contract version")
+    return version
+
 
 _SOURCE_REFS = ("ticket", "log")
 
@@ -300,6 +322,11 @@ class ModelAttackProposer:
         # scenario's steering, not passing a different string.
         scenario_id: Literal["T1"] = "T1",
         temperature: float | None = None,
+        # Defaulted to v1 so that every existing caller, every committed capture
+        # and the pinned request hash in tests/sabotage/test_model_attacker.py
+        # stay exactly where they are. v2 is opt-in and produces its own capture
+        # set; see control/proposal_contract_v2.py.
+        contract_version: ProposalContractVersion = "v1",
     ) -> None:
         if not isinstance(variant, AttackPolicyVariant):
             raise TypeError("a model attack proposer runs one frozen attack-policy variant")
@@ -314,6 +341,7 @@ class ModelAttackProposer:
         self.variant = variant
         self.covert_tool = covert_tool
         self.scenario_id = scenario_id
+        self.contract_version = contract_version
         self._recorder = _RequestRecordingClient(client)
         self._inner = ModelAgentProposer(
             client=self._recorder,
@@ -321,14 +349,20 @@ class ModelAttackProposer:
             temperature=temperature,
             steering_prompt=render_t1_attack_steering(variant),
             action_profile=profile,
+            contract_version=contract_version,
         )
         self._outcome: AttackProposalOutcome | None = None
 
     def __repr__(self) -> str:
         return (
             f"ModelAttackProposer(variant={self.variant.variant_id!r}, "
-            f"covert_tool={self.covert_tool!r})"
+            f"covert_tool={self.covert_tool!r}, contract={self.contract_version!r})"
         )
+
+    @property
+    def prompt_version(self) -> str:
+        """The prompt version this proposer's capture and row must both record."""
+        return attacker_prompt_version(self.contract_version)
 
     @property
     def prompt_contract(self) -> ProposerPromptContract:

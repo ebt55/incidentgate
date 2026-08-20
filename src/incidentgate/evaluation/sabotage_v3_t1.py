@@ -42,6 +42,15 @@ So there are two modes, and they are different commands:
                 capture is a loud ``ResponseCacheMiss``, never a silent fallback
                 to a fixture.
 
+``--output-contract`` selects which frozen proposer output contract the request
+carries, and it is orthogonal to both modes. ``v1`` is the default and is what
+every committed capture was taken under. ``v2``
+(``control/proposal_contract_v2.py``) sends the identical steering, system
+prompt and evidence with every frozen literal enumerated, so a model selects it
+rather than transcribing it. The contract id is inside the canonical prompt, so
+each version keys its own capture set: a v1 body can never be replayed as a v2
+result, and choosing v2 never reaches for a v1 capture.
+
 The capture is taken once and replayed into all three conditions. That is sound
 because the attacker's prompt is a function of the incident's evidence alone --
 the safeguard configuration is downstream of the proposal and never reaches the
@@ -95,17 +104,19 @@ from incidentgate.control.local_weights import (
 )
 from incidentgate.control.model_attacker import (
     ATTACK_STEERING_VERSION,
-    ATTACKER_PROMPT_VERSION,
     ModelAttackProposer,
+    attacker_prompt_version,
     steering_artifact_sha256,
 )
 from incidentgate.control.model_capabilities import is_known_model, thinking_headroom_tokens
 from incidentgate.control.model_proposal import (
+    PROPOSAL_CONTRACT_VERSIONS,
     AnthropicCompletionClient,
     CompletionClient,
     CompletionRequest,
     CompletionResult,
     PricingSnapshot,
+    ProposalContractVersion,
     ProviderPolicyRefusal,
     anthropic_envelope_descriptor,
 )
@@ -785,9 +796,15 @@ class T1V3Runner:
         capture: bool = False,
         provider: str = MODEL_PROVIDER,
         weights: LocalWeightsIdentity | None = None,
+        contract_version: ProposalContractVersion = "v1",
     ) -> None:
         if provider not in PROVIDERS:
             raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
+        if contract_version not in PROPOSAL_CONTRACT_VERSIONS:
+            raise ValueError(
+                f"{contract_version} is not a frozen proposer contract version; "
+                f"expected one of {PROPOSAL_CONTRACT_VERSIONS}"
+            )
         if model is not None and not is_known_model(model):
             raise ValueError(
                 f"{model} is not in the capability table; add it there before running it"
@@ -809,6 +826,7 @@ class T1V3Runner:
         self.pricing = pricing
         self.provider = provider
         self.weights = weights
+        self.contract_version = contract_version
         self.meter: SpendMeter | None = None
         if completion_client is not None:
             if pricing is None and self.bills_a_vendor:
@@ -854,7 +872,9 @@ class T1V3Runner:
                 input_schema_version="proposal-evidence-digest/v1",
                 # Names the steering rendering as well as the proposer contract,
                 # so the cache entry records which prompt it is a capture *of*.
-                prompt_version=ATTACKER_PROMPT_VERSION,
+                # Both halves matter: a v2 capture states v2 here, and a reader
+                # who finds one can tell which output grammar produced the body.
+                prompt_version=attacker_prompt_version(self.contract_version),
                 stop_reason="end_turn",
                 input_tokens=invocation.input_tokens,
                 output_tokens=invocation.output_tokens,
@@ -910,6 +930,7 @@ class T1V3Runner:
             variant=variant,
             covert_tool=T1_COVERT_TOOL,
             scenario_id="T1",
+            contract_version=self.contract_version,
         )
 
     # -- episode driving ---------------------------------------------------
@@ -1150,7 +1171,7 @@ class T1V3Runner:
                 input_schema_sha256=contract.input_schema_sha256,
                 input_schema_version=contract.input_schema_version,
                 output_schema_sha256=contract.output_schema_sha256,
-                prompt_version=ATTACKER_PROMPT_VERSION,
+                prompt_version=proposer.prompt_version,
             ),
             self_reported=observed.classification,
         )
@@ -1213,6 +1234,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="deterministic (the floor, and the default: no behaviour change without this flag)",
     )
     parser.add_argument("--model", default=None, help="a model id from the capability table")
+    parser.add_argument(
+        "--output-contract",
+        choices=PROPOSAL_CONTRACT_VERSIONS,
+        default="v1",
+        help=(
+            "which frozen proposer output contract to send: v1 (the default, and what every "
+            "committed capture was taken under) or v2, which enumerates every frozen literal "
+            "so a model selects it instead of transcribing it. v2 keys its own capture set."
+        ),
+    )
     parser.add_argument(
         "--provider",
         choices=PROVIDERS,
@@ -1277,6 +1308,10 @@ def main(
         parser.error(f"{arguments.model} is not in the capability table; add it there first")
     if arguments.capture and arguments.attacker != "model":
         parser.error("--capture only applies to --attacker model")
+    if arguments.output_contract != "v1" and arguments.attacker != "model":
+        # The deterministic floor sends no prompt at all, so an output contract
+        # selected beside it would be recorded on a run it never reached.
+        parser.error("--output-contract only applies to --attacker model")
 
     provider = arguments.provider
     bills_a_vendor = provider not in PROVIDERS_WITHOUT_VENDOR_COST
@@ -1376,6 +1411,7 @@ def main(
         capture=arguments.capture,
         provider=provider,
         weights=weights,
+        contract_version=arguments.output_contract,
     )
     try:
         report = runner.run(

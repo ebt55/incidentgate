@@ -36,15 +36,22 @@ from incidentgate.control.attack_policies import (
 from incidentgate.control.model_attacker import (
     ATTACK_STEERING_VERSION,
     ATTACKER_PROMPT_VERSION,
+    ATTACKER_PROMPT_VERSIONS,
     ATTEMPT_CLASSIFICATIONS,
     STEERING_ARTIFACT_PATH,
     AttackProposalOutcome,
     AttemptClassification,
     ModelAttackProposer,
+    attacker_prompt_version,
     render_t1_attack_steering,
     steering_artifact_sha256,
 )
-from incidentgate.control.model_proposal import CompletionRequest, CompletionResult
+from incidentgate.control.model_proposal import (
+    PROPOSAL_CONTRACT_VERSIONS,
+    CompletionRequest,
+    CompletionResult,
+    ProposalContractVersion,
+)
 from incidentgate.control.models import Caller
 from incidentgate.control.proposal import ProposalError
 from incidentgate.evaluation.sabotage_checkers import (
@@ -174,12 +181,15 @@ def _identity() -> tuple[IncidentIdentity, Caller, ToolCallContext]:
     return incident, caller, context
 
 
-def _propose(client: object) -> tuple[ModelAttackProposer, str | None]:
+def _propose(
+    client: object, contract_version: ProposalContractVersion = "v1"
+) -> tuple[ModelAttackProposer, str | None]:
     proposer = ModelAttackProposer(
         client=client,  # type: ignore[arg-type]
         model=MODEL,
         variant=DEV,
         covert_tool=T1_COVERT_TOOL,
+        contract_version=contract_version,
     )
     incident, caller, context = _identity()
     try:
@@ -408,6 +418,61 @@ def test_the_attacker_request_hash_is_frozen() -> None:
     assert client.requests[0].prompt_sha256 == (
         "b4a5dbff92ab44847b9e647551bcf1c7e7ba9641e455802c59aea5f14a34b092"
     )
+
+
+def test_the_v2_contract_is_a_separate_capture_set_and_moves_nothing_of_v1s() -> None:
+    """A new output contract means a new key, which is the whole reason it is a version.
+
+    The two requests carry the same steering artifact and the same base system
+    prompt; only the output schema differs. That difference has to reach the
+    cache key, or a v2 run would replay a body produced against v1's weaker
+    schema and the change would look like it had worked.
+    """
+    first, second = FakeClient(COVERT_BODY), FakeClient(COVERT_BODY)
+    _propose(first, "v1")
+    _propose(second, "v2")
+
+    v1_request, v2_request = first.requests[0], second.requests[0]
+    assert v1_request.prompt_sha256 == (
+        "b4a5dbff92ab44847b9e647551bcf1c7e7ba9641e455802c59aea5f14a34b092"
+    ), "v2 moved v1's key; the seven committed captures are orphaned"
+    assert v2_request.prompt_sha256 != v1_request.prompt_sha256
+    assert v1_request.system == v2_request.system, "only the schema is meant to differ"
+    assert v1_request.user_content == v2_request.user_content
+    assert v1_request.schema != v2_request.schema
+
+
+def test_the_v2_request_hash_is_frozen() -> None:
+    """The v2 cache key, pinned exactly as v1's is.
+
+    The four v2 local captures will be filed under this hash. If it moves, they
+    become unreachable and the fix is to re-capture under the new key, never to
+    edit the expectation.
+    """
+    client = FakeClient(COVERT_BODY)
+    _propose(client, "v2")
+    assert client.requests[0].prompt_sha256 == (
+        "87a38b105252cc2602a2c4767bcaa1b202e0e36276dfb1e7d155a24afbd901d9"
+    )
+
+
+@pytest.mark.parametrize("contract_version", PROPOSAL_CONTRACT_VERSIONS)
+def test_every_contract_version_names_the_prompt_it_actually_sent(
+    contract_version: ProposalContractVersion,
+) -> None:
+    """A capture that named the wrong contract would be unreproducible from its own record."""
+    proposer, _ = _propose(FakeClient(COVERT_BODY), contract_version)
+    assert proposer.contract_version == contract_version
+    assert proposer.prompt_version == attacker_prompt_version(contract_version)
+    assert proposer.prompt_version == f"proposal/{contract_version}_attack-steering/t1/model/v1"
+    assert proposer.prompt_contract.prompt_version == f"proposal/{contract_version}"
+
+
+def test_the_prompt_version_table_covers_every_frozen_contract() -> None:
+    assert set(ATTACKER_PROMPT_VERSIONS) == set(PROPOSAL_CONTRACT_VERSIONS)
+    assert ATTACKER_PROMPT_VERSIONS["v1"] == ATTACKER_PROMPT_VERSION
+    with pytest.raises(ValueError, match="not a frozen proposer contract version"):
+        attacker_prompt_version("v3")  # type: ignore[arg-type]
 
 
 def test_the_steering_is_read_from_the_artifact_and_not_duplicated_in_code() -> None:

@@ -391,7 +391,7 @@ def test_record_mode_cannot_launder_a_canned_body_into_a_capture(tmp_path: Path)
     recorder = CacheBackedCompletionClient(
         cache, record_client=canned, record_mode=True, provenance_builder=_provenance
     )
-    with pytest.raises(ValueError, match="refuses non-provider"):
+    with pytest.raises(ValueError, match="did not come from a model"):
         recorder.complete(_request(HAIKU, HASH_A))
     assert not (tmp_path / HAIKU / f"{HASH_A}.json").exists()
 
@@ -536,6 +536,121 @@ def test_a_capture_taken_before_the_envelope_field_existed_still_loads() -> None
         assert "request_envelope" not in data["provenance"]
         provenance = ProviderCaptureProvenance.model_validate(data["provenance"])
         assert provenance.request_envelope is None
+
+
+def _local_invocation() -> ModelInvocationRecord:
+    return ModelInvocationRecord(
+        provider="local",
+        model=HAIKU,
+        invocation_kind="local_weights_call",
+        usage_source="ollama_chat_usage",
+        input_tokens=931,
+        output_tokens=88,
+    )
+
+
+def _local_provenance(request: CompletionRequest) -> ProviderCaptureProvenance:
+    base = _provenance(request, CompletionResult(model_output(), _provider_invocation()))
+    return base.model_copy(
+        update={
+            "provider": "local",
+            "usage_source": "ollama_chat_usage",
+            "input_tokens": 931,
+            "output_tokens": 88,
+            "pricing_snapshot_id": None,
+            "estimated_cost": None,
+            "currency": None,
+            "cost_unavailable_reason": "local_weights_no_vendor_charge",
+            "weights": '{"weights_sha256":"' + "d" * 64 + '"}',
+        }
+    )
+
+
+def test_the_three_cost_states_stay_distinguishable() -> None:
+    """`cost: null` for two different reasons, and `cost: 0.0` for a third.
+
+    Collapsing any two would let "we don't know what this cost" read as "this
+    cost nothing", which for a project publishing cost-per-incident is the
+    expensive direction to be wrong in.
+    """
+    request = _request(HAIKU, HASH_A)
+    priced_free = _provenance(request, CompletionResult(model_output(), _provider_invocation()))
+    priced_free = priced_free.model_copy(update={"estimated_cost": 0.0, "currency": "USD"})
+    assert priced_free.estimated_cost == 0.0
+    assert priced_free.cost_unavailable_reason is None
+    assert priced_free.pricing_snapshot_id
+
+    unpriceable = _provenance(request, CompletionResult(model_output(), _provider_invocation()))
+    unpriceable = unpriceable.model_copy(
+        update={
+            "estimated_cost": None,
+            "currency": None,
+            "cost_unavailable_reason": "model_not_priced_in_snapshot",
+        }
+    )
+    assert unpriceable.estimated_cost is None
+    assert unpriceable.pricing_snapshot_id, "a billed call still names the snapshot it failed at"
+
+    local = _local_provenance(request)
+    assert local.estimated_cost is None
+    assert local.cost_unavailable_reason == "local_weights_no_vendor_charge"
+    assert local.pricing_snapshot_id is None, "there is no price list to name"
+
+
+def test_a_local_capture_must_not_name_a_pricing_snapshot() -> None:
+    """Naming one would be inventing a price list for something with no price."""
+    request = _request(HAIKU, HASH_A)
+    base = _local_provenance(request).model_dump()
+    base["pricing_snapshot_id"] = "openai-2026-08-20"
+    with pytest.raises(ValueError, match="names no pricing snapshot"):
+        ProviderCaptureProvenance.model_validate(base)
+
+
+def test_a_billing_capture_must_still_name_its_pricing_snapshot() -> None:
+    """Making the field optional for the local arm must not weaken it for the others."""
+    request = _request(HAIKU, HASH_A)
+    hosted = _provenance(request, CompletionResult(model_output(), _provider_invocation()))
+    base = hosted.model_dump()
+    base["pricing_snapshot_id"] = None
+    with pytest.raises(ValueError, match="must name the pricing snapshot"):
+        ProviderCaptureProvenance.model_validate(base)
+
+
+def test_a_local_capture_round_trips_and_carries_its_weights(tmp_path: Path) -> None:
+    """The local arm's whole provenance advantage has to survive to the cache entry."""
+    cache = ResponseCache(tmp_path)
+    request = _request(HAIKU, HASH_A)
+    invocation = _local_invocation()
+    cache.store(
+        HAIKU, HASH_A, model_output(), capture="local_weights_call",
+        provenance=_local_provenance(request), invocation=invocation, request=request,
+    )
+    entry = cache.load(HAIKU, HASH_A)
+    assert entry.capture == "local_weights_call"
+    assert entry.provenance is not None
+    assert entry.provenance.weights is not None
+    assert json.loads(entry.provenance.weights)["weights_sha256"] == "d" * 64
+
+
+def test_a_local_capture_cannot_be_stored_as_a_provider_call(tmp_path: Path) -> None:
+    """Relabelling a free call as a billed one, or the reverse, must not be possible."""
+    cache = ResponseCache(tmp_path)
+    request = _request(HAIKU, HASH_A)
+    with pytest.raises(ValueError, match="capture kind disagrees with its invocation"):
+        cache.store(
+            HAIKU, HASH_A, model_output(), capture="provider_call",
+            provenance=_local_provenance(request), invocation=_local_invocation(), request=request,
+        )
+
+
+def test_a_hosted_capture_may_not_claim_a_weights_identity() -> None:
+    """Only a run whose weights this harness hashed may record one."""
+    request = _request(HAIKU, HASH_A)
+    provenance = _provenance(
+        request, CompletionResult(model_output(), _provider_invocation())
+    ).model_copy(update={"weights": '{"weights_sha256":"' + "e" * 64 + '"}'})
+    with pytest.raises(ValueError, match="only a local weights capture"):
+        provenance.validate_invocation(request, _provider_invocation())
 
 
 def test_the_committed_openai_captures_record_reasoning_explicitly_off() -> None:

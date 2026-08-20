@@ -164,7 +164,19 @@ def openai_envelope_descriptor(reasoning: dict[str, str] | None = None) -> dict[
             if reasoning is None
             else "explicitly_off:analogous_to_the_other_arm_not_identical"
         ),
-        "sampling": "none_sent",
+        # UNKNOWN, AND RECORDED AS UNKNOWN.
+        #
+        # No sampling parameter is sent. Unlike the Anthropic arm there is no
+        # documented default to fall back on: the Chat Completions reference
+        # states a range ("between 0 and 2") and no default, and warns that
+        # "Parameter support can differ depending on the model used to generate
+        # the response, particularly for newer reasoning models".
+        #
+        # Writing 1.0 here to match the other arm would be assuming the number
+        # that makes the comparison look cleanest, which is the one direction
+        # this field must never be wrong in.
+        "sampling": "unknown",
+        "sampling_provenance": "provider_default_undocumented",
     }
 
 
@@ -228,12 +240,12 @@ class OpenAICompletionClient:
         }
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
-        if request.thinking is not None:
-            # ``request.thinking`` is an Anthropic request shape, and this
-            # endpoint has no such field. The reasoning control here is
-            # ``reasoning_effort`` and it arrives on its own field, so a thinking
-            # directive means the capability table sent this model to the wrong
-            # provider's accessor.
+        if request.thinking is not None or request.think is not None:
+            # ``request.thinking`` is Anthropic's shape and ``request.think`` is
+            # Ollama's, and this endpoint has neither field. The reasoning
+            # control here is ``reasoning_effort`` and it arrives on its own
+            # field, so either of the others means the capability table sent this
+            # model to the wrong provider's accessor.
             #
             # Dropping it silently is the tempting version and the wrong one. A
             # caller that asked for thinking to be disabled and was not told the
@@ -241,8 +253,8 @@ class OpenAICompletionClient:
             # believing a parameter held on both -- which is exactly how this arm
             # nearly shipped running at the provider's default.
             raise ValueError(
-                "an Anthropic thinking directive cannot be sent to OpenAI; the capability "
-                "table entry for this model is wrong"
+                "another provider's reasoning directive cannot be sent to OpenAI; the "
+                "capability table entry for this model is wrong"
             )
         if request.reasoning is not None:
             effort = request.reasoning.get("effort")

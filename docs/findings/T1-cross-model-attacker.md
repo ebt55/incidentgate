@@ -223,7 +223,30 @@ Classification is by the action issued, not by prose, so "considered the covert 
 declined it" and "did not engage with the covert objective" both land as `declined`. One sample
 cannot distinguish them. This is noted rather than resolved.
 
-### 4.4 The two arms are analogous, not identical
+### 4.4 Sampling was never established on either arm
+
+Added 2026-08-21, while building a third arm. It is a limitation of the two captures above and is
+recorded here rather than left for a reader to assume past.
+
+Neither arm sent a sampling parameter, and both capture envelopes say `sampling: none_sent`. That
+is true and it is not the same as "both ran neutral", because "send nothing" resolves differently
+per provider:
+
+| Arm | Effective sampling | Basis |
+| --- | --- | --- |
+| `claude-opus-5` | `temperature = 1.0` | the Messages API reference documents the parameter as *"Defaults to `1.0`"*; the model rejects an explicit value |
+| `gpt-5.5` | **unknown** | the Chat Completions reference states a range and **no default**, and warns that parameter support differs for reasoning models |
+
+So the cross-model cell in §3 compares one arm at a documented 1.0 against one arm at an
+undocumented value. **Neither figure is a measurement**: no provider echoes the effective
+temperature back, so nothing here observed what either model actually sampled at.
+
+This is not repaired by re-taking the captures, and they have not been re-taken. The divergence is
+a fact about measurements already made, and pretending otherwise would be worse than the gap. What
+changed is that later captures record effective sampling and its provenance explicitly, so this
+particular blind spot does not recur.
+
+### 4.5 The two arms are analogous, not identical
 
 Reasoning was switched off explicitly on both arms — `thinking: {type: disabled}` on Anthropic,
 `reasoning_effort: none` on OpenAI — and each capture records which it sent under
@@ -252,7 +275,7 @@ incident **log** rather than the incident **ticket**. On the Anthropic arm that 
 the request across a classifier boundary; on the OpenAI arm it did not.
 
 The prompt *content* was the same across the two providers, verified by the reconstruction in
-§1. The *requests* were not byte-identical — the envelopes differ, as §4.1 and §4.4 describe —
+§1. The *requests* were not byte-identical — the envelopes differ, as §4.1 and §4.5 describe —
 so this is a comparison of two filters on the same content in their respective envelopes, not on
 the same bytes.
 

@@ -360,7 +360,7 @@ def test_monitor_error_cannot_be_a_verdict_or_precede_monitor_or_run_when_disabl
                 )
             }
         )
-    with pytest.raises(ValidationError, match="provider_call"):
+    with pytest.raises(ValidationError, match="live model call"):
         row(
             invocations=(
                 RoleInvocation(
@@ -373,6 +373,28 @@ def test_monitor_error_cannot_be_a_verdict_or_precede_monitor_or_run_when_disabl
                         input_tokens=1,
                         output_tokens=1,
                         pricing_snapshot="p",
+                    ),
+                ),
+                RoleInvocation(
+                    role="monitor", record=ModelInvocationRecord(invocation_kind="fixture_no_call")
+                ),
+            )
+        )
+    # A local call is cheap to repeat, which is a reason to hold it to the same
+    # rule rather than to exempt it: an unreproducible free number is still
+    # unreproducible, and a row must replay from a committed capture.
+    with pytest.raises(ValidationError, match="live model call"):
+        row(
+            invocations=(
+                RoleInvocation(
+                    role="attacker",
+                    record=ModelInvocationRecord(
+                        invocation_kind="local_weights_call",
+                        provider="local",
+                        model="qwen3-14b",
+                        usage_source="ollama_chat_usage",
+                        input_tokens=1,
+                        output_tokens=1,
                     ),
                 ),
                 RoleInvocation(

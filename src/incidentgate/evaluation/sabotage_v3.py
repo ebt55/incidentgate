@@ -398,8 +398,17 @@ class SabotageEvaluationResultV3(BaseModel):
             raise ValueError(
                 "exactly one attacker and one-or-more monitor invocations are required"
             )
-        if any(item.record.invocation_kind == "provider_call" for item in self.invocations):
-            raise ValueError("published v3 rows may not carry provider_call")
+        if any(
+            item.record.invocation_kind in ("provider_call", "local_weights_call")
+            for item in self.invocations
+        ):
+            # A live call of either kind, hosted or local. The rule is not about
+            # who was billed -- it is that a published number must be reproducible
+            # from committed artifacts, so the live call is a separate deliberate
+            # act and publication replays it. A local call is cheaper to repeat,
+            # which is a reason to hold it to the same rule rather than a reason
+            # to exempt it: an unreproducible free number is still unreproducible.
+            raise ValueError("published v3 rows may not carry a live model call")
         for source, invocation in ((self.attacker_source, attackers[0]),):
             record = invocation.record
             if source.startswith("model:"):

@@ -32,7 +32,12 @@ from incidentgate.control.attack_policies import (
     DeterministicT1AttackProposer,
 )
 from incidentgate.control.model_attacker import steering_artifact_sha256
-from incidentgate.control.model_capabilities import reasoning_directive, thinking_directive
+from incidentgate.control.model_capabilities import (
+    reasoning_directive,
+    sampling_directive,
+    think_directive,
+    thinking_directive,
+)
 from incidentgate.control.model_proposal import (
     AnthropicCompletionClient,
     CompletionRequest,
@@ -59,6 +64,8 @@ from incidentgate.lab.repository import LabRepository
 MODEL = "claude-opus-5"
 #: Confirmed against ``models.list()`` on 2026-08-20, not guessed from a family name.
 OPENAI_MODEL = "gpt-5.5"
+#: The harness label for the local arm; the server tag is ``qwen3:14b``.
+LOCAL_MODEL = "qwen3-14b"
 DEV = T1_ATTACK_VARIANTS_BY_ID["T1-dev-v1"]
 UNUSED_DSN = "postgresql://unused:unused@127.0.0.1:1/unused"
 
@@ -229,13 +236,114 @@ def test_a_second_provider_does_not_arrive_with_a_softer_spend_path(
     ).calls == 0
 
 
-def test_every_provider_has_a_committed_pricing_snapshot_that_loads() -> None:
-    """A provider without a priced snapshot cannot publish, so the pair must be complete."""
-    assert set(t1.PRICING_SNAPSHOTS) == set(t1.PROVIDERS)
+def test_every_billing_provider_has_a_committed_pricing_snapshot_that_loads() -> None:
+    """Every provider that can bill needs a snapshot; one that cannot must not have a fake one.
+
+    Both halves matter. A billing provider without a snapshot cannot publish at
+    all. A non-billing provider *with* one would be carrying an invented price
+    list, which is how "there is nothing to price" would quietly become "we
+    priced it at zero".
+    """
+    billing = set(t1.PROVIDERS) - t1.PROVIDERS_WITHOUT_VENDOR_COST
+    assert set(t1.PRICING_SNAPSHOTS) == billing
+    assert t1.PROVIDERS_WITHOUT_VENDOR_COST, "the non-billing set must not be silently empty"
     for provider, path in t1.PRICING_SNAPSHOTS.items():
         assert path.is_file(), f"{provider} has no committed pricing snapshot"
         snapshot = load_pricing_snapshot(path, as_of=datetime.now(UTC))
         assert snapshot.currency == "USD"
+
+
+class FakeLocalProvider(FakeProvider):
+    """Stands where ``OllamaWeightsCompletionClient`` stands. Contacts nothing."""
+
+    def __init__(self, raw_json: str = COVERT_BODY, *, cost: float | None = None) -> None:
+        super().__init__(raw_json)
+        self.claimed_cost = cost
+
+    def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.calls += 1
+        self.prompts.add(request.prompt_sha256)
+        return CompletionResult(
+            raw_json=self.raw_json,
+            invocation=ModelInvocationRecord(
+                invocation_kind="local_weights_call",
+                provider="local",
+                model=LOCAL_MODEL,
+                usage_source="ollama_chat_usage",
+                input_tokens=931,
+                output_tokens=88,
+            ),
+        )
+
+
+def test_a_local_call_is_free_only_after_the_record_is_checked_for_a_cost(
+    pricing: PricingSnapshot,
+) -> None:
+    """The spend-gate relaxation keys on a verified absent cost, not on a provider name.
+
+    A label is written by whoever runs the command. An absent cost on a
+    contract-validated record is not, which is the only reason it is safe to let
+    this call past a gate that exists to bound spend.
+    """
+    meter = t1.SpendMeter(inner=FakeLocalProvider(), pricing=None, max_calls=2, max_usd=0.0)
+    meter.complete(_completion_request())
+    assert meter.local_calls == 1
+    assert meter.provider_calls == 0
+    # A zero cap is not crossed by a call that costs nothing.
+    assert meter.spent_usd == 0.0
+    assert meter.spend_is_fully_accounted
+
+
+def test_a_local_call_that_reports_a_cost_is_refused_rather_than_treated_as_free() -> None:
+    """The check that makes the relaxation verified rather than assumed.
+
+    contracts.py already forbids a local record from carrying cost, so this
+    cannot fire on a valid record. It is the second, independent enforcement at
+    the point where the money decision is actually taken -- and if the two ever
+    disagree, this is the one that stops the run.
+    """
+
+    class LyingLocal:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            invocation = ModelInvocationRecord(
+                invocation_kind="local_weights_call",
+                provider="local",
+                model=LOCAL_MODEL,
+                usage_source="ollama_chat_usage",
+                input_tokens=1,
+                output_tokens=1,
+            )
+            # Bypasses the contract the way a future edit might.
+            object.__setattr__(invocation, "cost", 1.23)
+            return CompletionResult(raw_json=COVERT_BODY, invocation=invocation)
+
+    meter = t1.SpendMeter(inner=LyingLocal(), pricing=None, max_calls=2, max_usd=10.0)
+    with pytest.raises(t1.SpendRefused, match="refusing to treat a billed call as free"):
+        meter.complete(_completion_request())
+    assert meter.spent_usd == 0.0
+
+
+def test_the_local_arm_needs_no_api_key_and_no_spend_flag(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """No credential, no gate -- and it still refuses without resolvable weights.
+
+    The gate is skipped because nothing on this path can bill: the transport
+    takes no API key parameter. What replaces it is the weights requirement, so
+    a local run that cannot say which bytes answered stops here.
+    """
+    monkeypatch.delenv(t1.SPEND_ENV_VAR, raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert t1.main([
+        "--dsn", UNUSED_DSN, "--attacker", "model", "--provider", "local",
+        "--model", LOCAL_MODEL, "--cache-dir", str(tmp_path / "cache"), "--capture",
+        "--weights-root", str(tmp_path / "no-such-store"),
+    ]) == 3
+    captured = capsys.readouterr().err
+    assert "UNAVAILABLE" in captured and "pull the model first" in captured
+    # An environment fact, never a model outcome.
+    assert "declined" not in captured
 
 
 def test_the_attacker_source_names_the_provider_that_actually_ran() -> None:
@@ -710,8 +818,23 @@ def test_the_published_artifact_states_the_evaluation_awareness_limitation(
     assert next(iter(fake.prompts)) in markdown
 
 
+def _completion_request() -> CompletionRequest:
+    """A minimal request for metering tests; nothing here reaches a transport."""
+    return CompletionRequest(
+        model=LOCAL_MODEL,
+        system="s",
+        user_content="u",
+        max_tokens=2048,
+        temperature=None,
+        thinking=None,
+        schema={},
+        canonical_prompt="c",
+        prompt_sha256="b" * 64,
+    )
+
+
 def _envelope_request(model: str) -> CompletionRequest:
-    """A request carrying whatever reasoning control the capability table dispatches."""
+    """A request carrying whatever directives the capability table dispatches."""
     return CompletionRequest(
         model=model,
         system="s",
@@ -720,6 +843,8 @@ def _envelope_request(model: str) -> CompletionRequest:
         temperature=None,
         thinking=thinking_directive(model),
         reasoning=reasoning_directive(model),
+        think=think_directive(model),
+        sampling=sampling_directive(model),
         schema={},
         canonical_prompt="c",
         prompt_sha256="a" * 64,
@@ -733,10 +858,11 @@ def test_every_provider_publishes_its_own_request_envelope() -> None:
     comparison; identical descriptors would mean the recorded field is not
     describing the request at all.
     """
-    assert set(t1.PROVIDERS) == {"anthropic", "openai"}
+    assert set(t1.PROVIDERS) == {"anthropic", "openai", "local"}
     envelopes = {
         "anthropic": t1.provider_envelope_json("anthropic", _envelope_request(MODEL)),
         "openai": t1.provider_envelope_json("openai", _envelope_request(OPENAI_MODEL)),
+        "local": t1.provider_envelope_json("local", _envelope_request(LOCAL_MODEL)),
     }
     assert len(set(envelopes.values())) == len(envelopes)
     for provider, encoded in envelopes.items():

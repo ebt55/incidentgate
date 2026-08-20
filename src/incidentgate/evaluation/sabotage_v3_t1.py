@@ -86,6 +86,13 @@ from incidentgate.control.attack_policies import (
     DeterministicT1AttackProposer,
 )
 from incidentgate.control.attack_policies import AttackPolicyVariant as ProposerVariant
+from incidentgate.control.local_weights import (
+    LocalWeightsError,
+    LocalWeightsIdentity,
+    OllamaWeightsCompletionClient,
+    ollama_envelope_descriptor,
+    resolve_ollama_weights,
+)
 from incidentgate.control.model_attacker import (
     ATTACK_STEERING_VERSION,
     ATTACKER_PROMPT_VERSION,
@@ -161,7 +168,13 @@ DEFAULT_VARIANT_ID: Final = "T1-dev-v1"
 #: claude capture keep working unchanged. A second provider is selected
 #: explicitly; nothing infers one from a model id.
 MODEL_PROVIDER: Final = "anthropic"
-PROVIDERS: Final = ("anthropic", "openai")
+PROVIDERS: Final = ("anthropic", "openai", "local")
+#: Providers that cannot bill anyone, because there is no vendor on the other
+#: end. They carry no pricing snapshot -- see PRICING_SNAPSHOTS -- and the spend
+#: gate does not apply to them, but *only* on the terms in SpendMeter.complete:
+#: the relaxation is verified against each result's absent cost, never granted on
+#: the strength of this name.
+PROVIDERS_WITHOUT_VENDOR_COST: Final = frozenset({"local"})
 DETERMINISTIC_FLOOR: Final = "deterministic_floor"
 #: The monitor arm for a condition that runs one.  T1's monitor is the
 #: deterministic whitelist oracle, and this chunk leaves it that way; a
@@ -170,9 +183,15 @@ MONITOR_ORACLE: Final = "oracle_whitelist"
 MONITOR_DISABLED: Final = "disabled"
 
 PRICING_SNAPSHOT_PATH: Final = _ROOT / "config" / "pricing" / "anthropic-2026-08-14.json"
-#: One committed snapshot per provider. A provider without one cannot publish:
-#: contracts.py refuses a provider_call lacking a named pricing snapshot, and the
-#: preflight refuses a model the snapshot cannot price.
+#: One committed snapshot per *billing* provider. A billing provider without one
+#: cannot publish: contracts.py refuses a provider_call lacking a named pricing
+#: snapshot, and the preflight refuses a model the snapshot cannot price.
+#:
+#: A provider in PROVIDERS_WITHOUT_VENDOR_COST is deliberately absent rather than
+#: mapped to a zero-cost snapshot. Inventing one would fabricate a price list for
+#: something that has no price, and would make "we priced it at zero"
+#: indistinguishable from "there is nothing to price" -- the exact collapse the
+#: cost_unavailable_reason vocabulary exists to prevent.
 PRICING_SNAPSHOTS: Final[dict[str, Path]] = {
     "anthropic": PRICING_SNAPSHOT_PATH,
     "openai": _ROOT / "config" / "pricing" / "openai-2026-08-20.json",
@@ -197,11 +216,12 @@ def provider_envelope_json(provider: str, request: CompletionRequest) -> str:
     """
     if provider not in PROVIDERS:
         raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
-    descriptor = (
-        anthropic_envelope_descriptor(request.thinking)
-        if provider == "anthropic"
-        else openai_envelope_descriptor(request.reasoning)
-    )
+    if provider == "anthropic":
+        descriptor = anthropic_envelope_descriptor(request.thinking)
+    elif provider == "openai":
+        descriptor = openai_envelope_descriptor(request.reasoning)
+    else:
+        descriptor = ollama_envelope_descriptor(request.think, request.sampling, request.model)
     return json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 #: Where the steering artifact lives, for the published artifact to cite. Under
 #: ``config/``, which no manifest loader globs -- see the note in
@@ -361,13 +381,19 @@ class SpendMeter:
     """
 
     inner: CompletionClient
-    pricing: PricingSnapshot
+    #: None only for a transport that cannot bill anyone. A billing transport
+    #: without a snapshot could not price what it spent.
+    pricing: PricingSnapshot | None
     max_calls: int
     max_usd: float
     authorized: bool = False
     calls: int = field(default=0, init=False)
     provider_calls: int = field(default=0, init=False)
     spent_usd: float = field(default=0.0, init=False)
+    #: Calls that ran a model this machine holds the weights for. Counted, and
+    #: deliberately not added to ``spent_usd`` -- but only after the record has
+    #: been *checked* to carry no cost. See ``complete``.
+    local_calls: int = field(default=0, init=False)
     #: Attempts that reached the transport and raised. The provider may have
     #: billed for them and their usage is unrecoverable, so they are counted
     #: separately rather than folded into ``spent_usd`` as zero.
@@ -439,6 +465,29 @@ class SpendMeter:
         if invocation.invocation_kind == "provider_call":
             self.provider_calls += 1
             self.spent_usd += invocation.cost or 0.0
+        elif invocation.invocation_kind == "local_weights_call":
+            # THE RELAXATION IS VERIFIED HERE, NOT GRANTED BY A PROVIDER NAME.
+            #
+            # A local call adds nothing to ``spent_usd``, and the justification
+            # for that is checked rather than assumed: the record must carry no
+            # cost, no currency and no pricing snapshot. contracts.py already
+            # forbids all three on this kind, so this is a second, independent
+            # enforcement of the same property at the point where the money
+            # decision is actually taken.
+            #
+            # Keying on the record rather than on ``provider == "local"`` is the
+            # whole point. A label is written by whoever runs the command; an
+            # absent cost on a contract-validated record is not.
+            if (
+                invocation.cost is not None
+                or invocation.currency is not None
+                or invocation.pricing_snapshot is not None
+            ):
+                raise SpendRefused(
+                    "a local weights call reported a cost, currency or pricing snapshot; "
+                    "refusing to treat a billed call as free"
+                )
+            self.local_calls += 1
         return result
 
     @property
@@ -713,6 +762,10 @@ class T1V3Report:
     #: Attempts that reached the provider and raised before reporting usage. A
     #: non-zero value means ``spent_usd`` is a lower bound, not a total.
     unaccounted_calls: int = 0
+    #: Calls served from weights this machine holds. Reported separately from
+    #: ``provider_calls`` because they are a different kind of fact: a model ran,
+    #: and no vendor was charged.
+    local_calls: int = 0
 
 
 class T1V3Runner:
@@ -731,6 +784,7 @@ class T1V3Runner:
         spend_authorized: bool = False,
         capture: bool = False,
         provider: str = MODEL_PROVIDER,
+        weights: LocalWeightsIdentity | None = None,
     ) -> None:
         if provider not in PROVIDERS:
             raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
@@ -742,15 +796,22 @@ class T1V3Runner:
             raise ValueError("capture mode requires a transport to record from")
         if capture and cache_dir is None:
             raise ValueError("capture mode requires an explicit --cache-dir to write into")
+        self.bills_a_vendor = provider not in PROVIDERS_WITHOUT_VENDOR_COST
+        if capture and not self.bills_a_vendor and weights is None:
+            # A local capture with no resolved weights would be a local run with
+            # no provenance advantage at all, which is the only reason to prefer
+            # this arm over a hosted one.
+            raise ValueError("a local capture requires resolved weights to record")
         self.dsn = dsn
         self.model = model
         self.cache_dir = cache_dir
         self.capture = capture
         self.pricing = pricing
         self.provider = provider
+        self.weights = weights
         self.meter: SpendMeter | None = None
         if completion_client is not None:
-            if pricing is None:
+            if pricing is None and self.bills_a_vendor:
                 raise ValueError("a metered transport requires a pricing snapshot")
             self.meter = SpendMeter(
                 inner=completion_client,
@@ -772,7 +833,9 @@ class T1V3Runner:
             return CacheBackedCompletionClient(cache, provider=self.provider)
         assert self.meter is not None and self.model is not None
         model, pricing = self.model, self.pricing
-        assert pricing is not None
+        weights = self.weights
+        local = not self.bills_a_vendor
+        assert pricing is not None or local
 
         def provenance(
             request: CompletionRequest, result: CompletionResult
@@ -780,6 +843,8 @@ class T1V3Runner:
             invocation = result.invocation
             if invocation.input_tokens is None or invocation.output_tokens is None:
                 raise PublicationRefusal("a capture without provider usage cannot be recorded")
+            if local and weights is None:
+                raise PublicationRefusal("a local capture without weights cannot be recorded")
             return ProviderCaptureProvenance(
                 provider=self.provider,
                 model=model,
@@ -798,11 +863,27 @@ class T1V3Runner:
                 captured_at=datetime.now(UTC),
                 capture_command="python -m incidentgate.evaluation.sabotage_v3_t1 --capture",
                 git_revision=git_provenance()[0],
-                pricing_snapshot_id=pricing.snapshot_id,
+                # A local capture names no snapshot and no cost, and says which
+                # of the two "no cost" meanings applies. A hosted capture keeps
+                # the meaning it always had: cost absent means we could not price
+                # a call that really was billed.
+                pricing_snapshot_id=None if local else (pricing.snapshot_id if pricing else None),
                 estimated_cost=invocation.cost,
                 currency=invocation.currency,
                 cost_unavailable_reason=(
-                    None if invocation.cost is not None else "model_not_priced_in_snapshot"
+                    "local_weights_no_vendor_charge"
+                    if local
+                    else (None if invocation.cost is not None else "model_not_priced_in_snapshot")
+                ),
+                weights=(
+                    json.dumps(
+                        weights.provenance(),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                    )
+                    if weights is not None and local
+                    else None
                 ),
                 scenario_id=SCENARIO_ID,
                 variant_id=variant.variant_id,
@@ -1024,6 +1105,7 @@ class T1V3Runner:
             spent_usd=0.0 if self.meter is None else self.meter.spent_usd,
             capture_episodes=capture_episodes,
             unaccounted_calls=0 if self.meter is None else self.meter.unaccounted_calls,
+            local_calls=0 if self.meter is None else self.meter.local_calls,
         )
 
     def _model_row(
@@ -1137,6 +1219,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=MODEL_PROVIDER,
         help="which provider's transport and pricing snapshot to use",
     )
+    parser.add_argument(
+        "--ollama-endpoint",
+        default=None,
+        help="local server endpoint; must be loopback, and there is deliberately no override",
+    )
+    parser.add_argument(
+        "--weights-root",
+        default=None,
+        type=Path,
+        help="Ollama model store root (default: ~/.ollama/models), for --provider local",
+    )
     parser.add_argument("--cache-dir", default=None, help="response-cache root for model captures")
     parser.add_argument("--out", default=None, help="write the v3 envelope JSON here")
     parser.add_argument("--max-calls", type=int, default=8)
@@ -1186,14 +1279,56 @@ def main(
         parser.error("--capture only applies to --attacker model")
 
     provider = arguments.provider
+    bills_a_vendor = provider not in PROVIDERS_WITHOUT_VENDOR_COST
     # Per-provider snapshot, loaded before anything else can spend. A provider
     # whose snapshot is missing or expired stops the run here rather than at the
-    # point a row cannot be priced.
-    pricing = load_pricing_snapshot(PRICING_SNAPSHOTS[provider], as_of=datetime.now(UTC))
+    # point a row cannot be priced. A provider with no vendor has no snapshot,
+    # and is not given a fabricated one.
+    pricing = (
+        load_pricing_snapshot(PRICING_SNAPSHOTS[provider], as_of=datetime.now(UTC))
+        if bills_a_vendor
+        else None
+    )
     client: CompletionClient | None = completion_client
+    weights: LocalWeightsIdentity | None = None
     authorization = spend_authorization(flag_passed=arguments.spend_flag)
-    if arguments.capture:
+    if arguments.capture and not bills_a_vendor:
+        # THE LOCAL CAPTURE PATH, AND WHY IT SKIPS THE SPEND GATE.
+        #
+        # Nothing here can bill anyone: the transport takes no API key parameter
+        # at all, so it cannot authenticate to a paid API, and it refuses any
+        # endpoint that is not loopback. The gate exists to stop *this harness*
+        # spending through credentials it holds, and this path holds none.
+        #
+        # The relaxation is not taken on the strength of the word "local":
+        # SpendMeter re-checks every result for an absent cost before treating it
+        # as free, and contracts.py forbids the record from carrying one.
+        #
+        # What is required instead is the weights identity, resolved and hashed
+        # before a single token is generated. A local run that cannot say which
+        # bytes answered has no provenance advantage over a hosted one, which is
+        # the only reason to run it.
         try:
+            weights = resolve_ollama_weights(
+                arguments.model, store_root=arguments.weights_root
+            )
+        except LocalWeightsError as error:
+            sys.stderr.write(f"UNAVAILABLE: {error}\n")
+            return 3
+        sys.stdout.write(
+            f"weights: {weights.server_model} sha256={weights.weights_sha256} "
+            f"({weights.size_bytes} bytes, quantisation {weights.quantisation}) "
+            f"hashed by this harness and matching the store's declared digest\n"
+        )
+        if client is None:
+            client = (
+                OllamaWeightsCompletionClient(weights=weights, endpoint=arguments.ollama_endpoint)
+                if arguments.ollama_endpoint
+                else OllamaWeightsCompletionClient(weights=weights)
+            )
+    elif arguments.capture:
+        try:
+            assert pricing is not None
             if arguments.max_calls < PLANNED_ATTACKER_CALLS:
                 raise SpendRefused(
                     f"--max-calls {arguments.max_calls} is below the {PLANNED_ATTACKER_CALLS} "
@@ -1209,8 +1344,8 @@ def main(
                 )
             if client is None:
                 # The gate governs construction, and it governs it identically
-                # for every provider: a second provider must not arrive with its
-                # own softer spend path.
+                # for every provider that can bill: a second provider must not
+                # arrive with its own softer spend path.
                 authorization.require()
                 key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
                 api_key = os.environ.get(key_name, "")
@@ -1240,6 +1375,7 @@ def main(
         spend_authorized=authorization.authorized,
         capture=arguments.capture,
         provider=provider,
+        weights=weights,
     )
     try:
         report = runner.run(
@@ -1490,9 +1626,10 @@ def _emit(report: T1V3Report, out: str | None) -> int:
             f"(+{report.unaccounted_calls} billed-but-unaccounted attempt(s); usage was "
             "discarded with the rejected response, so this is a lower bound)"
         )
+    local = f" local_calls={report.local_calls} (no vendor charge)" if report.local_calls else ""
     sys.stdout.write(
         f"rows={len(envelope.results)} capture_episodes={report.capture_episodes} "
-        f"provider_calls={report.provider_calls} {spend}\n"
+        f"provider_calls={report.provider_calls} {spend}{local}\n"
     )
     return 0 if all(row.incident_checker_passed for row in envelope.results) else 1
 

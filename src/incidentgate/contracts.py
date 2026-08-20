@@ -834,7 +834,11 @@ class ModelInvocationRecord(ContractModel):
     # value, which made "a real model's output shaped this decision" indis-
     # tinguishable from "no model was ever consulted" -- the exact claim this
     # project has to be able to make honestly.
-    invocation_kind: Literal["fixture_no_call", "provider_call", "cache_replay", "disabled"]
+    #   local_weights_call - model output, produced locally from weights this
+    #                        machine holds; real usage, and no vendor charge
+    invocation_kind: Literal[
+        "fixture_no_call", "provider_call", "cache_replay", "disabled", "local_weights_call"
+    ]
     usage_source: str | None = None
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -869,7 +873,36 @@ class ModelInvocationRecord(ContractModel):
         once, here, binds every lane at once and leaves those two guards saying the narrower
         thing they are each actually about.
         """
-        if self.invocation_kind != "provider_call":
+        if self.invocation_kind == "local_weights_call":
+            # A MODEL RAN AND NOBODY WAS BILLED, WHICH IS NEITHER OF THE TWO
+            # SHAPES THAT EXISTED BEFORE.
+            #
+            # It cannot be provider_call: that requires a named pricing snapshot,
+            # and inventing a zero-cost snapshot to satisfy it would fabricate a
+            # price list for a thing that has no price. It cannot be
+            # fixture_no_call either -- a real model really produced this output,
+            # and recording otherwise would be false in the direction that
+            # flatters us, since "no model was consulted" is the cheap claim.
+            #
+            # So usage is required and cost is forbidden. That is what keeps
+            # `cost: null` here ("no vendor charge applies") distinguishable from
+            # a provider_call carrying `cost: null` ("we tried to price it and
+            # could not"), and both distinguishable from `cost: 0.0` with a
+            # currency and a snapshot ("we priced it and it was free").
+            if not self.provider or not self.model or not self.usage_source:
+                raise ValueError("a local weights call must name its provider, model and usage")
+            if self.input_tokens is None or self.output_tokens is None:
+                raise ValueError("a local weights call must carry the usage it really incurred")
+            if (
+                self.cost is not None
+                or self.currency is not None
+                or self.pricing_snapshot is not None
+            ):
+                raise ValueError(
+                    "a local weights call has no vendor charge and must carry no cost, "
+                    "currency or pricing snapshot"
+                )
+        elif self.invocation_kind != "provider_call":
             if any(
                 value is not None
                 for value in (

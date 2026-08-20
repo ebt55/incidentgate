@@ -75,6 +75,8 @@ from incidentgate.reasons import (
 from .model_capabilities import (
     model_accepts_sampling,
     reasoning_directive,
+    sampling_directive,
+    think_directive,
     thinking_directive,
     thinking_headroom_tokens,
 )
@@ -374,6 +376,19 @@ class CompletionRequest:
     #: more importantly, so that no existing request's canonical bytes moved. See
     #: ``_build_request`` for why that mattered.
     reasoning: dict[str, str] | None = None
+    #: The local arm's reasoning control: Ollama's boolean ``think``. None for
+    #: every other provider.
+    #:
+    #: A bool rather than a dict because that is the parameter's actual shape,
+    #: and a third field rather than a third meaning for one of the others for
+    #: the same reason the second one exists. ``False`` and ``None`` are
+    #: different requests here: on a hybrid reasoning model, omitting the
+    #: parameter leaves thinking ON.
+    think: bool | None = None
+    #: Explicit sampling for arms that send any, from the capability table rather
+    #: than from a caller. None means this arm inherits its provider's default,
+    #: which is NOT the same as running neutral -- see ``_SAMPLING``.
+    sampling: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -528,7 +543,19 @@ def anthropic_envelope_descriptor(thinking: dict[str, str] | None = None) -> dic
             if thinking is None
             else "explicitly_off:analogous_to_the_other_arm_not_identical"
         ),
-        "sampling": "none_sent",
+        # SAMPLING IS RECORDED AS AN EFFECTIVE VALUE, NOT AS "none_sent".
+        #
+        # "none_sent" was true on every arm and meant something different on
+        # each, which made it worse than useless: it read as equivalence. What a
+        # reader needs is what the model effectively sampled at and how that
+        # value was arrived at.
+        #
+        # This is a documented default rather than a measurement. claude-opus-5
+        # rejects temperature outright so nothing can be sent, and the API does
+        # not echo back what it used, so 1.0 is what the Messages API reference
+        # documents and not what this project observed.
+        "sampling": "temperature=1.0",
+        "sampling_provenance": "provider_default_documented",
     }
 
 
@@ -616,17 +643,18 @@ class AnthropicCompletionClient:
             kwargs["temperature"] = request.temperature
         if request.thinking is not None:
             kwargs["thinking"] = request.thinking
-        if request.reasoning is not None:
-            # The mirror of the guard on the OpenAI transport. ``reasoning`` is
-            # OpenAI's control and this endpoint has no such field, so a request
-            # carrying one was built from a capability-table row that named the
-            # wrong provider. Failing here is the only way that stays visible:
-            # the Messages API would ignore an unknown key, the call would
-            # succeed, and the arm would quietly run at whatever Anthropic's
-            # default is while the record claimed a setting was applied.
+        if request.reasoning is not None or request.think is not None:
+            # The mirror of the guards on the other two transports. ``reasoning``
+            # is OpenAI's control and ``think`` is Ollama's; this endpoint has
+            # neither field, so a request carrying one was built from a
+            # capability-table row that named the wrong provider. Failing here is
+            # the only way that stays visible: the Messages API would ignore an
+            # unknown key, the call would succeed, and the arm would quietly run
+            # at whatever Anthropic's default is while the record claimed a
+            # setting was applied.
             raise ValueError(
-                "an OpenAI reasoning directive cannot be sent to Anthropic; the capability "
-                "table entry for this model is wrong"
+                "another provider's reasoning directive cannot be sent to Anthropic; the "
+                "capability table entry for this model is wrong"
             )
         response = self._get_client().messages.create(**kwargs)
         stop_reason = getattr(response, "stop_reason", None)
@@ -722,8 +750,10 @@ class ModelAgentProposer:
         self._thinking = thinking_directive(model)
         # At most one of these is ever set: the capability table dispatches a
         # model to its own provider's reasoning control and returns None from the
-        # other accessor. Neither arm is left to a provider default.
+        # others. No arm is left to a provider default.
         self._reasoning = reasoning_directive(model)
+        self._think = think_directive(model)
+        self._sampling = sampling_directive(model)
         self._max_tokens = self._OUTPUT_TOKENS + thinking_headroom_tokens(model)
         self._steering_prompt = steering_prompt
         self._action_profile = action_profile
@@ -900,6 +930,12 @@ class ModelAgentProposer:
         # for a parameter the request never had.
         if self._reasoning is not None:
             canonical_fields["reasoning"] = self._reasoning
+        if self._think is not None:
+            # Same conditional, same reason: an unconditional key would re-key
+            # every committed capture on both hosted arms.
+            canonical_fields["think"] = self._think
+        if self._sampling is not None:
+            canonical_fields["sampling"] = self._sampling
         canonical = json.dumps(
             canonical_fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         )
@@ -912,6 +948,8 @@ class ModelAgentProposer:
                 temperature=self._temperature,
                 thinking=self._thinking,
                 reasoning=self._reasoning,
+                think=self._think,
+                sampling=self._sampling,
                 schema=_provider_schema(self._output_model),
                 canonical_prompt=canonical,
                 prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),

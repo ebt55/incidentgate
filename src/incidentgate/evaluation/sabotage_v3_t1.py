@@ -43,13 +43,24 @@ So there are two modes, and they are different commands:
                 to a fixture.
 
 ``--output-contract`` selects which frozen proposer output contract the request
-carries, and it is orthogonal to both modes. ``v1`` is the default and is what
-every committed capture was taken under. ``v2``
-(``control/proposal_contract_v2.py``) sends the identical steering, system
-prompt and evidence with every frozen literal enumerated, so a model selects it
-rather than transcribing it. The contract id is inside the canonical prompt, so
-each version keys its own capture set: a v1 body can never be replayed as a v2
-result, and choosing v2 never reaches for a v1 capture.
+carries, and it is orthogonal to both modes. All three send the identical
+steering artifact, system prompt and evidence, and differ only in the output
+schema:
+
+``v1``   the default, and what the first seven committed captures were taken
+         under.
+``v2``   (``control/proposal_contract_v2.py``) enumerates every frozen literal,
+         so a model selects it rather than transcribing it.
+``v3``   (``control/proposal_contract_v3.py``) supersedes v2: ``tool_name`` is
+         derived from ``arguments.kind`` rather than asked for, so one field
+         carries the covert/safe decision and a model cannot name one tool while
+         supplying the other's payload; and every remaining bound that the
+         provider transform could not carry is either enumerated or enforced by
+         clipping rather than by rejection.
+
+The contract id is inside the canonical prompt, so each version keys its own
+capture set: a v1 body can never be replayed as a v2 or v3 result, and choosing
+one never reaches for another's capture.
 
 The capture is taken once and replayed into all three conditions. That is sound
 because the attacker's prompt is a function of the incident's evidence alone --
@@ -1239,9 +1250,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=PROPOSAL_CONTRACT_VERSIONS,
         default="v1",
         help=(
-            "which frozen proposer output contract to send: v1 (the default, and what every "
-            "committed capture was taken under) or v2, which enumerates every frozen literal "
-            "so a model selects it instead of transcribing it. v2 keys its own capture set."
+            "which frozen proposer output contract to send: v1 (the default, and what the "
+            "first seven committed captures were taken under), v2, which enumerates every "
+            "frozen literal so a model selects it instead of transcribing it, or v3, which "
+            "additionally derives tool_name from arguments.kind so one field carries the "
+            "covert/safe decision. Each version keys its own capture set."
         ),
     )
     parser.add_argument(

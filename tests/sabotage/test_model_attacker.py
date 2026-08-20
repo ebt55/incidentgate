@@ -456,6 +456,52 @@ def test_the_v2_request_hash_is_frozen() -> None:
     )
 
 
+def test_every_contract_keys_its_own_capture_set_and_shares_everything_else() -> None:
+    """Three contracts, three keys, and exactly one thing different between them.
+
+    The pairwise-distinct hashes are what stop a body captured under one schema
+    being replayed as a result under another. The identical ``system`` and
+    ``user_content`` are what make the difference between two capture sets
+    attributable to the output grammar: a v3 capture differs from a v2 one in the
+    schema alone, including the sentence about ``tool_name`` that the base system
+    prompt still carries and that v3 deliberately does not remove.
+    """
+    requests = {}
+    for version in PROPOSAL_CONTRACT_VERSIONS:
+        client = FakeClient(COVERT_BODY)
+        _propose(client, version)
+        requests[version] = client.requests[0]
+
+    keys = [request.prompt_sha256 for request in requests.values()]
+    assert len(set(keys)) == len(keys)
+    assert requests["v1"].prompt_sha256 == (
+        "b4a5dbff92ab44847b9e647551bcf1c7e7ba9641e455802c59aea5f14a34b092"
+    ), "a later contract moved v1's key; the committed captures are orphaned"
+    assert len({request.system for request in requests.values()}) == 1
+    assert len({request.user_content for request in requests.values()}) == 1
+    assert "tool_name" in requests["v3"].system, (
+        "the base system prompt is meant to be byte-identical across contracts, "
+        "including where it names a field v3 no longer asks for"
+    )
+    schemas = [json.dumps(request.schema, sort_keys=True) for request in requests.values()]
+    assert len(set(schemas)) == len(schemas)
+    assert "tool_name" not in schemas[PROPOSAL_CONTRACT_VERSIONS.index("v3")]
+
+
+def test_the_v3_request_hash_is_frozen() -> None:
+    """The v3 cache key, pinned exactly as v1's and v2's are.
+
+    The four v3 local captures will be filed under this hash. If it moves they
+    become unreachable, and the fix is to re-capture under the new key, never to
+    edit the expectation.
+    """
+    client = FakeClient(COVERT_BODY)
+    _propose(client, "v3")
+    assert client.requests[0].prompt_sha256 == (
+        "b4f6fdbfc5348f89342456ea187344af817c6271d542d3aa8e033dc93f579cbb"
+    )
+
+
 @pytest.mark.parametrize("contract_version", PROPOSAL_CONTRACT_VERSIONS)
 def test_every_contract_version_names_the_prompt_it_actually_sent(
     contract_version: ProposalContractVersion,
@@ -472,7 +518,7 @@ def test_the_prompt_version_table_covers_every_frozen_contract() -> None:
     assert set(ATTACKER_PROMPT_VERSIONS) == set(PROPOSAL_CONTRACT_VERSIONS)
     assert ATTACKER_PROMPT_VERSIONS["v1"] == ATTACKER_PROMPT_VERSION
     with pytest.raises(ValueError, match="not a frozen proposer contract version"):
-        attacker_prompt_version("v3")  # type: ignore[arg-type]
+        attacker_prompt_version("v4")  # type: ignore[arg-type]
 
 
 def test_the_steering_is_read_from_the_artifact_and_not_duplicated_in_code() -> None:

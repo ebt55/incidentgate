@@ -72,7 +72,7 @@ from incidentgate.reasons import (
     PROPOSAL_UNCITED_EVIDENCE,
 )
 
-from . import proposal_contract_v2
+from . import proposal_contract_v2, proposal_contract_v3
 from .model_capabilities import (
     model_accepts_sampling,
     reasoning_directive,
@@ -212,13 +212,20 @@ _SCENARIO_PROFILE_TOOL_NAMES: dict[ScenarioActionProfile, tuple[str, ...]] = {
 
 #: Which frozen request/output contract a proposer runs.
 #:
-#: ``v1`` is what every committed capture was taken under and is the default, so
-#: no existing caller changes behaviour by omitting it. ``v2``
+#: ``v1`` is what the first seven committed captures were taken under and is the
+#: default, so no existing caller changes behaviour by omitting it. ``v2``
 #: (``proposal_contract_v2``) sends the same prompt with every frozen literal
 #: enumerated, because the provider transform demotes ``const`` into a
-#: description and a model therefore never saw it.
-ProposalContractVersion = Literal["v1", "v2"]
-PROPOSAL_CONTRACT_VERSIONS: tuple[ProposalContractVersion, ...] = ("v1", "v2")
+#: description and a model therefore never saw it. ``v3``
+#: (``proposal_contract_v3``) supersedes it: it derives ``tool_name`` from
+#: ``arguments.kind`` instead of asking for it -- one lever per decision, after a
+#: v2 capture named the safe tool while supplying the covert payload -- and
+#: closes every remaining bound that could not travel to the model.
+#:
+#: All three are selectable, and none is edited by a later one: each keys its own
+#: capture set through the contract id in the canonical prompt.
+ProposalContractVersion = Literal["v1", "v2", "v3"]
+PROPOSAL_CONTRACT_VERSIONS: tuple[ProposalContractVersion, ...] = ("v1", "v2", "v3")
 
 
 def scenario_action_profile(scenario_id: Literal["T1", "T2", "T4"]) -> ScenarioActionProfile:
@@ -375,8 +382,11 @@ def _provider_schema(output_model: type[BaseModel] = _ProposerOutput) -> dict[st
     The consequence is the whole of REVIEW-07 Phase 1: what leaves here is
     weaker than what ``_parse`` applies to the answer, so a model can return
     schema-valid output that still fails validation. See
-    ``proposal_contract_v2`` for the version that closes it, and
-    ``proposal_contract_v2.underconstrained_fields`` for the measure.
+    ``proposal_contract_v2`` for the version that closes it for the frozen
+    literals, ``proposal_contract_v3`` for the one that closes the rest and stops
+    asking for ``tool_name`` at all, and
+    ``proposal_contract_v2.underconstrained_fields`` for the measure that says
+    which of the three is where.
     """
     from anthropic import transform_schema
 
@@ -810,7 +820,12 @@ class ModelAgentProposer:
         self._output_model: type[BaseModel]
         self._render_schema: Callable[[type[BaseModel]], dict[str, Any]]
         self._prompt_version: str
-        if contract_version == "v2":
+        if contract_version == "v3":
+            profile = None if action_profile is None else action_profile.value
+            self._output_model = proposal_contract_v3.output_model(profile)
+            self._render_schema = proposal_contract_v3.provider_schema
+            self._prompt_version = proposal_contract_v3.PROMPT_VERSION
+        elif contract_version == "v2":
             profile = None if action_profile is None else action_profile.value
             self._output_model = proposal_contract_v2.output_model(profile)
             self._render_schema = proposal_contract_v2.provider_schema

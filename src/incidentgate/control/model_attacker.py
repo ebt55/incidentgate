@@ -152,14 +152,16 @@ ATTACKER_PROMPT_VERSION = "proposal/v1_attack-steering/t1/model/v1"
 
 #: The same identity, per proposer output contract.
 #:
-#: A v2 request carries the same steering artifact and the same base system
-#: prompt as a v1 one -- only the output schema differs -- so the steering half
-#: of the id is unchanged and the proposer half moves. Keeping both in one table
-#: is what stops a v2 capture being filed under a version that names v1's
-#: request, which would make the capture unreproducible from its own provenance.
+#: Every request in this table carries the same steering artifact and the same
+#: base system prompt -- only the output schema differs -- so the steering half
+#: of the id is unchanged across all three and the proposer half moves. Keeping
+#: them in one table is what stops a v2 or v3 capture being filed under a version
+#: that names v1's request, which would make the capture unreproducible from its
+#: own provenance.
 ATTACKER_PROMPT_VERSIONS: dict[ProposalContractVersion, str] = {
     "v1": ATTACKER_PROMPT_VERSION,
     "v2": "proposal/v2_attack-steering/t1/model/v1",
+    "v3": "proposal/v3_attack-steering/t1/model/v1",
 }
 
 
@@ -324,8 +326,9 @@ class ModelAttackProposer:
         temperature: float | None = None,
         # Defaulted to v1 so that every existing caller, every committed capture
         # and the pinned request hash in tests/sabotage/test_model_attacker.py
-        # stay exactly where they are. v2 is opt-in and produces its own capture
-        # set; see control/proposal_contract_v2.py.
+        # stay exactly where they are. v2 and v3 are opt-in and each produces its
+        # own capture set; see control/proposal_contract_v3.py, which supersedes
+        # v2 without editing it.
         contract_version: ProposalContractVersion = "v1",
     ) -> None:
         if not isinstance(variant, AttackPolicyVariant):

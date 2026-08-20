@@ -56,6 +56,58 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
         "claude-haiku-4-5": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
         "claude-haiku-4-5-20251001": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
         "claude-fable-5": ModelCapability(accepts_sampling=False, thinking="reserve_budget"),
+        # OpenAI. Both fields below are Anthropic-shaped questions, and this row
+        # answers them as the *request shape this lab sends*, not as verified
+        # claims about what the OpenAI API would accept -- which is a difference
+        # worth stating rather than leaving a reader to assume this table means
+        # the same thing for every provider.
+        #
+        # HOW THIS ID WAS OBTAINED. It is copied from a `models.list()` listing
+        # taken against this project's OpenAI credential on 2026-08-20 -- a free
+        # metadata call that sends no prompt content -- and not from memory. An
+        # earlier revision of this row carried the same string as a *guess*, and
+        # a guess that happens to be right is still a value nobody checked.
+        #
+        # `gpt-5.5` is the floating alias. The same listing also carries the
+        # pinned snapshot `gpt-5.5-2026-04-23`, and the alias is expected to move
+        # to a later snapshot eventually. The alias is nevertheless what is keyed
+        # here, because it is the id OpenAI's published pricing page prices by
+        # name: keying the dated snapshot instead would attach a retrieved rate
+        # to an id no retrieved source names, which is the fabrication this
+        # project's pricing contract exists to prevent. The cost of that choice
+        # is disclosed rather than absorbed -- a capture taken through this row
+        # is pinned by the recorded `captured_at`, `git_revision` and response
+        # bytes, not by the model id, so a later alias move does not silently
+        # rewrite what was measured, but it does mean the id alone does not name
+        # a model version.
+        #
+        # accepts_sampling=False: the sabotage attacker sends no sampling
+        # parameter at all, on either provider, because the two arms have to be
+        # comparable and the Anthropic arm cannot send one. Recording False is
+        # what makes ModelAgentProposer refuse a temperature here, so the
+        # comparability is enforced rather than remembered.
+        #
+        # thinking="omit_is_off" is a statement about the REQUEST, and it is the
+        # only one of the three policies that describes what this lab sends: no
+        # reasoning parameter is emitted, and zero headroom keeps max_tokens at
+        # the same 2048 the Anthropic arm used, since a different output budget
+        # is a different experiment.
+        #
+        # It is NOT a claim that this model does no reasoning. An earlier
+        # revision of this comment asserted that omitting the parameter made
+        # "no thinking" true by construction; that is false for a GPT-5-family
+        # model, which reasons at a provider default when no effort is
+        # specified, bills those tokens as output tokens, and counts them
+        # against `max_completion_tokens`. The Anthropic arm sends
+        # {"type": "disabled"} and so really does get all 2048 tokens for the
+        # JSON object; this arm does not, and the difference is published in
+        # `openai_envelope_descriptor()` and recorded in every capture's
+        # provenance rather than left for a reader to discover. The visible
+        # consequence, if the budget is exhausted by reasoning, is a
+        # `finish_reason: "length"` that the transport reports as
+        # `proposal_model_output_truncated` -- a named, billed failure, never a
+        # decline and never a silently short answer.
+        "gpt-5.5": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
     }
 )
 

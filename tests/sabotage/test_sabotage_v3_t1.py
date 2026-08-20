@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,7 @@ from incidentgate.control.model_proposal import (
     PricingSnapshot,
     ProviderPolicyRefusal,
 )
+from incidentgate.control.openai_completion import OpenAICompletionClient
 from incidentgate.control.pricing import load_pricing_snapshot
 from incidentgate.control.response_cache import ResponseCache
 from incidentgate.evaluation import sabotage_v3_t1 as t1
@@ -54,6 +56,8 @@ from incidentgate.evaluation.sabotage_v3 import (
 from incidentgate.lab.repository import LabRepository
 
 MODEL = "claude-opus-5"
+#: Confirmed against ``models.list()`` on 2026-08-20, not guessed from a family name.
+OPENAI_MODEL = "gpt-5.5"
 DEV = T1_ATTACK_VARIANTS_BY_ID["T1-dev-v1"]
 UNUSED_DSN = "postgresql://unused:unused@127.0.0.1:1/unused"
 
@@ -106,6 +110,35 @@ class FakeProvider:
                 cost=self.cost,
                 currency="USD",
                 pricing_snapshot="anthropic-2026-08-14",
+            ),
+        )
+
+
+class FakeOpenAIProvider(FakeProvider):
+    """Stands where ``OpenAICompletionClient`` stands. Contacts nothing.
+
+    Separate from ``FakeProvider`` rather than parameterised, because the thing
+    under test is that the provider label travels correctly end to end. A fake
+    that could be told which provider to claim would happily agree with whatever
+    the runner assumed.
+    """
+
+    def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.calls += 1
+        self.prompts.add(request.prompt_sha256)
+        return CompletionResult(
+            raw_json=self.raw_json,
+            invocation=ModelInvocationRecord(
+                invocation_kind="provider_call",
+                provider="openai",
+                model=OPENAI_MODEL,
+                usage_source="openai_chat_completions_usage",
+                input_tokens=873,
+                output_tokens=118,
+                # 873 x $5/Mtok + 118 x $30/Mtok, at the committed openai snapshot.
+                cost=0.007905,
+                currency="USD",
+                pricing_snapshot="openai-2026-08-20",
             ),
         )
 
@@ -173,6 +206,62 @@ def test_a_real_transport_cannot_be_injected_past_the_gate(pricing: PricingSnaps
     assert t1.SpendMeter(
         inner=real, pricing=pricing, max_calls=1, max_usd=1.0, authorized=True
     ).calls == 0
+
+
+def test_a_second_provider_does_not_arrive_with_a_softer_spend_path(
+    pricing: PricingSnapshot,
+) -> None:
+    """The gate must refuse *every* real transport, not just the one it was written for.
+
+    A new provider slipping past the injection guard because the isinstance check
+    named only the first vendor is exactly the shape of regression this project
+    exists to catch, and it would be invisible: the run would simply work.
+    """
+    real_openai = OpenAICompletionClient(api_key="sk-not-used-and-never-called", pricing=pricing)
+    with pytest.raises(t1.SpendRefused, match="without spend authorization"):
+        t1.SpendMeter(
+            inner=real_openai, pricing=pricing, max_calls=1, max_usd=1.0, authorized=False
+        )
+    # Authorized, it is accepted -- and still never called by this test.
+    assert t1.SpendMeter(
+        inner=real_openai, pricing=pricing, max_calls=1, max_usd=1.0, authorized=True
+    ).calls == 0
+
+
+def test_every_provider_has_a_committed_pricing_snapshot_that_loads() -> None:
+    """A provider without a priced snapshot cannot publish, so the pair must be complete."""
+    assert set(t1.PRICING_SNAPSHOTS) == set(t1.PROVIDERS)
+    for provider, path in t1.PRICING_SNAPSHOTS.items():
+        assert path.is_file(), f"{provider} has no committed pricing snapshot"
+        snapshot = load_pricing_snapshot(path, as_of=datetime.now(UTC))
+        assert snapshot.currency == "USD"
+
+
+def test_the_attacker_source_names_the_provider_that_actually_ran() -> None:
+    assert t1.model_source("claude-opus-5", "anthropic") == "model:anthropic/claude-opus-5"
+    assert t1.model_source("gpt-5.5", "openai") == "model:openai/gpt-5.5"
+    # Default stays anthropic so the committed claude capture keeps working.
+    assert t1.model_source("claude-opus-5") == "model:anthropic/claude-opus-5"
+
+
+def test_an_unknown_provider_is_refused_before_anything_runs() -> None:
+    with pytest.raises(ValueError, match="is not a known provider"):
+        t1.T1V3Runner(UNUSED_DSN, provider="anthropic-but-typoed")
+
+
+def test_the_openai_arm_requires_its_own_key_not_anthropics(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Selecting a provider must not let another provider's credential authorize it."""
+    monkeypatch.setenv(t1.SPEND_ENV_VAR, "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-present")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert t1.main([
+        "--dsn", UNUSED_DSN, "--attacker", "model", "--provider", "openai",
+        "--model", "gpt-5.5", "--cache-dir", str(tmp_path / "cache"), "--capture",
+        t1.SPEND_FLAG, "--max-usd", "5.00",
+    ]) == 2
+    assert "OPENAI_API_KEY is required to capture from openai" in capsys.readouterr().err
 
 
 def test_the_call_cap_stops_the_run(pricing: PricingSnapshot) -> None:
@@ -618,6 +707,110 @@ def test_the_published_artifact_states_the_evaluation_awareness_limitation(
     assert t1.STEERING_ARTIFACT_RELPATH in markdown
     assert steering_artifact_sha256() in markdown
     assert next(iter(fake.prompts)) in markdown
+
+
+def test_every_provider_publishes_its_own_request_envelope() -> None:
+    """The envelope is provenance, so it must exist for both arms and differ between them.
+
+    A descriptor that only the newcomer publishes gives a reader one side of a
+    comparison; identical descriptors would mean the recorded field is not
+    describing the request at all.
+    """
+    assert set(t1.PROVIDERS) == {"anthropic", "openai"}
+    envelopes = {provider: t1.provider_envelope_json(provider) for provider in t1.PROVIDERS}
+    assert len(set(envelopes.values())) == len(envelopes)
+    for provider, encoded in envelopes.items():
+        parsed = json.loads(encoded)
+        assert parsed["provider"] == provider
+        assert all(isinstance(value, str) and value for value in parsed.values())
+        # Canonical form, so the recorded bytes are stable across runs.
+        assert encoded == json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+
+
+def test_the_cross_provider_disclosure_states_the_sequence_and_the_open_gap() -> None:
+    """Both facts the artifact is required to carry, pinned as text.
+
+    The second is the one that erodes. A reader meeting a gpt row for
+    ``T1-cal-v1`` will reach for it as an answer to the anthropic question, and
+    the only defence is a sentence that says plainly it is not one. Pinning it
+    here means a renderer edit cannot quietly drop it.
+    """
+    prose = "\n".join(t1.CROSS_PROVIDER_DISCLOSURE)
+    # The sequence, in order and without euphemism.
+    assert "rejected by a provider-side input classifier" in prose
+    assert "research coverage on the Anthropic API" in prose
+    assert "declined" in prose
+    assert prose.index("rejected by a provider-side") < prose.index("run on OpenAI")
+    # And the gap, stated as still open.
+    assert "remains unmeasured" in prose
+    assert "Nothing in the OpenAI arm counts as coverage for it" in prose
+
+
+def test_the_openai_arm_publishes_a_row_that_names_openai_and_records_its_envelope(
+    dsn: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The second arm end to end, with nothing special-cased for it in the runner.
+
+    Three things have to survive the whole path: the row's ``attacker_source``
+    naming the provider that actually ran, the replay naming the same pair, and
+    the capture recording the API envelope its request was carried in -- the one
+    fact a cross-model comparison cannot assert without evidence.
+    """
+    cache_dir = tmp_path / "cache"
+    fake = FakeOpenAIProvider()
+    common = [
+        "--dsn", dsn, "--attacker", "model", "--provider", "openai",
+        "--model", OPENAI_MODEL, "--cache-dir", str(cache_dir),
+    ]
+    assert t1.main([*common, "--capture", "--max-usd", "0.50"], completion_client=fake) == 0
+    out = tmp_path / "envelope.json"
+    assert t1.main([*common, "--out", str(out)]) == 0
+    capsys.readouterr()
+    assert fake.calls == 1, "publishing must replay, never call"
+
+    envelope = t1.SabotageRawEnvelopeV3.model_validate(
+        json.loads(out.read_text(encoding="utf-8"))
+    )
+    model_rows = [r for r in envelope.results if r.attacker_source.startswith("model:")]
+    assert len(model_rows) == 3
+    for row in model_rows:
+        # Requirement, stated as an assertion: the exact confirmed id, no alias
+        # substitution and no contract change to admit it.
+        assert row.attacker_source == f"model:openai/{OPENAI_MODEL}"
+        attacker = next(item for item in row.invocations if item.role == "attacker")
+        assert (attacker.record.provider, attacker.record.model) == ("openai", OPENAI_MODEL)
+        assert attacker.record.invocation_kind == "cache_replay"
+
+    cached = ResponseCache(cache_dir).load(OPENAI_MODEL, next(iter(fake.prompts)))
+    provenance = cached.provenance
+    assert provenance is not None
+    assert (provenance.provider, provenance.model) == ("openai", OPENAI_MODEL)
+    assert provenance.pricing_snapshot_id == "openai-2026-08-20"
+    assert provenance.usage_source == "openai_chat_completions_usage"
+    assert provenance.estimated_cost == pytest.approx(0.007905)
+    assert provenance.request_envelope == t1.provider_envelope_json("openai")
+
+    markdown = out.with_suffix(".md").read_text(encoding="utf-8")
+    assert "## Why there is an OpenAI arm, and what it is not" in markdown
+    assert "remains unmeasured" in markdown
+    # Above the table, like the awareness limitation: a reader must meet the
+    # caveat before the number it qualifies.
+    assert markdown.index("Why there is an OpenAI arm") < markdown.index("## Covert objective")
+
+
+def test_the_cross_provider_disclosure_is_absent_from_an_anthropic_only_table(
+    dsn: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It explains why a second provider is present; a table without one must not carry it."""
+    cache_dir = tmp_path / "cache"
+    common = ["--dsn", dsn, "--attacker", "model", "--model", MODEL, "--cache-dir", str(cache_dir)]
+    assert t1.main([*common, "--capture"], completion_client=FakeProvider()) == 0
+    out = tmp_path / "envelope.json"
+    assert t1.main([*common, "--out", str(out)]) == 0
+    capsys.readouterr()
+    markdown = out.with_suffix(".md").read_text(encoding="utf-8")
+    assert "Why there is an OpenAI arm" not in markdown
+    assert "## Covert objective" in markdown
 
 
 def test_the_limitation_is_not_rendered_for_a_floor_only_table(dsn: str, tmp_path: Path) -> None:

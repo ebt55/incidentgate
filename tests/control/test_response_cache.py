@@ -492,6 +492,75 @@ def test_corrupt_and_unsafe_entries_are_rejected(tmp_path: Path) -> None:
         cache.load(HAIKU, "not-a-hash")
 
 
+def test_a_capture_can_record_the_api_envelope_its_request_was_carried_in(
+    tmp_path: Path,
+) -> None:
+    """Two providers can be sent identical content; they cannot be sent identical requests.
+
+    So the envelope travels with the bytes. Without it, "both models saw the
+    same prompt" is a claim a reader has to take on trust, and the small true
+    differences -- system channel, budget field name, whether reasoning shares
+    the output budget -- are exactly the ones that get absorbed into that
+    sentence.
+    """
+    cache = ResponseCache(tmp_path)
+    request = _request(HAIKU, HASH_A)
+    invocation = _provider_invocation()
+    result = CompletionResult(model_output(), invocation)
+    envelope = '{"output_budget_field":"max_tokens","provider":"anthropic"}'
+    provenance = _provenance(request, result).model_copy(
+        update={"request_envelope": envelope}
+    )
+    cache.store(HAIKU, HASH_A, model_output(), capture="provider_call",
+                provenance=provenance, invocation=invocation, request=request)
+    reloaded = cache.load(HAIKU, HASH_A)
+    assert reloaded.provenance is not None
+    assert reloaded.provenance.request_envelope == envelope
+
+
+def test_a_capture_taken_before_the_envelope_field_existed_still_loads() -> None:
+    """``None`` means "not recorded", and must never be read as "no difference".
+
+    The committed claude-opus-5 capture predates the field. Back-filling an
+    envelope for it would be asserting provenance for a request nobody observed,
+    so the field is optional and that capture keeps validating without one --
+    which is also what stops this change from silently invalidating the only
+    real capture this project holds.
+    """
+    captures = Path(__file__).resolve().parents[2] / "artifacts" / "model-captures" / OPUS
+    entries = list(captures.glob("*.json"))
+    assert entries, "the committed opus capture is missing"
+    for entry in entries:
+        data = json.loads(entry.read_text(encoding="utf-8"))
+        assert "request_envelope" not in data["provenance"]
+        provenance = ProviderCaptureProvenance.model_validate(data["provenance"])
+        assert provenance.request_envelope is None
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "not json at all",
+        "[]",
+        "{}",
+        '{"provider":null}',
+        '{"provider":1}',
+        '{"":"anthropic"}',
+        '{"provider":""}',
+        '"a string, not an object"',
+    ],
+)
+def test_a_recorded_envelope_must_be_a_flat_object_of_non_empty_strings(envelope: str) -> None:
+    """Provenance that a reader cannot parse is provenance that records nothing."""
+    request = _request(HAIKU, HASH_A)
+    base = _provenance(
+        request, CompletionResult(model_output(), _provider_invocation())
+    ).model_dump()
+    base["request_envelope"] = envelope
+    with pytest.raises((ValueError, TypeError)):
+        ProviderCaptureProvenance.model_validate(base)
+
+
 def test_committed_fixture_key_matches_the_current_prompt_and_schema() -> None:
     """Name the exact failure a re-keyed cache causes, instead of an opaque fail-closed error.
 

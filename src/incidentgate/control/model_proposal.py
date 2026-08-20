@@ -444,6 +444,12 @@ class ProviderPolicyRefusal(Exception):
         cost: float | None,
         currency: str | None,
         pricing_snapshot: str,
+        # Added after a real block could not be cited: the owner needed the
+        # provider's request id to reference the refusal and it had been
+        # discarded, because the diagnostic dumped the response *model* and the
+        # id lives on the transport envelope. It is bounded, provider-issued, and
+        # contains nothing about the prompt.
+        request_id: str | None = None,
     ) -> None:
         # Provider-authored policy text only. The prompt is never included: this
         # travels into logs and reports, and the request is the one thing that
@@ -456,11 +462,47 @@ class ProviderPolicyRefusal(Exception):
         self.cost = cost
         self.currency = currency
         self.pricing_snapshot = pricing_snapshot
+        self.request_id = None if request_id is None else request_id[: self._MAX_TEXT]
         super().__init__(
             f"provider refused the request under policy "
-            f"(stop_reason={self.stop_reason!r}, category={self.category!r}); "
-            f"the model was not consulted"
+            f"(stop_reason={self.stop_reason!r}, category={self.category!r}, "
+            f"request_id={self.request_id!r}); the model was not consulted"
         )
+
+
+ANTHROPIC_PROVIDER = "anthropic"
+
+
+def anthropic_envelope_descriptor() -> dict[str, str]:
+    """Publish the API envelope this transport sends, in the same keys its siblings use.
+
+    This exists so that "the two arms saw the same prompt in different envelopes"
+    is a checkable claim rather than an assertion. The reference arm has to state
+    its own envelope for the comparison to have two sides; a descriptor published
+    only by the newcomer would leave a reader inferring this one from a docstring.
+
+    Every value here is a fact about the request ``complete`` below actually
+    builds, so a change to that method that is not reflected here is a defect,
+    and ``tests/control/test_model_proposer.py`` pins the pairing.
+    """
+    return {
+        "provider": ANTHROPIC_PROVIDER,
+        "system_channel": "top_level_system_parameter",
+        "output_budget_field": "max_tokens",
+        "structured_output": "output_config.format:json_schema",
+        "structured_output_strict": "true",
+        "usage_fields": "input_tokens,output_tokens",
+        "refusal_surface": "stop_reason|stop_details.category",
+        # The counterpart of the OpenAI arm's open reasoning gap. A `thinking`
+        # parameter exists and its value is decided per model id by
+        # `model_capabilities`, so for a "send_disabled" model such as
+        # claude-opus-5 reasoning is off and the whole output budget is
+        # available to the JSON object. The OpenAI arm has no such control in
+        # its request at all, which is the asymmetry both descriptors exist to
+        # make visible.
+        "reasoning_control": "thinking_parameter:per_model_capability_table",
+        "sampling": "none_sent",
+    }
 
 
 class AnthropicCompletionClient:
@@ -532,6 +574,7 @@ class AnthropicCompletionClient:
             ),
             currency=self._pricing.currency if priced else None,
             pricing_snapshot=self._pricing.snapshot_id,
+            request_id=getattr(response, "_request_id", None),
         )
 
     def complete(self, request: CompletionRequest) -> CompletionResult:

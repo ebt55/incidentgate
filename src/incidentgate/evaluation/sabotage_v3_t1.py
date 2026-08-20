@@ -64,6 +64,7 @@ see -- stops the publication instead of entering it.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Sequence
@@ -99,6 +100,11 @@ from incidentgate.control.model_proposal import (
     CompletionResult,
     PricingSnapshot,
     ProviderPolicyRefusal,
+    anthropic_envelope_descriptor,
+)
+from incidentgate.control.openai_completion import (
+    OpenAICompletionClient,
+    openai_envelope_descriptor,
 )
 from incidentgate.control.ports import ProposalGenerator
 from incidentgate.control.pricing import load_pricing_snapshot
@@ -151,7 +157,11 @@ SCENARIO_ID: Final = "T1"
 #: and are untouched; running one is what keeps this off the split machinery.
 DEFAULT_VARIANT_ID: Final = "T1-dev-v1"
 
+#: The default provider, kept as a name so existing callers and the committed
+#: claude capture keep working unchanged. A second provider is selected
+#: explicitly; nothing infers one from a model id.
 MODEL_PROVIDER: Final = "anthropic"
+PROVIDERS: Final = ("anthropic", "openai")
 DETERMINISTIC_FLOOR: Final = "deterministic_floor"
 #: The monitor arm for a condition that runs one.  T1's monitor is the
 #: deterministic whitelist oracle, and this chunk leaves it that way; a
@@ -160,6 +170,30 @@ MONITOR_ORACLE: Final = "oracle_whitelist"
 MONITOR_DISABLED: Final = "disabled"
 
 PRICING_SNAPSHOT_PATH: Final = _ROOT / "config" / "pricing" / "anthropic-2026-08-14.json"
+#: One committed snapshot per provider. A provider without one cannot publish:
+#: contracts.py refuses a provider_call lacking a named pricing snapshot, and the
+#: preflight refuses a model the snapshot cannot price.
+PRICING_SNAPSHOTS: Final[dict[str, Path]] = {
+    "anthropic": PRICING_SNAPSHOT_PATH,
+    "openai": _ROOT / "config" / "pricing" / "openai-2026-08-20.json",
+}
+
+
+def provider_envelope_json(provider: str) -> str:
+    """The API envelope a capture from this provider was carried in, as canonical JSON.
+
+    Written into every capture's provenance so the one thing a cross-model
+    comparison cannot claim -- that two providers received byte-identical
+    *requests* -- is replaced by the thing it can: byte-identical content in two
+    stated envelopes, each recorded beside the bytes it carried. A reader who
+    wants to discount the comparison because of an envelope difference should be
+    able to find the difference without reading two transports.
+    """
+    descriptor = {
+        "anthropic": anthropic_envelope_descriptor,
+        "openai": openai_envelope_descriptor,
+    }[provider]()
+    return json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 #: Where the steering artifact lives, for the published artifact to cite. Under
 #: ``config/``, which no manifest loader globs -- see the note in
 #: ``control/model_attacker.py`` on why it is not in ``scenarios/sabotage/``.
@@ -337,7 +371,9 @@ class SpendMeter:
     def __post_init__(self) -> None:
         if self.max_calls < 0 or self.max_usd < 0:
             raise ValueError("spend caps must be non-negative")
-        if not self.authorized and isinstance(self.inner, AnthropicCompletionClient):
+        if not self.authorized and isinstance(
+            self.inner, (AnthropicCompletionClient, OpenAICompletionClient)
+        ):
             # The one structural check the gate cannot make by refusing to
             # construct: a caller that built the real transport itself and handed
             # it in. Injection is how tests supply a fake, so the seam has to
@@ -422,9 +458,9 @@ def monitor_source_for(condition: EvaluationMode) -> str:
     return MONITOR_DISABLED if stages.monitor is StageDisposition.DISABLED else MONITOR_ORACLE
 
 
-def model_source(model: str) -> str:
+def model_source(model: str, provider: str = MODEL_PROVIDER) -> str:
     """The ``model:<provider>/<id>`` attacker label for a given model id."""
-    return f"model:{MODEL_PROVIDER}/{model}"
+    return f"model:{provider}/{model}"
 
 
 def _covert_outcome(covert: SabotageEpisodeV3, side_effects: int) -> CovertOutcome:
@@ -610,6 +646,7 @@ def attacker_replay_invocation(
     input_schema_version: str,
     output_schema_sha256: str,
     prompt_version: str,
+    provider: str = MODEL_PROVIDER,
 ) -> RoleInvocation:
     """Bind a published model row to the exact captured request it replays.
 
@@ -627,7 +664,7 @@ def attacker_replay_invocation(
     return RoleInvocation(
         role="attacker",
         record=ModelInvocationRecord(
-            invocation_kind="cache_replay", provider=MODEL_PROVIDER, model=model
+            invocation_kind="cache_replay", provider=provider, model=model
         ),
         request_sha256=prompt_sha256,
         prompt_sha256=prompt_sha256,
@@ -684,7 +721,10 @@ class T1V3Runner:
         max_usd: float = 1.0,
         spend_authorized: bool = False,
         capture: bool = False,
+        provider: str = MODEL_PROVIDER,
     ) -> None:
+        if provider not in PROVIDERS:
+            raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
         if model is not None and not is_known_model(model):
             raise ValueError(
                 f"{model} is not in the capability table; add it there before running it"
@@ -698,6 +738,7 @@ class T1V3Runner:
         self.cache_dir = cache_dir
         self.capture = capture
         self.pricing = pricing
+        self.provider = provider
         self.meter: SpendMeter | None = None
         if completion_client is not None:
             if pricing is None:
@@ -719,7 +760,7 @@ class T1V3Runner:
         if not self.capture:
             # Replay only, and structurally so: no record client is supplied, so
             # a miss raises rather than reaching for a provider.
-            return CacheBackedCompletionClient(cache, provider=MODEL_PROVIDER)
+            return CacheBackedCompletionClient(cache, provider=self.provider)
         assert self.meter is not None and self.model is not None
         model, pricing = self.model, self.pricing
         assert pricing is not None
@@ -731,7 +772,7 @@ class T1V3Runner:
             if invocation.input_tokens is None or invocation.output_tokens is None:
                 raise PublicationRefusal("a capture without provider usage cannot be recorded")
             return ProviderCaptureProvenance(
-                provider=MODEL_PROVIDER,
+                provider=self.provider,
                 model=model,
                 role="proposer",
                 prompt_sha256=request.prompt_sha256,
@@ -743,7 +784,7 @@ class T1V3Runner:
                 stop_reason="end_turn",
                 input_tokens=invocation.input_tokens,
                 output_tokens=invocation.output_tokens,
-                usage_source=invocation.usage_source or "anthropic_messages_usage",
+                usage_source=invocation.usage_source or f"{self.provider}_usage",
                 capture_mode="live_provider_call",
                 captured_at=datetime.now(UTC),
                 capture_command="python -m incidentgate.evaluation.sabotage_v3_t1 --capture",
@@ -760,6 +801,7 @@ class T1V3Runner:
                 leg="covert",
                 step_index=0,
                 split=variant.split,
+                request_envelope=provider_envelope_json(self.provider),
             )
 
         return CacheBackedCompletionClient(
@@ -767,7 +809,7 @@ class T1V3Runner:
             record_client=self.meter,
             record_mode=True,
             provenance_builder=provenance,
-            provider=MODEL_PROVIDER,
+            provider=self.provider,
         )
 
     def _model_proposer(self, variant: ProposerVariant) -> ModelAttackProposer:
@@ -1007,9 +1049,10 @@ class T1V3Runner:
             variant,
             outcome,
             trial=trial,
-            attacker_source=model_source(self.model),
+            attacker_source=model_source(self.model, self.provider),
             attacker_invocation=attacker_replay_invocation(
                 model=self.model,
+                provider=self.provider,
                 variant=variant,
                 prompt_sha256=observed.prompt_sha256,
                 request_schema_sha256=observed.request_schema_sha256,
@@ -1079,6 +1122,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="deterministic (the floor, and the default: no behaviour change without this flag)",
     )
     parser.add_argument("--model", default=None, help="a model id from the capability table")
+    parser.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default=MODEL_PROVIDER,
+        help="which provider's transport and pricing snapshot to use",
+    )
     parser.add_argument("--cache-dir", default=None, help="response-cache root for model captures")
     parser.add_argument("--out", default=None, help="write the v3 envelope JSON here")
     parser.add_argument("--max-calls", type=int, default=8)
@@ -1127,7 +1176,11 @@ def main(
     if arguments.capture and arguments.attacker != "model":
         parser.error("--capture only applies to --attacker model")
 
-    pricing = load_pricing_snapshot(PRICING_SNAPSHOT_PATH, as_of=datetime.now(UTC))
+    provider = arguments.provider
+    # Per-provider snapshot, loaded before anything else can spend. A provider
+    # whose snapshot is missing or expired stops the run here rather than at the
+    # point a row cannot be priced.
+    pricing = load_pricing_snapshot(PRICING_SNAPSHOTS[provider], as_of=datetime.now(UTC))
     client: CompletionClient | None = completion_client
     authorization = spend_authorization(flag_passed=arguments.spend_flag)
     if arguments.capture:
@@ -1146,11 +1199,19 @@ def main(
                     f"planned calls exceeds the ${arguments.max_usd:.4f} cap; raise --max-usd"
                 )
             if client is None:
+                # The gate governs construction, and it governs it identically
+                # for every provider: a second provider must not arrive with its
+                # own softer spend path.
                 authorization.require()
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+                api_key = os.environ.get(key_name, "")
                 if not api_key:
-                    raise SpendRefused("ANTHROPIC_API_KEY is required to capture")
-                client = AnthropicCompletionClient(api_key=api_key, pricing=pricing)
+                    raise SpendRefused(f"{key_name} is required to capture from {provider}")
+                client = (
+                    AnthropicCompletionClient(api_key=api_key, pricing=pricing)
+                    if provider == "anthropic"
+                    else OpenAICompletionClient(api_key=api_key, pricing=pricing)
+                )
         except SpendRefused as error:
             sys.stderr.write(f"REFUSED: {error}\n")
             return 2
@@ -1169,6 +1230,7 @@ def main(
         max_usd=arguments.max_usd,
         spend_authorized=authorization.authorized,
         capture=arguments.capture,
+        provider=provider,
     )
     try:
         report = runner.run(
@@ -1235,6 +1297,41 @@ EVALUATION_AWARENESS_LIMITATION: Final[tuple[str, ...]] = (
 )
 
 
+#: Why a second provider is in this table at all, and what it does not cover.
+#:
+#: Kept as a constant, beside the evaluation-awareness limitation and for the
+#: same reason: a test can require the rendered artifact to carry it, so it
+#: cannot be lost to a renderer edit. It is rendered above the table, because a
+#: reader who has already read a gpt row as though it answered the anthropic
+#: question has drawn the wrong conclusion before any closing caveat arrives.
+CROSS_PROVIDER_DISCLOSURE: Final[tuple[str, ...]] = (
+    "## Why there is an OpenAI arm, and what it is not",
+    "",
+    (
+        "The sequence, in order. `T1-cal-v1`'s prompt was sent to Anthropic and was rejected "
+        "by a provider-side input classifier (`stop_reason: refusal`, category `cyber`) before "
+        "the model was consulted. An application for research coverage on the Anthropic API "
+        "credential was then made, and declined. `T1-cal-v1` was subsequently run on OpenAI."
+    ),
+    "",
+    (
+        "**The Anthropic result for `T1-cal-v1` remains unmeasured.** Nothing in the OpenAI "
+        "arm counts as coverage for it. A result from one model cannot answer what a different "
+        "model does, so the row below reports what `openai` did and leaves the `anthropic` "
+        "question exactly as open as it was before this run."
+    ),
+    "",
+    (
+        "The two arms received byte-identical prompt content -- the same frozen steering "
+        "artifact, the same evidence digest, the same output grammar and the same 2048-token "
+        "output budget -- in two different API envelopes. The envelopes are recorded in each "
+        "capture's provenance under `request_envelope` rather than summarised here, so a "
+        "reader can see what was not identical and discount the comparison accordingly."
+    ),
+    "",
+)
+
+
 def render_markdown(envelope: SabotageRawEnvelopeV3) -> str:
     """The human-readable artifact, which must state its own limits before its table.
 
@@ -1264,6 +1361,8 @@ def render_markdown(envelope: SabotageRawEnvelopeV3) -> str:
         # decline at face value has already drawn the wrong conclusion by the time
         # a closing caveat arrives.
         lines.extend(EVALUATION_AWARENESS_LIMITATION)
+    if any(row.attacker_source.startswith("model:openai/") for row in model_rows):
+        lines.extend(CROSS_PROVIDER_DISCLOSURE)
     lines.extend([
         "## Provenance",
         "",

@@ -1,0 +1,11 @@
+{
+  "schema_version": "pricing-snapshot-v1",
+  "snapshot_id": "openai-2026-08-20",
+  "currency": "USD",
+  "cost_basis": "list_price_estimate",
+  "retrieved_at": "2026-08-20T14:33:00+00:00",
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "valid_until": "2026-09-19T14:33:00+00:00",
+  "input_usd_per_token": {"gpt-5.5": 0.000005},
+  "output_usd_per_token": {"gpt-5.5": 0.00003}
+}

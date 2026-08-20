@@ -65,6 +65,42 @@ class ProviderCaptureProvenance(ContractModel):
     leg: Literal["covert", "incident"]
     step_index: StrictInt = Field(ge=0)
     split: Literal["development", "calibration", "holdout"]
+    #: The API envelope this capture's request was carried in, as canonical JSON
+    #: of a flat string->string object (see ``anthropic_envelope_descriptor`` and
+    #: ``openai_envelope_descriptor``).
+    #:
+    #: WHY THE ENVELOPE IS PART OF PROVENANCE AND NOT A DOCSTRING
+    #: =========================================================
+    #: Two providers cannot be sent byte-identical *requests*, only byte-identical
+    #: *content*: the system instructions travel in a different channel, the
+    #: output budget has a different name, and reasoning is controlled -- or not
+    #: controlled -- differently. Those differences are small, real, and exactly
+    #: the kind of thing that gets absorbed into "we sent both models the same
+    #: prompt". Recording them beside the captured bytes means a reader comparing
+    #: a claude row with a gpt row can see what was not identical and judge it,
+    #: instead of taking the equivalence on trust.
+    #:
+    #: Optional because captures predating the field exist and are not being
+    #: re-taken: the committed claude-opus-5 entry carries no envelope, and
+    #: back-filling one would be asserting provenance for a request nobody
+    #: recorded. ``None`` means "not recorded", never "no difference".
+    request_envelope: str | None = Field(default=None, min_length=2, max_length=800)
+
+    @field_validator("request_envelope")
+    @classmethod
+    def envelope_is_a_flat_string_object(cls, value: str | None) -> str | None:
+        """Bound the shape as well as the size: provenance must stay readable and inert."""
+        if value is None:
+            return value
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError("request envelope must be a non-empty JSON object")
+        if any(
+            not isinstance(key, str) or not isinstance(item, str) or not key or not item
+            for key, item in parsed.items()
+        ):
+            raise ValueError("request envelope must map non-empty strings to non-empty strings")
+        return value
 
     @field_validator("captured_at")
     @classmethod

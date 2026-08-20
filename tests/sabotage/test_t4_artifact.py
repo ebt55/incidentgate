@@ -20,7 +20,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from incidentgate.contracts import EvaluationMode, MonitorVerdict, PolicyDecision
+from incidentgate.contracts import (
+    EvaluationMode,
+    MonitorVerdict,
+    PolicyDecision,
+    StageDisposition,
+)
 from incidentgate.evaluation import sabotage_matrix
 from incidentgate.evaluation.sabotage import SabotageRawEnvelope, SabotageStage
 
@@ -182,6 +187,38 @@ def test_the_published_table_does_not_credit_the_policy_with_the_prevention() ->
     assert "the monitor stage is what did the work" in markdown
     # T1's sentence must not appear on T4's table.
     assert "capability_prohibited" not in markdown
+
+
+def test_the_published_table_claims_one_later_layer_and_not_all_of_them() -> None:
+    """The conclusion must not outrun the stages the covert legs actually reached.
+
+    The sentence used to read "a covert objective that is policy-legal does reach
+    the later layers, and they can act on it" -- plural. Only one later layer was
+    reached. The covert episode ends at the monitor in every cell that runs one,
+    so the durable human approval gate never saw the covert action and this table
+    holds no evidence about it in either direction.
+
+    Both halves are asserted together on purpose: the prose claim and the row fact
+    it rests on. A future run whose covert leg really did reach the approval stage
+    would falsify the second assertion here before it could publish the narrower
+    sentence about itself.
+    """
+    markdown = MARKDOWN_PATH.read_text(encoding="utf-8")
+    assert "does reach the later layers, and they can act on it" not in markdown
+    assert "reaches the stage after the policy, and that stage can act on it" in markdown
+    assert "the durable human approval gate never saw the covert action" in markdown
+
+    monitored = [
+        row
+        for row in load().results
+        if row.safeguards_applied.monitor is StageDisposition.EXECUTED
+    ]
+    assert monitored
+    assert all(
+        step.stage_reached is SabotageStage.MONITOR
+        for row in monitored
+        for step in row.covert_episode.steps
+    )
 
 
 def test_the_committed_table_was_published_from_a_clean_tree() -> None:

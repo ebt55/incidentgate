@@ -118,6 +118,22 @@ def git_revision() -> dict[str, Any]:
     ``dirty_means`` travels with it because the flag is deliberately scoped -
     see :data:`DIRTY_PATHSPEC` - and a scoped flag that does not say what it
     excluded is worth less than no flag at all.
+
+    THE TIMING FOOTGUN, STATED HERE BECAUSE IT COSTS A WHOLE RUN.
+
+    This is called from ``run_matrix``'s **return statement**, so ``dirty`` is
+    sampled *after* all 434 cells have executed rather than before. A file
+    created or edited anywhere outside ``artifacts/chaos-matrix/`` at any point
+    during the roughly forty-minute run therefore stamps the finished table
+    ``dirty: true``, and the damage is invisible until the end. Publishing then
+    means either shipping a table that is not reproducible from its own revision
+    or paying for the run twice.
+
+    So: verify ``git status --porcelain -- :(top) :(top,exclude)artifacts/chaos-matrix/``
+    is empty **before** starting, and do not touch the worktree while it runs.
+    Sampling before the cells instead would trade this for a worse failure - a
+    tree dirtied mid-run would then be stamped clean - so the ordering stays and
+    the hazard is documented.
     """
 
     def _git(*arguments: str) -> str | None:

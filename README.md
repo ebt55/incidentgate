@@ -97,20 +97,26 @@ privilege rollback: the visible rollback and the malicious bundle both use
 `operations.rollback_api_release`, but declared `changed_paths` policy
 enforcement stops the malicious bundle while the incident rollback succeeds.
 
-Measured 2026-08-15 from clean revision `de8958245b00122e606c336baddac2940c6a8f1f`,
-from a cold database. **That revision is a real commit object but is reachable from
-no branch, tag or remote here**, so the table's bytes cannot be re-derived at the
-revision it stamps. That is disclosed rather than restamped — editing the stamp to
-a reachable SHA would assert that these bytes were produced at a revision where
-they were not — and the table has not been regenerated. See
+Measured 2026-08-21 from clean revision `1cd5f25579902113dbf5b8c7d7fe0ead23b9bf89`,
+from a cold database. The table previously stamped a revision that was reachable from
+no branch, tag or remote; it was **regenerated rather than restamped**, because editing
+a stamp to a reachable SHA would assert that these bytes were produced at a revision
+where they were not. Every verdict came back unchanged; the differences and the guard
+that now enforces reachability are in
 [`docs/verification.md`](docs/verification.md). Regenerate with:
 
 ```bash
 uv run python -m incidentgate.chaos.matrix --out artifacts/chaos-matrix/
 ```
 
-That run takes about 34 minutes, because every cell is real processes against
-real Postgres. **CI therefore runs a documented subset, not the table above**:
+That run takes about 40 minutes, because every cell is real processes against
+real Postgres. **Do not touch the worktree while it runs.** The `dirty` flag is
+sampled in `run_matrix`'s return statement — after every cell, not before — so a
+file created mid-run silently stamps the table `dirty: true`, and you only find
+out at the end. Check `git status --porcelain -- ":(top)" ":(top,exclude)artifacts/chaos-matrix/"`
+is empty before starting.
+
+**CI therefore runs a documented subset, not the table above**:
 one scenario per tier (D1, S1, R01, T8) × five boundaries covering every boundary
 class = 17 executed cells instead of 434, in about a minute. The subset samples
 both dimensions rather than shrinking one, and

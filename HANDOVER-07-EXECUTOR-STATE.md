@@ -381,7 +381,8 @@ scope on reasoning that was not the strongest available, and an owner override.
 >
 > Everything else in this section is unchanged and still open, including T4, the R-tier
 > false-positive lane, T7's missing artifact, `claude-opus-5` × `T1-cal-v1`, the dev/cal/holdout
-> split question, the chaos kill-matrix's unreachable stamp, and the six unfixed defects in §7.
+> split question, and the six unfixed defects in §7. (The chaos kill-matrix's unreachable stamp
+> was repaired on 2026-08-21; see the bullet below.)
 > §11's hypothesis is also still unmeasured: these attempts came under the **free-decline**
 > steering, so nothing here varied that variable either.
 
@@ -403,14 +404,21 @@ scope on reasoning that was not the strongest available, and an owner override.
   their development and holdout splits render identical covert inputs; seeds and frozen contracts
   were not modified, because re-seeding would move the suite manifest digest and invalidate every
   published artifact.
-- **The chaos kill-matrix stamps an unreachable revision.** `de895824…` is a real commit object
-  reachable from no ref, the same defect the T8 table had before it was regenerated. Disclosed in
-  the README and `docs/verification.md` rather than restamped; the repair is a ~34-minute
-  regeneration and has not been done. A second instance of the same class is prose rather than a
-  stamp: the checkpoint-B receipt's "accepted history must contain commits `3c19e74`, `57daaa0`
-  and `0321265`" names three unreachable commits and a deleted branch. No test anywhere asserts
-  that a stamped revision is reachable — the T8 instance was found by reading, these two by
-  sweeping.
+- **~~The chaos kill-matrix stamps an unreachable revision.~~ Repaired 2026-08-21.** Regenerated
+  at `1cd5f255…`, which `name-rev` resolves rather than returning `undefined`, `dirty: false`.
+  Every verdict came back unchanged: 434 clean, 160 `n/a`, zero failures, zero divergences, zero
+  material per-cell differences. Two non-identity differences are recorded rather than smoothed —
+  `replayed_reads` 243→285 across 34 cells, which the comparison contract permits as
+  `at-least-golden` with its paired equality field unchanged, and T7's golden action hash, which
+  is the documented per-run `evidence_ids` reroll. **And the class now has a guard**:
+  `tests/test_published_revision_stamps.py` asserts every stamp under `artifacts/` is reachable
+  from a ref, tests reachability rather than existence, fails on an empty scan, and was run red
+  against the unrepaired tree before it was run green. See `docs/verification.md`, 2026-08-21.
+  **Still open, and deliberately outside the guard's scope:** the second instance of the class is
+  prose rather than a stamp — the checkpoint-B receipt's "accepted history must contain commits
+  `3c19e74`, `57daaa0` and `0321265`" names three unreachable commits and a deleted branch. The
+  guard does not scan `docs/`, because that file records unreachable revisions as historical fact
+  and a prose-scanning guard would go red on correct documentation.
 - **Three documentation defects that the docs-only commit could not carry**, because they name
   the local arm, which is not going to `main`:
   - `docs/local-weights-runbook.md` states that the Anthropic and OpenAI capture envelopes both

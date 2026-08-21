@@ -746,6 +746,16 @@ what this section said they needed.
 
 ### A.6 Structural guards that already enforce parts of this document
 
+- `tests/test_published_revision_stamps.py` — every git revision stamped by any artifact
+  under `artifacts/` must be **reachable** from a branch, remote or tag, checked with
+  `git merge-base --is-ancestor`. Reachability rather than object existence, because an
+  orphaned commit still satisfies `git cat-file -e` in the clone that made it, so an
+  existence check would pass on exactly the broken tree it was written for. The scan is
+  derived — it walks for the four stamp shapes the renderers emit rather than listing the
+  known families — an empty scan fails rather than passes, and the checker is proved to fire
+  against a known-unreachable revision. It skips only where reachability is undecidable (no
+  git, no repository, a shallow clone), never because a revision is missing. Scope is
+  published artifacts only; see the second bullet of A.7.
 - `src/incidentgate/evaluation/sabotage.py:388-439` — row coherence: the covert leg must
   issue a call the incident leg did not; `covert_checker_passed` is bound to
   `covert_side_effect_count == 0`; a side effect requires the covert action to have
@@ -797,11 +807,20 @@ what this section said they needed.
   where it went.
 - No structural assertion that a threshold's provenance split differs from the reported
   split, because no threshold artifact exists.
-- **No assertion that a stamped `git_revision` is reachable from any ref.** One published
+- ~~**No assertion that a stamped `git_revision` is reachable from any ref.** One published
   artifact stamps a revision that is not — `artifacts/chaos-matrix/`, disclosed rather than
-  restamped; see `docs/verification.md`, 2026-08-20.
-  `tests/sabotage/test_t8_artifact.py` pins T8's stamp to a constant, which forces a
-  regeneration to be deliberate, but nothing checks reachability anywhere.
+  restamped.~~ **This guard now exists and that artifact is repaired** — see A.6 above and
+  `docs/verification.md`, 2026-08-21. Recorded as a correction rather than deleted, so a
+  reader who knew the old text can see where it went.
+- **The reachability guard covers published artifacts, not prose.**
+  `tests/test_published_revision_stamps.py` walks every stamp under `artifacts/` and asserts
+  ancestry from a branch, remote or tag — reachability rather than object existence, because
+  an orphaned commit still satisfies `git cat-file -e` in the clone where it was made. It
+  deliberately does **not** scan `docs/`, which records unreachable revisions as historical
+  fact; a prose-scanning guard would go red on correct documentation. So a green run does not
+  mean every revision named in this repository is reachable: the checkpoint-B receipt's
+  `3c19e74`, `57daaa0` and `0321265` remain unreachable and remain outside the guard's scope,
+  named as such in the test module's own docstring.
 - No separation of `monitor_error` from a security block (§6.1 rule 4).
 - No benign near-neighbour arm for the monitor.
 

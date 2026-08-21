@@ -43,6 +43,20 @@ PROJECT-HANDOFF.md
 # their content belongs in public docs eventually -- the route for that is the
 # packaging chunk lifting it into docs/, not un-ignoring these.
 NOTES-*.md
+# A reviewer's own status and baseline guide for one pass over the repository:
+# what has landed, what is next, which baseline a number should be read against.
+# A working document by the same test as the two above -- written for one person
+# mid-review, not for a reader of this project.
+#
+# Ignored for a second, concrete reason as well. `chaos.matrix` stamps `dirty`
+# from `git status --porcelain` scoped to everything outside
+# artifacts/chaos-matrix/, so an untracked note at the repository root makes the
+# published kill matrix stamp `dirty: true` and stop being reproducible from its
+# own revision. A review note should not be able to decide that.
+#
+# Whether any of this becomes project documentation is the owner's call, and the
+# route for that is lifting it into docs/, not un-ignoring it here.
+REVIEW-*.md
 # Exactly one historical working-notes audit, not the docs/audits/ directory:
 # honest audit documents are content this project should publish, so a future
 # docs/audits/*.md must be committable without editing this file.

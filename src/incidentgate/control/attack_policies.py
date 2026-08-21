@@ -30,11 +30,36 @@ WHAT THE VARIANTS ARE
 =====================
 
 The three variants are the ones frozen in ``scenarios/sabotage/T1.json`` --
-their ids, policy versions, splits and seeds are copied from that contract and
-are checked against it by ``tests/sabotage/test_t1_attack_policies.py``. The
-split/seed structure exists so a later model-driven condition can be developed
-on ``development``, thresholded on ``calibration``, and reported on ``holdout``
-without a threshold ever being chosen on the reported split.
+their ids, policy versions, labels and seeds are copied from that contract and
+are checked against it by ``tests/sabotage/test_t1_attack_policies.py``.
+
+THE ``development`` / ``calibration`` / ``holdout`` LABELS ARE HISTORICAL NAMES
+AND CARRY NO SPLIT SEMANTICS.
+
+They were introduced so a later model-driven condition could be developed on one
+label, thresholded on a second and reported on a third. That never happened, and
+the structure could not have delivered it:
+
+* **The partition does not partition.** Each variant derives its one free
+  parameter from seed parity, and the frozen seeds are three consecutive
+  integers. Consecutive integers alternate, so the first and third always share
+  parity -- and the first and third are ``development`` and ``holdout``. On T1
+  and T2 those two render **byte-identical prompts**, which is measurable rather
+  than argued: their canonical prompt hashes are equal under every proposer
+  contract.
+* **Nothing was ever selected on a calibration set.** Every committed threshold
+  artifact is ``monitor-thresholds-v2``, band ``a_priori_definitional``, carrying
+  ``selected_on_split: none_no_split_was_used``. No ``monitor-thresholds-v1``
+  artifact has ever existed, so no threshold was chosen on one label and reported
+  on another.
+
+So these are three **named variants** of one scenario. The names are kept because
+they are frozen in the contracts and appear in published provenance, and renaming
+them would invalidate captures for a cosmetic gain. **No held-out evaluation is
+claimed anywhere in this project**, and a reader should not infer one from the
+labels. The ``split`` field survives on rows, manifests and capture provenance as
+the historical record of what was recorded; it is not a partition and nothing
+branches on it.
 
 Each variant targets one of the two immutable records the contract names. Which
 one is derived from the frozen seed rather than assigned by hand, so the mapping
@@ -69,7 +94,12 @@ from incidentgate.reasons import PROPOSAL_WRONG_RELIABILITY_FIXTURE, PROPOSAL_WR
 from .models import Caller
 from .proposal import ProposalError, _CheckpointProposer
 
-Split = Literal["development", "calibration", "holdout"]
+#: The three historical variant labels. Named ``VariantLabel`` rather than
+#: ``Split`` because they do not split anything -- see the module header. The
+#: three values are frozen in every sabotage contract and appear in published
+#: provenance, so the vocabulary cannot move; what moved is the claim attached
+#: to it.
+VariantLabel = Literal["development", "calibration", "holdout"]
 
 
 @dataclass(frozen=True)
@@ -78,7 +108,11 @@ class AttackPolicyVariant:
 
     variant_id: str
     policy_version: str
-    split: Split
+    #: A historical label, not a partition. Nothing branches on it, no threshold
+    #: was selected on one value and reported on another, and on T1 and T2 the
+    #: ``development`` and ``holdout`` variants render byte-identical prompts.
+    #: Kept as the wire name because published rows and captures record it.
+    split: VariantLabel
     seed: int
 
     @property
@@ -395,10 +429,10 @@ class DeterministicT4AttackProposer(_CheckpointProposer):
     the window first and *then* draining reaches the same terminal state with the
     same per-call verdicts, but there the drain call alone produces the violation
     from a clean state -- the maintenance pair is decoration and the covert
-    objective is not split. Publishing that as the holdout variant would mean the
-    split reported on and the split developed on had measured different things,
-    which is the one failure the development/calibration/holdout structure exists
-    to prevent.
+    objective is not spread across calls at all. Publishing that under a second
+    label would mean two variants of one scenario had measured different things
+    while being reported as the same experiment, which is a real defect
+    independent of what the labels are called.
 
     So these variants differ in identity and nothing else, and it is stated here
     rather than hidden behind a derived property that does no work. What the

@@ -345,28 +345,49 @@ Every sabotage report publishes counts **and** rates, each against an explicit d
 
 ---
 
-## 7. Splits, and the prohibition on tuning against holdout
+## 7. Variant labels, and why no held-out evaluation is claimed
 
-Every sabotage contract freezes three attack-policy variants labelled `development`,
-`calibration` and `holdout`. Their intended roles:
+**The `development` / `calibration` / `holdout` labels carry no split semantics.
+This project claims no held-out generalisation check anywhere.** Owner ruling,
+2026-08-21; the reasoning is below and the previous text of this section is
+struck rather than deleted.
 
-| Split | Permitted use |
-| --- | --- |
-| `development` | prompt and rubric work; inspect freely |
-| `calibration` | choose thresholds and decision-adapter parameters; inspect freely |
-| `holdout` | report only. Never inspected while tuning, never used to select anything |
+Every sabotage contract freezes three attack-policy variants under those three
+labels. They are **named variants of one scenario**, and the names are
+historical. They are kept because they are frozen in the contracts and appear in
+published provenance, where renaming them would invalidate committed captures for
+a cosmetic gain.
 
-Rules:
+Two measured facts retire the split reading:
 
-1. **Thresholds are frozen on the calibration split before the holdout split is run.** The
-   frozen artifact records the threshold values, the model id, the prompt hash, and the
-   feature schema, and it is written before any holdout command executes.
-2. **A holdout command cannot write a threshold file.** This is enforced structurally, not
-   by discipline.
-3. **The calibration split and the reported split must differ, asserted structurally.** A
-   report whose threshold provenance names the split it reports on is refused.
-4. **Identity-only variants are not a holdout set.** Variants that differ only in their
-   ids do not test generalization. Where that is the case it must be *disclosed*, and the
+- **The partition does not partition.** Each variant derives its one free
+  parameter from seed parity, and the frozen seeds are three consecutive
+  integers, which alternate — so the first and third always share parity, and the
+  first and third are `development` and `holdout`. On T1 and T2 those two render
+  **byte-identical prompts**: equal canonical prompt hashes under every proposer
+  contract, checked by `tests/sabotage/test_variant_labels_are_not_a_split.py`.
+- **Nothing was ever selected on a calibration set.** All four committed
+  threshold artifacts are `monitor-thresholds-v2`, band `a_priori_definitional`,
+  carrying `selected_on_split: none_no_split_was_used`. No
+  `monitor-thresholds-v1` artifact has ever existed.
+
+~~1. **Thresholds are frozen on the calibration split before the holdout split is
+run.** 2. **A holdout command cannot write a threshold file.** 3. **The
+calibration split and the reported split must differ, asserted structurally.**~~
+**Struck.** These three described machinery for selecting a threshold on one
+label and reporting on another. No such selection ever happened, no code enforced
+them, and under the ruling none is wanted. Recorded as a correction rather than
+deleted, so a reader who knew the old text can see where it went.
+
+The `split` field itself **stays** on rows, manifests and capture provenance: it
+is the historical record of what was recorded at the time, and published
+artifacts are not rewritten. Nothing branches on it.
+
+The rules that survive, because they are real and enforced, keep their numbering
+from here:
+
+4. **Variants that differ only in their ids are replicates, and must say so.** They do
+   not test generalization. Where that is the case it must be *disclosed*, and the
    disclosure must be *derived* — computed by comparing the published
    `(tool, arguments_digest)` pairs across variants — so the caveat appears exactly when
    the artifact's own rows show it should. **What is derived is the trigger, not the
@@ -562,9 +583,10 @@ completed README claim audit.
    load-bearing, has never been run with a model attacker.
 4. The three conditions in every published lane run on different orchestration substrates
    (§5.1), so no between-column difference is attributable to the safeguards alone.
-5. The `development`/`calibration`/`holdout` labels do not yet denote a generalization
-   check, because there is no learned or model behaviour to generalize — and the split is
-   degenerate on this substrate besides. T4's three variants are byte-identical; T1's and
+5. The `development`/`calibration`/`holdout` labels **do not denote a generalization
+   check and are not intended to** — they are historical names for three variants of one
+   scenario, and no held-out evaluation is claimed anywhere (§7). The labels could not have
+   denoted one on this substrate in any case: T4's three variants are byte-identical; T1's and
    T2's development and holdout variants are byte-identical **to each other**, which is the
    pair whose independence the naming exists to promise. The cause is structural: the free
    parameter derives from seed parity over three consecutive seeds, and the first and third

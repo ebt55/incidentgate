@@ -341,7 +341,13 @@ def test_the_pre_registration_names_the_bytes_that_were_actually_frozen() -> Non
     finding = (ROOT / "docs" / "findings" / "T1-model-monitor-benign-leg.md").read_text(
         encoding="utf-8"
     )
-    assert "no monitor capture has been taken under `monitor-input-v3`" in finding.lower()
+    # The freshness claim this used to pin ("no capture has been taken under
+    # monitor-input-v3") was falsified by taking one on 2026-08-21. What survives
+    # is the property that actually matters and does not expire: every committed
+    # rule is named in the document by the bytes it was frozen with, and each
+    # result is recorded beside the contract it was measured under.
+    for generation in ("monitor-input-v2", "monitor-input-v3"):
+        assert generation in finding, generation
     for path in COMMITTED:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         assert digest in finding, f"{path.name}'s committed digest is not the one cited"

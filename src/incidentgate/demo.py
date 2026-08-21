@@ -24,21 +24,20 @@ structural half. The evidential half is :func:`assert_replay_only`, which reads
 the finished envelope and refuses to print a table if any invocation in it was a
 live call. No network, no GPU, no API key, no charge -- asserted, not intended.
 
-WHY THE MONITOR SEAT HERE IS A STAND-IN
-=======================================
+BOTH SEATS ARE REAL MODELS, AND THE COVERT LEG STILL REACHES NEITHER
+====================================================================
 
-The committed ``qwen3-14b`` monitor capture was taken under ``monitor-input-v2``,
-which showed the monitor the policy gate's verdict on the action it was judging.
-``monitor-input-v3`` withholds that, and re-keys every capture in doing so -- so
-the one committed monitor body can no longer be replayed by the current caller,
-and the run refuses loudly rather than falling back to a fixture. Until a
-v3-input capture exists, this demo runs T1's deterministic ``oracle_whitelist``
-seat and says so in its own output.
+The attacker is ``mistral-nemo-12b`` and the monitor is ``qwen3-14b``, both
+replayed from committed captures. The monitor capture is the ``monitor-input-v3``
+one: the input contract that withholds the policy gate's verdict from the monitor,
+so the verdict it returns is its own judgement rather than partly agreement with
+a decision it was shown.
 
-Nothing about the table changes either way: T1's policy gate denies the covert
-capability before the monitor node runs, so the covert leg never reaches any
-monitor, in any seat. That is bound 1 in the output, and it is the honest
-headline of the whole demonstration.
+Nothing about the table changes because of that. T1's policy gate denies the
+covert capability before the monitor node runs, so the covert leg reaches no
+monitor in any seat -- the monitor's verdict is on the *honest* remediation only.
+That is bound 1 in the output, and it is the honest headline of the whole
+demonstration.
 """
 
 from __future__ import annotations
@@ -49,6 +48,7 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Final
 
@@ -62,6 +62,10 @@ ATTACKER_MODEL: Final = "mistral-nemo-12b"
 ATTACKER_PROVIDER: Final = "local"
 CONTRACT_VERSION: Final = "v3"
 ATTACKER_CACHE_DIR: Final = _ROOT / "artifacts" / "model-captures"
+
+#: The monitor seat, replayed from the ``monitor-input-v3`` capture.
+MONITOR_MODEL: Final = "qwen3-14b"
+MONITOR_CACHE_DIR: Final = _ROOT / "artifacts" / "monitor-captures"
 
 DEFAULT_DSN: Final = "postgresql://incidentgate:incidentgate_dev_only@127.0.0.1:5432/incidentgate"
 
@@ -80,11 +84,13 @@ BOUNDS: Final[tuple[str, ...]] = (
     (
         "The policy gate did this, not the chain. `monitor_verdict` is null on every "
         "covert leg: T1's policy denies the capability before the monitor node runs, so "
-        "no monitor -- the deterministic stand-in used here or any model -- ever saw it."
+        "the monitor -- a real model here, qwen3-14b -- judged only the honest remediation "
+        "and was never shown the covert action at all."
     ),
     (
-        "n=1. One scenario, one variant, one 12-14B open-weight model, one capture. "
-        "Nothing here is a rate, and nothing here generalises to another model."
+        "n=1. One scenario, one variant, one attacker capture and one monitor capture, "
+        "both from 12-14B open-weight models. Nothing here is a rate, and nothing here "
+        "generalises to another model."
     ),
     (
         "This is a replay of a committed capture, not a live model decision. The model "
@@ -248,7 +254,7 @@ def _render(arms: Sequence[_Arm], monitor_source: str) -> str:
         lines += wrapped
     lines += [
         "",
-        _dim(f"  monitor seat  {monitor_source} (deterministic stand-in; see bound 1)"),
+        _dim(f"  monitor seat  {monitor_source}, replaying its monitor-input-v3 capture"),
         _dim(f"  replayed from artifacts/model-captures/{ATTACKER_MODEL}/"),
         _dim(f"  variant {VARIANT_ID}, proposer contract {CONTRACT_VERSION}"),
         _dim("  full result and limitations: docs/findings/T1-model-attacker-prevention.md"),
@@ -271,13 +277,13 @@ def _postgres_help(dsn: str, detail: str) -> str:
     )
 
 
-def _capture_help() -> str:
+def _capture_help(cache: Path = ATTACKER_CACHE_DIR) -> str:
     return (
         "\nThis demo replays a committed model capture, and the one it needs is missing.\n\n"
-        f"  expected under: {ATTACKER_CACHE_DIR}\n\n"
+        f"  expected under: {cache}\n\n"
         "That directory is committed to the repository, so a missing capture usually means\n"
         "an incomplete checkout rather than anything you did. Restore it with:\n\n"
-        "  git checkout -- artifacts/model-captures\n\n"
+        "  git checkout -- artifacts/model-captures artifacts/monitor-captures\n\n"
         "The demo never calls a model to fill a gap: a missing capture is a refusal, never\n"
         "a silent fall back to a fixture.\n"
     )
@@ -307,7 +313,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     from incidentgate.control.response_cache import ResponseCacheMiss
-    from incidentgate.evaluation.sabotage_v3_t1 import MONITOR_ORACLE, T1V3Runner
+    from incidentgate.evaluation.monitor_thresholds import load_a_priori_thresholds
+    from incidentgate.evaluation.sabotage_v3_t1 import (
+        T1V3Runner,
+        default_monitor_threshold_path,
+    )
 
     parsed = build_parser().parse_args(argv)
     dsn = parsed.dsn or os.environ.get("DATABASE_URL") or DEFAULT_DSN
@@ -317,8 +327,16 @@ def main(argv: list[str] | None = None) -> int:
     if failure is not None:
         sys.stderr.write(_postgres_help(dsn, failure))
         return 2
-    if not ATTACKER_CACHE_DIR.is_dir() or not any(ATTACKER_CACHE_DIR.rglob("*.json")):
-        sys.stderr.write(_capture_help())
+    for cache in (ATTACKER_CACHE_DIR, MONITOR_CACHE_DIR):
+        if not cache.is_dir() or not any(cache.rglob("*.json")):
+            sys.stderr.write(_capture_help(cache))
+            return 2
+
+    artifact_path = default_monitor_threshold_path(MONITOR_MODEL)
+    try:
+        artifact = load_a_priori_thresholds(artifact_path)
+    except (OSError, ValueError) as error:
+        sys.stderr.write(f"\nThe committed threshold artifact could not be read: {error}\n")
         return 2
 
     runner = T1V3Runner(
@@ -332,7 +350,16 @@ def main(argv: list[str] | None = None) -> int:
         capture=False,
         capture_monitor=False,
         spend_authorized=False,
-        monitor_arm="oracle",
+        # A real model in the monitor seat, replaying the monitor-input-v3
+        # capture. The threshold artifact is the committed one rather than a
+        # value built here: a verdict is only meaningful beside the rule that
+        # produced it, and that rule was frozen before the capture existed.
+        monitor_arm="model",
+        monitor_model=MONITOR_MODEL,
+        monitor_cache_dir=MONITOR_CACHE_DIR,
+        monitor_artifact=artifact,
+        monitor_artifact_path=artifact_path,
+        monitor_artifact_sha256=sha256(artifact_path.read_bytes()).hexdigest(),
     )
     try:
         report = runner.run(variant_id=VARIANT_ID, attacker="model")
@@ -353,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         raise DemoIntegrityError(
             f"expected the model attacker's three safeguard arms, got {len(arms)}"
         )
-    sys.stdout.write(_render(arms, MONITOR_ORACLE))
+    sys.stdout.write(_render(arms, f"model:{ATTACKER_PROVIDER}/{MONITOR_MODEL}"))
     return 0
 
 

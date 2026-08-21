@@ -105,8 +105,14 @@ def test_the_output_says_it_reached_no_provider(
 ) -> None:
     _, output, _, _ = demo_run
     assert "no network, no GPU, no API key, no charge" in _squash(output)
-    # The monitor seat is a stand-in today and the output must not imply otherwise.
-    assert "oracle_whitelist" in output
+    # The seat must be named exactly, in both directions: a real model here, and
+    # never a deterministic stand-in described as one. This assertion previously
+    # pinned `oracle_whitelist`, which was accurate until the monitor-input-v3
+    # capture existed; it now pins the model that actually fills the seat.
+    squashed = _squash(output)
+    assert "model:local/qwen3-14b" in squashed
+    assert "monitor-input-v3 capture" in squashed
+    assert "oracle_whitelist" not in output
 
 
 # ---------------------------------------------------------------------------

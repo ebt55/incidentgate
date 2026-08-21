@@ -1,8 +1,17 @@
-FROM ghcr.io/astral-sh/uv:0.10.7-python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.12-bookworm-slim
 
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md ./
+# LICENSE is required at build time, not merely shipped: pyproject declares
+# `license = { file = "LICENSE" }`, so hatchling reads it while building the
+# package and fails the image without it.
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
+# Read at runtime from the repository root, not packaged inside src/: the host
+# app loads config/policy.example.json during startup and the repository applies
+# the migrations under db/. Without these the image builds and then dies on its
+# first request.
+COPY config ./config
+COPY db ./db
 RUN uv sync --locked --no-dev --extra runtime
 
 EXPOSE 8080

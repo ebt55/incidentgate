@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import Field, StrictFloat, ValidationError
 
@@ -22,6 +22,7 @@ from incidentgate.contracts import (
 from incidentgate.control.model_capabilities import (
     is_known_model,
     model_accepts_sampling,
+    model_provider,
     thinking_directive,
     thinking_headroom_tokens,
 )
@@ -94,8 +95,58 @@ class AdvisoryMonitorV2(Protocol):
     def assess_consultation(self, consultation: MonitorConsultation) -> MonitorOutcomeV2: ...
 
 
+@runtime_checkable
+class BindingAdvisoryMonitor(Protocol):
+    """A monitor that reduces its own assessment to the frozen verdict shape.
+
+    WHY THE GATE CHAIN STOPPED IMPORTING ONE CONTRACT'S BINDER.
+
+    ``workflow``'s monitor node imported :func:`bind_assessment` directly, which
+    put ``monitor-output-v2`` inside the gate chain: any second output contract
+    would either have to impersonate v2's assessment type -- relabelling its own
+    ``output_schema_version`` in the process -- or fork the node. A monitor knows
+    which contract it speaks, so it reduces its own assessment and the node asks.
+
+    ``runtime_checkable`` and optional rather than added to
+    :class:`AdvisoryMonitorV2`, because several existing callers supply a monitor
+    that implements ``assess_consultation`` and nothing else; a required method
+    would break them at runtime for a capability they do not need. The node falls
+    back to :func:`bind_assessment`, which is what they were already getting.
+
+    ``assessment`` is deliberately untyped here. The whole point is that the
+    workflow does not look inside a payload whose shape belongs to the monitor's
+    own contract; naming a type would put the coupling back one level up.
+    """
+
+    def assess_consultation(self, consultation: MonitorConsultation) -> Any: ...
+
+    def bind_result(
+        self, assessment: Any, action: CanonicalAction, thresholds: MonitorThresholds
+    ) -> MonitorResult: ...
+
+
 class StructuredMonitorCaller:
-    """A typed error boundary. Availability failures never become a BLOCK verdict."""
+    """A typed error boundary. Availability failures never become a BLOCK verdict.
+
+    ANTHROPIC ONLY, AND NOW BY REFUSAL RATHER THAN BY ASSUMPTION.
+
+    ``assess`` below shapes an Anthropic request unconditionally: it sends
+    ``thinking_directive(model)``, which answers ``None`` for every other arm, and
+    a bare ``temperature``, which the Ollama transport does not read. Handed a
+    local model this class would have recorded ``temperature: 0`` in the canonical
+    prompt -- the bytes a capture is keyed and published by -- while the
+    modelfile's own value was what ran, and would have left a hybrid reasoning
+    model thinking with nothing in the record to say so. True on the record and
+    false about the run.
+
+    The request shaping is deliberately left byte-identical rather than repaired
+    here: this class's canonical prompt is a frozen surface, and the arm that
+    needs the other providers is
+    :class:`~incidentgate.control.monitor_contract_v3.StructuredMonitorCallerV3`,
+    which shapes per provider from the same capability table. What changes here is
+    that the assumption is now checked at construction, so the defect is
+    unreachable instead of latent.
+    """
 
     _OUTPUT_TOKENS = 1024
     _MAX_RESPONSE_BYTES = 8_000
@@ -103,6 +154,11 @@ class StructuredMonitorCaller:
     def __init__(self, *, client: CompletionClient, model: str) -> None:
         if not model or not is_known_model(model):
             raise ValueError("monitor requires a model")
+        if model_provider(model) != "anthropic":
+            raise ValueError(
+                "the monitor-output-v2 caller shapes an Anthropic request and only an Anthropic "
+                "request; use monitor_contract_v3.StructuredMonitorCallerV3 for another arm"
+            )
         self._client, self._model = client, model
         self.last_invocation: ModelInvocationRecord | None = None
 
@@ -110,6 +166,24 @@ class StructuredMonitorCaller:
     def model(self) -> str:
         """The validated model used for every emitted completion request."""
         return self._model
+
+    @property
+    def provider(self) -> str:
+        """The arm this caller shapes its request for. Constant, and checked above."""
+        return "anthropic"
+
+    @property
+    def prompt_version(self) -> str:
+        """The rendered input version and the output contract, as one identity."""
+        return "monitor-prompt/v1.output-v2"
+
+    @property
+    def output_schema_sha256(self) -> str:
+        return monitor_output_schema_sha256()
+
+    @property
+    def input_schema_sha256(self) -> str:
+        return monitor_input_schema_sha256()
 
     def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV2:
         self.last_invocation = None

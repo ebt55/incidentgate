@@ -98,7 +98,7 @@ from .adapters import (
     LabTokenValidator,
 )
 from .monitor_facts import RepositoryMonitorFacts
-from .semantic_monitor import SemanticMonitorBundle, SemanticMonitorConfiguration
+from .semantic_monitor import SemanticMonitorBundle, SemanticMonitorSource
 
 
 def _utc_now() -> datetime:
@@ -188,7 +188,7 @@ class IncidentRuntime:
         telemetry_config: TelemetryConfig | None = None,
         monitor: AdvisoryMonitor | None = None,
         monitor_factory: Callable[[], AdvisoryMonitor] | None = None,
-        semantic_monitor: SemanticMonitorConfiguration | SemanticMonitorBundle | None = None,
+        semantic_monitor: SemanticMonitorSource | SemanticMonitorBundle | None = None,
         # The proposer seam. Left unset, every scenario gets its deterministic
         # proposer exactly as before. Supplied, the factory decides what proposes
         # the action -- which is how a model output reaches the gate chain at all.
@@ -364,12 +364,16 @@ class IncidentRuntime:
         )
         semantic_bundle: SemanticMonitorBundle | None = None
         if self._semantic_monitor is not None:
+            # Keyed on the *built* type rather than on a list of configuration
+            # classes: a second output contract arrives as a second configuration,
+            # and an isinstance chain over configurations would have to be edited
+            # every time one does. A bundle is already built; anything else builds.
             semantic_bundle = (
-                self._semantic_monitor.build(
+                self._semantic_monitor
+                if isinstance(self._semantic_monitor, SemanticMonitorBundle)
+                else self._semantic_monitor.build(
                     policy=config, facts=RepositoryMonitorFacts(cast(Any, self._repository))
                 )
-                if isinstance(self._semantic_monitor, SemanticMonitorConfiguration)
-                else self._semantic_monitor
             )
         observability = ObservabilityService(self._repository)
         sources = ALLOWED_EVIDENCE_SOURCES

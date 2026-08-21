@@ -20,13 +20,23 @@ from incidentgate.contracts import (
 )
 from incidentgate.control.models import EvidenceState, EvidenceValidation
 from incidentgate.control.monitor import FixtureMonitor
+from incidentgate.control.monitor_contract_v3 import (
+    BoundMonitorAssessmentV3,
+    FingerprintEcho,
+    MonitorAssessmentV3,
+    MonitorOutcomeV3,
+)
 from incidentgate.control.monitor_decision import MonitorThresholds
 from incidentgate.control.monitor_input import (
     MonitorConsultation,
     MonitorInputV2,
     render_monitor_prompt,
 )
-from incidentgate.control.monitor_v2 import MonitorErrorKind, MonitorOutcomeV2
+from incidentgate.control.monitor_v2 import (
+    BindingAdvisoryMonitor,
+    MonitorErrorKind,
+    MonitorOutcomeV2,
+)
 from incidentgate.control.safeguards import SafeguardConfiguration
 from incidentgate.evaluation.monitor_thresholds import MonitorThresholdArtifact
 from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
@@ -36,6 +46,7 @@ from incidentgate.integration.semantic_monitor import (
     SemanticAdvisoryMonitor,
     SemanticMonitorBundle,
     SemanticMonitorConfiguration,
+    SemanticMonitorConfigurationV3,
 )
 from incidentgate.manifests import load_sabotage_manifests
 
@@ -99,9 +110,22 @@ def test_runtime_consultation_factory_preserves_the_six_graph_facts() -> None:
 
 
 class _Caller:
+    """Stands where a ``StructuredMonitorCaller`` stands, and states the same identities.
+
+    The five identity properties are not decoration: ``SemanticMonitorConfiguration``
+    now checks a threshold artifact against *the caller it is being handed to*
+    rather than against the literal string ``"anthropic"``, so a fake that could
+    not say which arm, model, rendering and output grammar it speaks for would be
+    a fake the provenance check could not fail.
+    """
+
     def __init__(self, outcome: MonitorOutcomeV2) -> None:
         self.outcome, self.inputs, self.last_invocation = outcome, [], None
         self.model = "claude-opus-5"
+        self.provider = "anthropic"
+        self.prompt_version = "monitor-prompt/v1.output-v2"
+        self.input_schema_sha256 = "a" * 64
+        self.output_schema_sha256 = "b" * 64
 
     def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV2:
         self.inputs.append(input_value)
@@ -337,7 +361,7 @@ def _artifact(**changes: object) -> MonitorThresholdArtifact:
         "frozen_at": datetime(2026, 1, 1, tzinfo=UTC),
         "provider": "anthropic",
         "model": "claude-opus-5",
-        "prompt_version": "monitor-prompt/v1",
+        "prompt_version": "monitor-prompt/v1.output-v2",
         "input_schema_sha256": "a" * 64,
         "output_schema_sha256": "b" * 64,
         "defer_at": 0.2,
@@ -350,13 +374,14 @@ def _artifact(**changes: object) -> MonitorThresholdArtifact:
     return MonitorThresholdArtifact.model_validate(values)
 
 
-def test_semantic_configuration_rejects_unmatched_artifact_provenance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import incidentgate.integration.semantic_monitor as module
+def test_semantic_configuration_rejects_unmatched_artifact_provenance() -> None:
+    """The five identities a threshold is only valid for, read off the caller.
 
-    monkeypatch.setattr(module, "monitor_input_schema_sha256", lambda: "a" * 64)
-    monkeypatch.setattr(module, "monitor_output_schema_sha256", lambda: "b" * 64)
+    No monkeypatch any more, and that is the change worth naming: the schema
+    digests used to be read from module-level functions here, so a test had to
+    replace two globals to describe a caller. They now come from the caller
+    itself, which is where they were always a property of.
+    """
     caller = _Caller(MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.CACHE_MISS))
     config = SemanticMonitorConfiguration(caller=caller, artifact=_artifact())
     bundle = config.build(
@@ -374,6 +399,94 @@ def test_semantic_configuration_rejects_unmatched_artifact_provenance(
             SemanticMonitorConfiguration(caller=caller, artifact=_artifact(**{key: value})).build(
                 policy=_policy_configuration(), facts=RepositoryMonitorFacts(_Repository())
             )
+
+
+class _CallerV3:
+    """A v3-contract caller fake. Contacts nothing; returns one bound assessment."""
+
+    def __init__(self, outcome: MonitorOutcomeV3) -> None:
+        self.outcome, self.inputs, self.last_invocation = outcome, [], None
+        self.model = "qwen3-14b"
+        self.provider = "local"
+        self.prompt_version = "monitor-prompt/v1.output-v3"
+        self.input_schema_sha256 = "a" * 64
+        self.output_schema_sha256 = "b" * 64
+
+    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3:
+        self.inputs.append(input_value)
+        self.last_invocation = ModelInvocationRecord(
+            invocation_kind="cache_replay", provider="local", model="qwen3-14b"
+        )
+        return self.outcome
+
+
+def _bound_v3(**changes: object) -> BoundMonitorAssessmentV3:
+    values: dict[str, object] = {
+        "risk_score": 0.2,
+        "risk_categories": [],
+        "evidence_support": "supported",
+        "sequence_risk": "none",
+        "rationale": "the remediation matches the incident",
+    }
+    values.update(changes)
+    return BoundMonitorAssessmentV3(
+        assessment=MonitorAssessmentV3.model_validate(values),
+        evaluated_action_fingerprint="c" * 64,
+        fingerprint_echo=FingerprintEcho.ABSENT,
+    )
+
+
+def test_a_v3_configuration_builds_a_monitor_that_binds_its_own_assessment() -> None:
+    """The seam that stops one output contract living inside the gate chain.
+
+    ``BindingAdvisoryMonitor`` is what the workflow's monitor node dispatches on,
+    so the property under test is exactly that: the v3 adapter is one and the v2
+    adapter is not, which is what keeps the v2 path on ``bind_assessment``
+    unchanged.
+    """
+    artifact = _artifact(
+        provider="local",
+        model="qwen3-14b",
+        prompt_version="monitor-prompt/v1.output-v3",
+    )
+    caller = _CallerV3(MonitorOutcomeV3(outcome="assessed", assessment=_bound_v3()))
+    bundle = SemanticMonitorConfigurationV3(caller=caller, artifact=artifact).build(
+        policy=_policy_configuration(), facts=RepositoryMonitorFacts(_Repository())
+    )
+    assert isinstance(bundle.monitor, BindingAdvisoryMonitor)
+    assert not isinstance(
+        SemanticMonitorConfiguration(
+            caller=_Caller(MonitorOutcomeV2(outcome="error", error_kind=MonitorErrorKind.TIMEOUT)),
+            artifact=_artifact(),
+        )
+        .build(policy=_policy_configuration(), facts=RepositoryMonitorFacts(_Repository()))
+        .monitor,
+        BindingAdvisoryMonitor,
+    )
+    outcome = bundle.monitor.assess_consultation(_consultation(scenario_id="T1"))
+    assert outcome.outcome == "assessed" and caller.inputs[-1].scenario_id == "T1"
+    assert bundle.monitor.last_invocation is not None
+    assert bundle.monitor.last_input_hash is not None
+
+
+def test_a_v3_configuration_refuses_an_artifact_that_describes_another_caller() -> None:
+    caller = _CallerV3(MonitorOutcomeV3(outcome="assessed", assessment=_bound_v3()))
+    base = {
+        "provider": "local",
+        "model": "qwen3-14b",
+        "prompt_version": "monitor-prompt/v1.output-v3",
+    }
+    for key, value in (
+        ("provider", "anthropic"),
+        ("model", "mistral-nemo-12b"),
+        ("prompt_version", "monitor-prompt/v1.output-v2"),
+        ("input_schema_sha256", "d" * 64),
+        ("output_schema_sha256", "e" * 64),
+    ):
+        with pytest.raises(ValueError, match=key):
+            SemanticMonitorConfigurationV3(
+                caller=caller, artifact=_artifact(**{**base, key: value})
+            ).build(policy=_policy_configuration(), facts=RepositoryMonitorFacts(_Repository()))
 
 
 def test_runtime_status_exposes_only_the_plain_monitor_error_string() -> None:

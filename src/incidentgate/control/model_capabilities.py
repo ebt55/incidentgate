@@ -1,9 +1,10 @@
 """One frozen, per-model statement of the provider facts this lab's model callers depend on.
 
-Both the advisory monitor and the model proposer send bounded structured-output requests to
-Anthropic, and both must get the same two facts right: whether the model accepts sampling
-parameters, and how thinking has to be requested so a fixed ``max_tokens`` cannot silently
-truncate the answer. Those facts are per exact model id, not per family prefix - Opus 4.6 and
+Both the advisory monitor and the model proposer send bounded structured-output requests, and
+both must get the same three facts right: which transport the id belongs to, whether the model
+accepts sampling parameters, and how thinking has to be requested so a fixed ``max_tokens``
+cannot silently truncate the answer. Those facts are per exact model id, not per family prefix
+- Opus 4.6 and
 Sonnet 4.6 still accept temperature/top_p while every Opus/Sonnet released after them rejects
 them with an HTTP 400, and thinking flipped to on-by-default in the 5 generation. A prefix guess
 is wrong in both directions: it forbids configurations the API accepts and hides ones it rejects.
@@ -77,6 +78,10 @@ ThinkingPolicy = Literal[
     "omit_is_off", "send_disabled", "send_effort_none", "send_think_false", "reserve_budget"
 ]
 
+#: Which transport a model id belongs to. Three values because this lab has three
+#: transports, each with its own wire shape for the same two facts.
+ModelProvider = Literal["anthropic", "openai", "local"]
+
 #: The OpenAI Chat Completions off value, kept as a constant so the request, the capability
 #: table and the published envelope descriptor cannot drift apart into three spellings.
 REASONING_EFFORT_OFF = "none"
@@ -84,23 +89,60 @@ REASONING_EFFORT_OFF = "none"
 
 @dataclass(frozen=True)
 class ModelCapability:
-    """The two provider facts a bounded structured-output caller must get right, per model id."""
+    """The provider facts a bounded structured-output caller must get right, per model id.
+
+    ``provider`` was added third, and it is a fact this table already carried in
+    prose. Every row's comment says which API it describes, and three separate
+    accessors below dispatch on ``thinking`` in order to answer for one endpoint
+    each -- which works only because no two providers currently share a policy
+    value. That is a coincidence of the present table rather than a property of
+    it, and a caller that has to *shape a request for whichever arm a model
+    belongs to* needs the fact stated rather than inferred from an off-switch
+    spelling.
+
+    The concrete failure this closes is measured, not hypothetical:
+    ``monitor_v2.StructuredMonitorCaller`` sends Anthropic's ``thinking`` and a
+    bare ``temperature`` for every model it is handed. Pointed at ``qwen3-14b``
+    it would put ``temperature: 0`` in the canonical prompt -- the bytes the
+    capture is keyed and published by -- while the Ollama transport ignores that
+    field entirely and the modelfile's 0.6 is what actually ran. True on the
+    record, false about the run, and undetectable afterwards.
+    """
 
     accepts_sampling: bool
     thinking: ThinkingPolicy
+    provider: ModelProvider
 
 
 MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
     {
-        "claude-opus-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
-        "claude-opus-4-8": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
-        "claude-opus-4-7": ModelCapability(accepts_sampling=False, thinking="omit_is_off"),
-        "claude-opus-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-        "claude-sonnet-5": ModelCapability(accepts_sampling=False, thinking="send_disabled"),
-        "claude-sonnet-4-6": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-        "claude-haiku-4-5": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-        "claude-haiku-4-5-20251001": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
-        "claude-fable-5": ModelCapability(accepts_sampling=False, thinking="reserve_budget"),
+        "claude-opus-5": ModelCapability(
+            accepts_sampling=False, thinking="send_disabled", provider="anthropic"
+        ),
+        "claude-opus-4-8": ModelCapability(
+            accepts_sampling=False, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-opus-4-7": ModelCapability(
+            accepts_sampling=False, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-opus-4-6": ModelCapability(
+            accepts_sampling=True, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-sonnet-5": ModelCapability(
+            accepts_sampling=False, thinking="send_disabled", provider="anthropic"
+        ),
+        "claude-sonnet-4-6": ModelCapability(
+            accepts_sampling=True, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-haiku-4-5": ModelCapability(
+            accepts_sampling=True, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-haiku-4-5-20251001": ModelCapability(
+            accepts_sampling=True, thinking="omit_is_off", provider="anthropic"
+        ),
+        "claude-fable-5": ModelCapability(
+            accepts_sampling=False, thinking="reserve_budget", provider="anthropic"
+        ),
         # OpenAI. Both fields below are Anthropic-shaped questions, and this row
         # answers them as the *request shape this lab sends*, not as verified
         # claims about what the OpenAI API would accept -- which is a difference
@@ -161,7 +203,9 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
         # Zero headroom, keeping max_tokens at the same 2048 the Anthropic arm
         # used. With reasoning off that budget is ample: the Anthropic capture's
         # answer was 224 tokens.
-        "gpt-5.5": ModelCapability(accepts_sampling=False, thinking="send_effort_none"),
+        "gpt-5.5": ModelCapability(
+            accepts_sampling=False, thinking="send_effort_none", provider="openai"
+        ),
         # Local open weights, served by Ollama. The id here is a *harness* label,
         # not a vendor id: the server tag is `qwen3:14b` and contains a colon,
         # which no cache path, provenance field or attacker_source pattern
@@ -219,7 +263,9 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
         # easily be incompetence as refusal. The two are indistinguishable to the
         # attempt predicate, so a T4 null result from this arm would mean
         # nothing. Recorded now rather than rediscovered after a run.
-        "qwen3-14b": ModelCapability(accepts_sampling=True, thinking="send_think_false"),
+        "qwen3-14b": ModelCapability(
+            accepts_sampling=True, thinking="send_think_false", provider="local"
+        ),
         # The second local attacker, and a genuinely independent one rather than
         # a fallback: different lineage, architecture `llama` against `qwen3`,
         # 12.2B against 14.8B, and no reasoning mode at all. If both decline, one
@@ -245,7 +291,9 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
         # Smaller and cheaper on VRAM: 7.1 GB against 9.3 GB, so this one may
         # load where the other will not. That is a reason to record which ran,
         # never a reason to substitute one result for the other.
-        "mistral-nemo-12b": ModelCapability(accepts_sampling=True, thinking="omit_is_off"),
+        "mistral-nemo-12b": ModelCapability(
+            accepts_sampling=True, thinking="omit_is_off", provider="local"
+        ),
     }
 )
 
@@ -254,7 +302,17 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
 # matches the direction the API has moved since Opus 4.7. Thinking: treated as un-disableable,
 # because omitting the parameter is accepted by every model while {"type": "disabled"} is not, and
 # the larger budget can only overpay, never truncate.
-UNKNOWN_MODEL = ModelCapability(accepts_sampling=False, thinking="reserve_budget")
+#
+# The third axis has no fail-closed value, so it is not given one. An unlisted id belongs to no
+# arm this table can name, and picking the most common one would be a guess that reads as a fact
+# -- the exact shape of the two wrong gpt-5.5 rows this file already records. ``model_provider``
+# therefore answers ``None`` for an unknown id, and every caller that needs to *shape* a request
+# refuses rather than proceeding. The value below is a placeholder that no accessor reads: it
+# exists because the dataclass field is required, and ``model_provider`` keys on membership in
+# MODEL_CAPABILITIES rather than on this object.
+UNKNOWN_MODEL = ModelCapability(
+    accepts_sampling=False, thinking="reserve_budget", provider="anthropic"
+)
 
 # Headroom a caller must add to its own output budget when thinking cannot be turned off, because
 # max_tokens caps thinking and response text together.
@@ -273,6 +331,18 @@ def is_known_model(model: str) -> bool:
     outright; callers whose failures are recorded may run on the fail-closed default instead.
     """
     return model in MODEL_CAPABILITIES
+
+
+def model_provider(model: str) -> ModelProvider | None:
+    """Which transport this exact model id belongs to, or ``None`` for an unlisted one.
+
+    ``None`` rather than a default, for the reason stated on ``UNKNOWN_MODEL``: a
+    guessed provider is a wrong request shape recorded as a right one. A caller
+    that must build a request refuses on ``None``; a caller that only reports may
+    say "unlisted".
+    """
+    stated = MODEL_CAPABILITIES.get(model)
+    return None if stated is None else stated.provider
 
 
 def model_accepts_sampling(model: str) -> bool:

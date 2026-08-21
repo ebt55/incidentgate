@@ -101,7 +101,7 @@ from .safeguards import PRODUCTION_SAFEGUARDS, AuthorizationGate, SafeguardConfi
 
 if TYPE_CHECKING:
     from .monitor_decision import MonitorThresholds
-    from .monitor_v2 import AdvisoryMonitorV2
+    from .monitor_v2 import AdvisoryMonitorV2, BindingAdvisoryMonitor
 
 
 class WorkflowState(TypedDict, total=False):
@@ -296,7 +296,7 @@ class WorkflowDependencies:
         # The authorization port. ``None`` selects the durable human interrupt,
         # which is the only authorizer the production host can reach.
         authorization: AuthorizationRequester | None = None,
-        monitor_v2: AdvisoryMonitorV2 | None = None,
+        monitor_v2: AdvisoryMonitorV2 | BindingAdvisoryMonitor | None = None,
         monitor_consultation_factory: MonitorConsultationFactory | None = None,
         monitor_thresholds: MonitorThresholds | None = None,
     ) -> None:
@@ -746,10 +746,24 @@ def build_workflow_builder(dependencies: WorkflowDependencies) -> Any:
                 return {"monitor_error": outcome.error_kind.value, **_semantic_observation()}
             assert outcome.assessment is not None
             try:
-                from .monitor_v2 import bind_assessment
+                # THE MONITOR REDUCES ITS OWN ASSESSMENT WHEN IT CAN.
+                #
+                # This node used to import one output contract's binder, which put
+                # ``monitor-output-v2`` inside the gate chain -- so a second output
+                # contract could only reach a verdict by impersonating v2's
+                # assessment type. A monitor that states its own contract binds its
+                # own assessment; one that does not takes the unchanged path.
+                from .monitor_v2 import BindingAdvisoryMonitor, bind_assessment
 
-                result = bind_assessment(
-                    outcome.assessment, state["action"], dependencies.monitor_thresholds
+                monitor_port = dependencies.monitor_v2
+                result = (
+                    monitor_port.bind_result(
+                        outcome.assessment, state["action"], dependencies.monitor_thresholds
+                    )
+                    if isinstance(monitor_port, BindingAdvisoryMonitor)
+                    else bind_assessment(
+                        outcome.assessment, state["action"], dependencies.monitor_thresholds
+                    )
                 )
             except ValueError:
                 # A mismatched assessment is a failed consultation, never a

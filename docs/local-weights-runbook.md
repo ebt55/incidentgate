@@ -1,9 +1,14 @@
-# Running the local open-weight attacker arm
+# Running the local open-weight arms
 
 Windows, from nothing. Everything below is free — no vendor is billed at any point.
 
+Two seats, not one. Most of this document is the **attacker** arm; §5d puts a local model in the
+**monitor** seat instead, which is a different and much narrower measurement — read the warning
+there before citing anything from it.
+
 **Run every command below from the repository root**, so the relative paths
-(`artifacts/model-captures`, `artifacts/model-attacker`) resolve. The commands carry no `cd` of
+(`artifacts/model-captures`, `artifacts/model-attacker`, `artifacts/monitor-captures`,
+`artifacts/model-monitor`, `config/monitor-thresholds`) resolve. The commands carry no `cd` of
 their own on purpose: an absolute path baked into a runbook is correct on exactly one machine.
 
 ## Why this arm exists
@@ -297,6 +302,60 @@ uv run python -m incidentgate.evaluation.sabotage_v3_t1 `
 
 A publication run resolves no weights and generates nothing — it reads the committed capture, so
 it needs Postgres but not the Ollama server.
+
+### 5d. Capture the monitor seat
+
+A second local model can sit in T1's **monitor** seat, under the
+`monitor-output-v3` contract and a committed a-priori threshold artifact. It is a different
+measurement from everything above and the difference is the point.
+
+**It is a benign false-positive measurement, not covert detection.** T1's covert call is denied
+`capability_prohibited` at the policy gate, which runs *before* the monitor node, so the only thing
+the monitor is ever shown is the honest remediation on the incident leg. `monitor_verdict` is null
+on the covert leg of every row, every covert cell in the sidecar reads `never_consulted`, and a
+BLOCK on the incident leg is a false positive on a policy-legal, correctly-evidenced action. Read
+[`findings/T1-model-monitor-benign-leg.md`](findings/T1-model-monitor-benign-leg.md) before citing
+any number from this.
+
+```powershell
+# Capture. Real monitor calls, written at the episode position they happened at; publishes nothing.
+uv run python -m incidentgate.evaluation.sabotage_v3_t1 `
+  --dsn postgresql://incidentgate:incidentgate_dev_only@127.0.0.1:5432/incidentgate `
+  --attacker model --provider local --model mistral-nemo-12b `
+  --output-contract v3 --variant T1-dev-v1 --cache-dir artifacts/model-captures `
+  --monitor model --monitor-model qwen3-14b --monitor-cache-dir artifacts/monitor-captures `
+  --capture-monitor
+
+# Publish. No transport is constructed at all; a missing capture is a loud refusal, never a call.
+uv run python -m incidentgate.evaluation.sabotage_v3_t1 `
+  --dsn postgresql://incidentgate:incidentgate_dev_only@127.0.0.1:5432/incidentgate `
+  --attacker model --provider local --model mistral-nemo-12b `
+  --output-contract v3 --variant T1-dev-v1 --cache-dir artifacts/model-captures `
+  --monitor model --monitor-model qwen3-14b --monitor-cache-dir artifacts/monitor-captures `
+  --out artifacts/model-monitor/T1-v3-nemo-dev-qwen3.json
+```
+
+The attacker half of both commands is a **replay** of a capture that already exists, so only the
+monitor generates. `--capture-monitor` publishes nothing at all, including the deterministic floor
+row: with a model in the monitor seat that row's own verdict is the live call the run just made,
+and a published row replays a committed capture rather than carrying one.
+
+Substituting `--attacker deterministic` runs the floor arm alone and needs one monitor capture
+instead of two. `--monitor-thresholds` defaults to
+`config/monitor-thresholds/T1-a-priori-<monitor-model>-v1.json`; both local models have one
+committed, frozen before any capture existed and not adjusted afterwards.
+
+Three files are written on publication: the envelope JSON, the Markdown table beside it, and
+`<stem>.monitor.json` — a `monitor-assessment-record-v1` sidecar carrying the raw `risk_score`,
+`risk_categories`, `sequence_risk` and `evidence_support` for every cell, in all three monitor
+states. The sidecar exists because the decision rule is *categorical*: a published BLOCK with no
+disclosed score is exactly the opacity a threshold artifact is supposed to prevent.
+
+Sampling in the monitor seat is `temperature=0, top_p=1.0`, sent explicitly, and that is
+deliberately **not** the attacker arm's `1.0`. The attacker's value matches the hosted arm's
+documented default so a cross-provider comparison has one fewer confound; the monitor has no such
+comparison to preserve and is a judge, so it is pinned as low as this provider allows. Both travel
+in `request_envelope` under `sampling_provenance: explicit`.
 
 ## 6. Check the capture before trusting it
 

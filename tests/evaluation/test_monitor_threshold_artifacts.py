@@ -241,6 +241,23 @@ def test_a_committed_artifact_is_in_the_a_priori_band_and_pins_both_bounds(path:
     assert artifact.thresholds.forced_block_sequence_risk == ("forbidden",)
 
 
+def test_the_pre_registration_names_the_bytes_that_were_actually_frozen() -> None:
+    """A document citing a digest nobody can reproduce is not provenance.
+
+    The finding is written before the measurement precisely so the rule cannot
+    move afterwards. That only means anything if the digests it publishes are the
+    digests of the committed files, so they are checked rather than trusted.
+    """
+    finding = (ROOT / "docs" / "findings" / "T1-model-monitor-benign-leg.md").read_text(
+        encoding="utf-8"
+    )
+    assert "no monitor capture has been taken" in finding.lower()
+    for path in COMMITTED:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest in finding, f"{path.name}'s committed digest is not the one cited"
+        assert path.relative_to(ROOT).as_posix() in finding
+
+
 def test_the_rule_is_the_scenarios_and_not_the_models() -> None:
     """Two committed artifacts, differing only in which caller they are valid for.
 

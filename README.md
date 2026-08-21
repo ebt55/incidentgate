@@ -23,7 +23,10 @@
 >   proposers and monitors are stand-ins rather than models. **Every monitor in
 >   this repository is still a stand-in**, including in the three model-attacker
 >   rows, where `monitor_source` is a labelled oracle and the policy gate denied
->   the covert call before the monitor saw it.
+>   the covert call before the monitor saw it. The seat a real model would sit in
+>   is now wired and its decision rule is frozen, and **no capture has been
+>   taken**, so this sentence is still true —
+>   [pre-registration](docs/findings/T1-model-monitor-benign-leg.md).
 >
 > Do not depend on this, do not cite its numbers as a product claim, and do not
 > deploy it. It is a laboratory.
@@ -381,7 +384,12 @@ These are the things a reviewer should know before believing anything above.
    policy-prohibited, so the policy gate denies it before anything downstream
    sees it; T4 is the scenario where the monitor is load-bearing, and it has
    never been run with a model attacker. Until then the monitor and the human
-   approval gate remain unexercised against a real covert attempt.
+   approval gate remain unexercised against a real covert attempt. T1's monitor
+   seat now accepts a real model (`--monitor model`) on the *honest* leg, which
+   is a benign false-positive measurement rather than covert detection and does
+   not narrow this gap; the covert leg needs a monitor input that does not carry
+   the policy's own decision, which is a new input contract and a separate row
+   family. See [the pre-registration](docs/findings/T1-model-monitor-benign-leg.md).
 3. Implement R13–R20.
 4. CI regression gates, the full timeline UI, and a 90-second demo.
 

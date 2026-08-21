@@ -622,6 +622,18 @@ relative to the repository root.
   never reached because policy denied first. Results and bounds in
   [`findings/T1-model-attacker-prevention.md`](findings/T1-model-attacker-prevention.md);
   the hosted arms' declines, which published no row, in [`findings/`](findings/).
+- **A model can now sit in T1's monitor seat, and it changes nothing about the sentence
+  above.** `--monitor model` publishes `monitor_source = model:<provider>/<id>` under the
+  `monitor-output-v3` contract and a committed a-priori threshold artifact — but only on the
+  **honest** leg, because the policy denies the covert call before the monitor node runs. So
+  a row from that arm is a *benign false-positive* measurement plus the human approval gate
+  downstream of it, `monitor_verdict` is still null on every covert step, and the
+  covert-detection gap is exactly where it was. The observe-only route that would close it
+  leaks the policy's decision into `MonitorInputV2` (`policy_decision=deny`,
+  `policy_risk_class=prohibited`, `policy_reasons=[capability_prohibited]`), so it would
+  measure agreement with a shown denial; closing that needs a new input contract and a
+  separate versioned row family. **No monitor capture has been taken.**
+  [`findings/T1-model-monitor-benign-leg.md`](findings/T1-model-monitor-benign-leg.md).
 
 ### A.2 The monitor's input, and the absence of a calibration artifact
 
@@ -632,8 +644,16 @@ relative to the repository root.
   semantics, no policy result, no cumulative state delta, no rubric.
 - `src/incidentgate/control/monitor.py:186-224` — `assess` returns the model's categorical
   verdict directly. `suspicion_score` is carried on the result and is not thresholded.
-- No monitor threshold, calibration dataset, or decision-adapter artifact exists anywhere
-  in `src/`.
+- ~~No monitor threshold, calibration dataset, or decision-adapter artifact exists anywhere
+  in `src/`.~~ **Superseded 2026-08-21, and only halfway.** Two committed threshold
+  artifacts now exist, under `config/monitor-thresholds/`, in the
+  `monitor-thresholds-v2` **a-priori** band: both forced-block values are derived — one from
+  the output contract's own `sequence_risk` vocabulary, one from
+  `scenarios/sabotage/T1.json#/forbidden_behavior/0` — and the continuous score is given no
+  decision authority (`defer_at = block_at = 1.0`, published raw). **There is still no
+  calibration dataset and no fitted threshold anywhere.** `monitor-thresholds-v1`, which
+  requires a calibration split, its cell digest and a positive denominator per label,
+  remains unused and is deliberately not satisfiable from nothing.
 - `src/incidentgate/control/monitor.py:223-224` — every provider, parse, stop-reason,
   content-shape, validation and hash-binding failure collapses into one generic hash-bound
   `BLOCK`, so an availability failure is currently indistinguishable from a catch

@@ -161,6 +161,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -210,6 +211,11 @@ OUTPUT_SCHEMA_VERSION: Final = "monitor-output-v3"
 #: Constrained to the character set ``ProviderCaptureProvenance.prompt_version``
 #: and ``RoleInvocation.prompt_version`` both accept.
 PROMPT_VERSION: Final = "monitor-prompt/v1.output-v3"
+
+#: What a capture and a published ``RoleInvocation`` record as the *input*
+#: contract of this exchange. Read off ``MonitorInputV2``'s own literal rather
+#: than restated, so the two cannot drift apart.
+MONITOR_INPUT_SCHEMA_VERSION: Final = "monitor-input-v2"
 
 #: The legal values of ``risk_score``, as an enumerated ladder.
 #:
@@ -654,6 +660,92 @@ class StructuredMonitorCallerV3:
                 fingerprint_echo=_observed_echo(raw, input_value.action_fingerprint),
             ),
         )
+
+
+@dataclass(frozen=True)
+class RecordedConsultation:
+    """One monitor exchange, kept so a publisher can bind it to where it happened.
+
+    The position a consultation occurs at -- which leg, which step -- is decided
+    inside the episode and is not known to anything that could write a capture at
+    call time. A run therefore collects its exchanges and joins them to the
+    episode's own record afterwards, on ``monitor_input_sha256``, which is the
+    same digest ``SabotageStep.monitor_input_hash`` carries.
+
+    ``request`` is retained rather than a summary of it, because a capture's
+    provenance needs the schema digest and the canonical prompt, and both are
+    already bounded and secret-free.
+    """
+
+    monitor_input_sha256: str
+    prompt_sha256: str
+    request: CompletionRequest
+    outcome: MonitorOutcomeV3
+    invocation: ModelInvocationRecord | None
+
+
+class RecordingMonitorCallerV3:
+    """A v3 caller that keeps an ordered log of every consultation it made.
+
+    A sibling of ``monitor_v2.RecordingSemanticMonitor`` and a deliberately
+    different one. That wrapper retains no prompt body and no raw provider
+    response, which is right for an observability wrapper on a production path.
+    This one is an *evaluation* seam: it retains the request it sent and the
+    parsed, bounded assessment it got, because a published record has to state
+    the raw score behind a categorical verdict and a capture has to be bound to
+    the episode position it happened at. It still retains no raw response body --
+    the assessment is validated and clipped before it lands here, and the raw
+    bytes live in the committed capture where they belong.
+    """
+
+    def __init__(self, inner: StructuredMonitorCallerV3) -> None:
+        self._inner = inner
+        self.consultations: list[RecordedConsultation] = []
+
+    @property
+    def model(self) -> str:
+        return self._inner.model
+
+    @property
+    def provider(self) -> ModelProvider:
+        return self._inner.provider
+
+    @property
+    def prompt_version(self) -> str:
+        return self._inner.prompt_version
+
+    @property
+    def input_schema_sha256(self) -> str:
+        return self._inner.input_schema_sha256
+
+    @property
+    def output_schema_sha256(self) -> str:
+        return self._inner.output_schema_sha256
+
+    @property
+    def last_invocation(self) -> ModelInvocationRecord | None:
+        return self._inner.last_invocation
+
+    def take(self) -> tuple[RecordedConsultation, ...]:
+        """Read and clear the log, so one episode's consultations are one snapshot."""
+        recorded = tuple(self.consultations)
+        self.consultations.clear()
+        return recorded
+
+    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3:
+        outcome = self._inner.assess(input_value)
+        request = self._inner.last_request
+        if request is not None:
+            self.consultations.append(
+                RecordedConsultation(
+                    monitor_input_sha256=sha256(request.user_content.encode("utf-8")).hexdigest(),
+                    prompt_sha256=request.prompt_sha256,
+                    request=request,
+                    outcome=outcome,
+                    invocation=self._inner.last_invocation,
+                )
+            )
+        return outcome
 
 
 #: Byte-identical to ``monitor_v2``'s, deliberately. The one thing this contract

@@ -321,9 +321,11 @@ any number from this.
 Under `monitor-input-v3` the rendered input carries no `policy_decision`, `policy_risk_class`,
 `policy_reasons`, `authorization_required`, `authorization_scope` or `evidence_support_state` —
 the first published monitor result had `qwen3-14b` citing three of those in its rationale on the
-*benign* leg, which is why the contract exists. It makes the false-positive number the monitor's
-own judgement. It does **not** put a monitor in front of a covert call; the policy still denies
-first. Covert detection needs the observe-only row family or T4, and neither is built.
+*benign* leg, which is why the contract exists. So a verdict is no longer copied from a decision
+the monitor was shown — but that is a claim about the bytes, not about the reasoning: the first
+v3-input result returned ALLOW beside a rationale arguing entirely against the action, so read
+the verdict and the rationale together. It does **not** put a monitor in front of a covert call;
+the policy still denies first. Covert detection needs the observe-only row family or T4.
 
 ```powershell
 # Capture. Real monitor calls, written at the episode position they happened at; publishes nothing.

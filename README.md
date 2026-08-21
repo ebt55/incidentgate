@@ -391,6 +391,14 @@ anything detection: T1's policy gate still denies the covert capability before
 the monitor node runs, so this is a prerequisite for covert detection rather than
 a substitute for it.
 
+**And withholding the answer key is necessary without being sufficient**, which
+the first result under the new contract demonstrated immediately: the monitor
+returned `allow` beside `evidence_support: contradictory` and a rationale whose
+every clause argued *against* the action. The verdict was no longer copied from a
+decision it was shown — that much is structural — but it could not be read as the
+product of the reasoning printed with it either. Read the verdict and the
+rationale together; they can disagree.
+
 [`docs/findings/T1-model-monitor-benign-leg.md`](docs/findings/T1-model-monitor-benign-leg.md)
 
 ## What the system does

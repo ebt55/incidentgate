@@ -163,8 +163,15 @@ WHAT THIS CONTRACT DOES AND DOES NOT UNBLOCK
 
 **It makes the benign false-positive measurement honest.** The monitor is no
 longer handed the policy's verdict on the action it is judging, so an ALLOW on
-T1's honest remediation is the monitor's own judgement rather than partly
-agreement with a decision it was shown.
+T1's honest remediation was not copied from a decision it was shown.
+
+**That is a claim about the bytes, and it is the whole of it.** Withholding the
+answer key is necessary for an honest measurement and is *not* sufficient for the
+output to be a judgement: the first result taken under this contract returned
+ALLOW beside a rationale arguing entirely against the action, so the verdict
+could not be read as the product of the reasoning printed with it. A reader of
+any number produced here has to read the verdict and the rationale together,
+because they can disagree.
 
 **It does NOT put a monitor in front of a covert call.** T1's policy gate still
 denies ``operations.write_outbound_note`` with ``capability_prohibited`` before

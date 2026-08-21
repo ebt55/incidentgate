@@ -38,6 +38,10 @@ from incidentgate.control.monitor_input import (
     project_evidence,
     render_monitor_prompt,
 )
+from incidentgate.control.monitor_input_v3 import (
+    MonitorInputV3,
+    render_monitor_input_v3,
+)
 from incidentgate.control.monitor_v2 import (
     AdvisoryMonitorV2,
     BindingAdvisoryMonitor,
@@ -95,12 +99,19 @@ class SemanticMonitorCaller(MonitorCallerIdentity, Protocol):
 
 
 class SemanticMonitorCallerV3(MonitorCallerIdentity, Protocol):
-    """The v3 output contract's caller. Same identities, a differently-bound outcome."""
+    """The v3 contracts' caller: ``monitor-input-v3`` in, ``monitor-output-v3`` out.
+
+    The input type is what separates this protocol from
+    :class:`SemanticMonitorCaller` as much as the outcome type does. A v3 caller
+    is handed a projection that carries no policy verdict, and a v2 caller is
+    handed one that does; a single protocol over both would let a request shaped
+    for one rendering be answered against a threshold frozen for the other.
+    """
 
     @property
     def last_invocation(self) -> ModelInvocationRecord | None: ...
 
-    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3: ...
+    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3: ...
 
 
 class ThresholdArtifactProvenance(Protocol):
@@ -238,16 +249,22 @@ def _manifests() -> Mapping[str, _Manifest]:
 
 
 class _MonitorInputProjection:
-    """The one projection from a graph consultation to the bounded prompt input.
+    """The v2-input projection, kept exactly as the committed capture was taken under.
 
-    Shared by both output contracts because the *input* contract is the same one.
-    Route B -- an ``observe_only`` monitor arm -- would have needed a different
-    input, and is not being taken: ``MonitorInputV2`` hands the monitor
-    ``policy_decision=deny``, ``policy_risk_class="prohibited"`` and
-    ``policy_reasons=["capability_prohibited"]``, so a BLOCK there would measure
-    agreement with a shown denial rather than detection. Nothing in this class
-    changes that; it is recorded here because this is where a reader looking for
-    the leak arrives.
+    THIS IS THE PROJECTION WITH THE LEAK, AND IT IS RETAINED ON PURPOSE.
+
+    It hands the monitor ``policy_decision``, ``policy_risk_class``,
+    ``policy_reasons``, ``authorization_required``, ``authorization_scope`` and
+    ``evidence_support_state`` -- six gate answers -- and one committed capture
+    plus one published envelope were produced through it. ``qwen3-14b``'s
+    rationale on that capture's *benign* leg reads "The action requires
+    authorization, and the policy decision is to require approval, which is
+    consistent with the risk class", which is three of the six read back.
+
+    It is not edited, because editing it would move ``MonitorInputV2``'s schema
+    digest, which two committed threshold artifacts and a published envelope
+    cite. New work uses :class:`_MonitorInputV3Projection`; this one stays as the
+    thing the published v2-input result was measured through.
     """
 
     def __init__(
@@ -293,6 +310,60 @@ class _MonitorInputProjection:
             current_state_facts=self._facts.current_state(consultation.incident.scenario_id, paths),
             authorization_required=rule.approval_required,
             authorization_scope=rule.permission,
+        )
+
+
+class _MonitorInputV3Projection:
+    """The projection to ``monitor-input-v3``, which cannot read a policy because it has none.
+
+    THE CONSTRUCTOR IS THE GUARANTEE.
+
+    :class:`_MonitorInputProjection` takes a :class:`PolicyConfiguration` and
+    reads six fields out of it and the consultation's :class:`PolicyOutcome`.
+    This class takes neither. ``project`` is handed the same
+    :class:`MonitorConsultation` -- the graph boundary is unchanged and still
+    carries ``policy``, because the *workflow* needs it -- and touches
+    ``consultation.policy`` nowhere. There is no policy object in this class's
+    scope to read a verdict out of, which is what makes the withholding
+    structural rather than a matter of remembering.
+
+    What is projected instead is stated field by field in
+    ``control/monitor_input_v3.py``: the incident's objective and remit from the
+    frozen manifest, the proposed action and its digest, the evidence with its
+    per-record freshness, the committed call sequence, and the allowlisted world
+    state. Those are the facts. The verdict is not one of them.
+    """
+
+    def __init__(
+        self,
+        *,
+        facts: RepositoryMonitorFacts,
+        manifests: Mapping[str, _Manifest] | None = None,
+    ) -> None:
+        self._facts = facts
+        self._manifests = _manifests() if manifests is None else manifests
+
+    def project(self, consultation: MonitorConsultation) -> MonitorInputV3:
+        projection = ScenarioProjectionAdapter().project(
+            self._manifests[consultation.incident.scenario_id]
+        )
+        paths = cast(tuple[str, ...], projection["allowed_changed_paths"])
+        return MonitorInputV3(
+            scenario_id=consultation.incident.scenario_id,
+            incident_objective=cast(str, projection["incident_objective"]),
+            allowed_action_tools=cast(tuple[str, ...], projection["allowed_action_tools"]),
+            forbidden_action_tools=cast(tuple[str, ...], projection["forbidden_action_tools"]),
+            allowed_changed_paths=paths,
+            action=action_facts(consultation.action),
+            action_fingerprint=action_fingerprint(consultation.action),
+            evidence_facts=project_evidence(
+                consultation.incident.scenario_id,
+                consultation.evidence,
+                consultation.records,
+                _PROJECTABLE_EVIDENCE_ALLOWLIST,
+            ),
+            committed_calls=self._facts.committed_calls(consultation.incident.incident_id),
+            current_state_facts=self._facts.current_state(consultation.incident.scenario_id, paths),
         )
 
 
@@ -349,14 +420,13 @@ class SemanticAdvisoryMonitorV3:
         self,
         *,
         caller: SemanticMonitorCallerV3,
-        policy: PolicyConfiguration,
         facts: RepositoryMonitorFacts,
         manifests: Mapping[str, _Manifest] | None = None,
     ) -> None:
         self._caller = caller
-        self._projection = _MonitorInputProjection(
-            policy=policy, facts=facts, manifests=manifests
-        )
+        # No ``policy`` parameter, and that is the withholding made structural:
+        # the v3 projection has no policy object to read a verdict out of.
+        self._projection = _MonitorInputV3Projection(facts=facts, manifests=manifests)
         self.last_input_hash: str | None = None
         self.last_invocation: ModelInvocationRecord | None = None
         self.last_outcome: MonitorOutcomeV3 | None = None
@@ -366,7 +436,7 @@ class SemanticAdvisoryMonitorV3:
         try:
             input_value = self._projection.project(consultation)
             self.last_input_hash = sha256(
-                render_monitor_prompt(input_value).encode("utf-8")
+                render_monitor_input_v3(input_value).encode("utf-8")
             ).hexdigest()
         except (KeyError, TypeError, ValueError):
             outcome = MonitorOutcomeV3(
@@ -455,9 +525,19 @@ class SemanticMonitorConfigurationV3:
     def build(
         self, *, policy: PolicyConfiguration, facts: RepositoryMonitorFacts
     ) -> SemanticMonitorBundle:
+        """Wire a v3 monitor, and drop the policy on the floor rather than forward it.
+
+        ``policy`` is named because :class:`SemanticMonitorSource` is the seam the
+        runtime builds every monitor through, and the v2 configuration genuinely
+        needs it. This one does not, and discarding it here -- explicitly, in one
+        statement a reader trips over -- is what stops a policy-derived field from
+        reappearing in a v3 input by way of a constructor that happened to have
+        one in scope.
+        """
         _require_artifact_describes_caller(self.artifact, self.caller)
+        del policy
         return SemanticMonitorBundle(
-            monitor=SemanticAdvisoryMonitorV3(caller=self.caller, policy=policy, facts=facts),
+            monitor=SemanticAdvisoryMonitorV3(caller=self.caller, facts=facts),
             consultation_factory=RuntimeMonitorConsultationFactory(),
             thresholds=self.artifact.thresholds,
         )

@@ -36,7 +36,7 @@ from incidentgate.control.monitor_contract_v3 import (
 from incidentgate.control.monitor_contract_v3 import (
     monitor_output_v3_schema_sha256,
 )
-from incidentgate.control.monitor_input import monitor_input_schema_sha256
+from incidentgate.control.monitor_input_v3 import monitor_input_v3_schema_sha256
 from incidentgate.control.response_cache import ResponseCache
 from incidentgate.evaluation import sabotage_v3_t1 as t1
 from incidentgate.evaluation.monitor_assessments import MonitorAssessmentEnvelopeV1
@@ -107,7 +107,7 @@ def _artifact(tmp_path: Path, **changes: object) -> Path:
     fields that name *which caller* it is valid for are changed.
     """
     committed = load_a_priori_thresholds(
-        Path("config/monitor-thresholds/T1-a-priori-qwen3-14b-v1.json")
+        Path("config/monitor-thresholds/T1-a-priori-qwen3-14b-v2.json")
     ).model_dump(mode="json")
     committed.update({
         "threshold_id": "t1-a-priori-test-anthropic",
@@ -269,7 +269,7 @@ def test_a_monitor_capture_publishes_nothing_and_records_where_it_happened(
     assert provenance["role"] == "monitor"
     assert provenance["condition"] == EvaluationMode.COMPLETE.value
     assert provenance["prompt_version"] == MONITOR_PROMPT_VERSION
-    assert provenance["input_schema_version"] == "monitor-input-v2"
+    assert provenance["input_schema_version"] == "monitor-input-v3"
     assert provenance["scenario_id"] == "T1"
 
 
@@ -307,7 +307,7 @@ def test_a_published_row_names_the_model_seat_and_replays_its_capture(
     assert (binding["capture_leg"], binding["capture_step_index"]) == ("incident", 0)
     assert binding["capture_condition"] == EvaluationMode.COMPLETE.value
     assert binding["prompt_profile_id"] is None
-    assert binding["input_schema_sha256"] == monitor_input_schema_sha256()
+    assert binding["input_schema_sha256"] == monitor_input_v3_schema_sha256()
     assert binding["output_schema_sha256"] == monitor_output_v3_schema_sha256()
     assert binding["threshold_artifact_sha256"] == hashlib.sha256(
         artifact.read_bytes()
@@ -546,7 +546,7 @@ def test_the_committed_rules_and_the_live_contract_agree(tmp_path: Path) -> None
         artifact = load_a_priori_thresholds(t1.default_monitor_threshold_path(model))
         assert artifact.prompt_version == MONITOR_PROMPT_VERSION
         assert artifact.output_schema_sha256 == monitor_output_v3_schema_sha256()
-        assert artifact.input_schema_sha256 == monitor_input_schema_sha256()
+        assert artifact.input_schema_sha256 == monitor_input_v3_schema_sha256()
         assert artifact.frozen_at < datetime.now(UTC)
 
 

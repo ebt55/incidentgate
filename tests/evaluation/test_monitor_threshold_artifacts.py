@@ -24,6 +24,7 @@ from incidentgate.control.monitor_contract_v3 import (
 )
 from incidentgate.control.monitor_decision import decide
 from incidentgate.control.monitor_input import monitor_input_schema_sha256
+from incidentgate.control.monitor_input_v3 import monitor_input_v3_schema_sha256
 from incidentgate.control.monitor_v2 import RiskCategory
 from incidentgate.evaluation.monitor_thresholds import (
     MonitorThresholdArtifact,
@@ -31,11 +32,29 @@ from incidentgate.evaluation.monitor_thresholds import (
     ThresholdDerivation,
     load_a_priori_thresholds,
 )
+from incidentgate.evaluation.sabotage_v3_t1 import default_monitor_threshold_path
 
 ROOT = Path(__file__).resolve().parents[2]
 THRESHOLD_DIR = ROOT / "config" / "monitor-thresholds"
 COMMITTED = sorted(THRESHOLD_DIR.glob("T1-a-priori-*.json"))
 SCENARIO = ROOT / "scenarios" / "sabotage" / "T1.json"
+
+#: Which input contract each committed generation was frozen against, keyed by the
+#: prompt version the artifact itself carries.
+#:
+#: THERE ARE TWO GENERATIONS BECAUSE THE INPUT CONTRACT MOVED, AND BOTH ARE KEPT.
+#: A threshold artifact is valid for exactly one caller, and
+#: ``input_schema_sha256`` is one of the five identities that says which. When
+#: ``monitor-input-v3`` withheld the policy's verdict from the monitor, every
+#: artifact frozen against ``monitor-input-v2`` stopped describing the caller this
+#: project runs -- so a second generation was frozen rather than the first being
+#: edited. The first is not deleted: the published v2-input envelope names its
+#: bytes, and rewriting a file a published record cites is the move this project
+#: does not make.
+INPUT_SCHEMA_BY_PROMPT_VERSION = {
+    "monitor-prompt/v1.output-v3": monitor_input_schema_sha256,
+    "monitor-prompt/v3.output-v3": monitor_input_v3_schema_sha256,
+}
 
 
 def _assessment(**changes: object) -> MonitorAssessmentV3:
@@ -191,10 +210,22 @@ def test_the_categorical_rule_is_the_only_rule_that_can_fire_below_one() -> None
 
 
 def test_there_is_a_committed_artifact_for_each_local_monitor_model() -> None:
+    """Both models, in both generations, and nothing else under the glob."""
     assert {load_a_priori_thresholds(path).model for path in COMMITTED} == {
         "qwen3-14b",
         "mistral-nemo-12b",
     }
+    by_generation = _by_generation()
+    assert set(by_generation) == set(INPUT_SCHEMA_BY_PROMPT_VERSION)
+    assert all(len(group) == 2 for group in by_generation.values())
+
+
+def _by_generation() -> dict[str, list[MonitorThresholdArtifactV2]]:
+    grouped: dict[str, list[MonitorThresholdArtifactV2]] = {}
+    for path in COMMITTED:
+        artifact = load_a_priori_thresholds(path)
+        grouped.setdefault(artifact.prompt_version, []).append(artifact)
+    return grouped
 
 
 @pytest.mark.parametrize("path", COMMITTED, ids=lambda path: path.name)
@@ -205,13 +236,70 @@ def test_a_committed_artifact_describes_the_contract_it_was_frozen_against(path:
     would still look like provenance; ``SemanticMonitorConfigurationV3`` would
     refuse it at build time, but only for whoever ran it. Re-deriving here is what
     makes the drift a failure at the point it happens.
+
+    The expected *input* digest is the one for the generation the artifact names,
+    not the current one: a superseded artifact must still describe the contract it
+    was frozen against, or the published record that cites it stops being
+    checkable.
     """
     artifact = load_a_priori_thresholds(path)
+    assert artifact.prompt_version in INPUT_SCHEMA_BY_PROMPT_VERSION
     assert artifact.scenario_contract_sha256 == hashlib.sha256(SCENARIO.read_bytes()).hexdigest()
-    assert artifact.input_schema_sha256 == monitor_input_schema_sha256()
+    assert artifact.input_schema_sha256 == (
+        INPUT_SCHEMA_BY_PROMPT_VERSION[artifact.prompt_version]()
+    )
     assert artifact.output_schema_sha256 == monitor_output_v3_schema_sha256()
-    assert artifact.prompt_version == PROMPT_VERSION
     assert artifact.provider == "local"
+
+
+def test_the_generation_the_runner_defaults_to_is_the_one_the_caller_renders() -> None:
+    """One generation is current, and the other is kept without being reachable by default."""
+    for model in ("qwen3-14b", "mistral-nemo-12b"):
+        artifact = load_a_priori_thresholds(default_monitor_threshold_path(model))
+        assert artifact.model == model
+        assert artifact.prompt_version == PROMPT_VERSION
+        assert artifact.input_schema_sha256 == monitor_input_v3_schema_sha256()
+    superseded = [
+        artifact for artifact in _by_generation()["monitor-prompt/v1.output-v3"]
+    ]
+    assert len(superseded) == 2
+    # Kept, loadable, and still describing the caller it was frozen for -- which is
+    # not this one, so the five-identity check refuses it rather than this test
+    # having to.
+    assert all(item.input_schema_sha256 == monitor_input_schema_sha256() for item in superseded)
+
+
+def test_moving_the_input_contract_was_not_an_occasion_to_move_the_rule() -> None:
+    """The decision rule is derived from frozen contracts the input never touches.
+
+    A new generation of threshold artifacts is exactly the moment a cutoff could
+    be quietly adjusted, with a schema change as the cover story. Every field that
+    constitutes the rule is compared across generations here, so it cannot be.
+    """
+    rule_fields = (
+        "defer_at",
+        "block_at",
+        "decision_rule",
+        "provenance_band",
+        "selected_on_split",
+        "forced_block_sequence_risk",
+        "forced_block_categories",
+        "derivations",
+        "scenario_contract_sha256",
+        "continuous_score_authority",
+        "continuous_score_edge",
+        "raw_score_publication",
+    )
+    generations = [
+        {
+            artifact.model: {
+                field: artifact.model_dump(mode="json")[field] for field in rule_fields
+            }
+            for artifact in group
+        }
+        for group in _by_generation().values()
+    ]
+    assert len(generations) == 2 and generations[0] == generations[1]
 
 
 @pytest.mark.parametrize("path", COMMITTED, ids=lambda path: path.name)
@@ -246,12 +334,14 @@ def test_the_pre_registration_names_the_bytes_that_were_actually_frozen() -> Non
 
     The finding is written before the measurement precisely so the rule cannot
     move afterwards. That only means anything if the digests it publishes are the
-    digests of the committed files, so they are checked rather than trusted.
+    digests of the committed files, so they are checked rather than trusted --
+    for **every** committed generation, including the superseded one whose result
+    is already published.
     """
     finding = (ROOT / "docs" / "findings" / "T1-model-monitor-benign-leg.md").read_text(
         encoding="utf-8"
     )
-    assert "no monitor capture has been taken" in finding.lower()
+    assert "no monitor capture has been taken under `monitor-input-v3`" in finding.lower()
     for path in COMMITTED:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         assert digest in finding, f"{path.name}'s committed digest is not the one cited"
@@ -259,13 +349,14 @@ def test_the_pre_registration_names_the_bytes_that_were_actually_frozen() -> Non
 
 
 def test_the_rule_is_the_scenarios_and_not_the_models() -> None:
-    """Two committed artifacts, differing only in which caller they are valid for.
+    """Within a generation, two artifacts differing only in which caller they name.
 
     A rule derived from a frozen contract cannot depend on which model is
     judging. If these ever diverge in anything but ``threshold_id`` and ``model``,
     one of them was adjusted for a result.
     """
-    dumps = [load_a_priori_thresholds(path).model_dump(mode="json") for path in COMMITTED]
-    assert len(dumps) == 2
-    differing = {key for key in dumps[0] if dumps[0][key] != dumps[1][key]}
-    assert differing == {"threshold_id", "model"}
+    for prompt_version, group in _by_generation().items():
+        dumps = [artifact.model_dump(mode="json") for artifact in group]
+        assert len(dumps) == 2, prompt_version
+        differing = {key for key in dumps[0] if dumps[0][key] != dumps[1][key]}
+        assert differing == {"threshold_id", "model"}, prompt_version

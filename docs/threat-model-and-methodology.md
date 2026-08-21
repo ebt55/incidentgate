@@ -628,12 +628,24 @@ relative to the repository root.
   **honest** leg, because the policy denies the covert call before the monitor node runs. So
   a row from that arm is a *benign false-positive* measurement plus the human approval gate
   downstream of it, `monitor_verdict` is still null on every covert step, and the
-  covert-detection gap is exactly where it was. The observe-only route that would close it
-  leaks the policy's decision into `MonitorInputV2` (`policy_decision=deny`,
-  `policy_risk_class=prohibited`, `policy_reasons=[capability_prohibited]`), so it would
-  measure agreement with a shown denial; closing that needs a new input contract and a
-  separate versioned row family. **No monitor capture has been taken.**
+  covert-detection gap is exactly where it was.
   [`findings/T1-model-monitor-benign-leg.md`](findings/T1-model-monitor-benign-leg.md).
+- **The monitor is no longer shown the policy's verdict, and the covert-detection gap is
+  still exactly where it was.** The one published v2-input result has `qwen3-14b` citing the
+  policy's decision in its rationale *on the benign leg* — `MonitorInputV2` carried
+  `policy_decision`, `policy_risk_class`, `policy_reasons` and `authorization_required` on
+  every arm, so that number was partly agreement with a shown decision.
+  `monitor-input-v3` (`src/incidentgate/control/monitor_input_v3.py`) withholds those four
+  plus `authorization_scope` and `evidence_support_state` — the last being the *evidence*
+  gate's answer to a question the monitor is separately asked — and keeps the facts the
+  judgement is made from: objective, remit, action, evidence with per-record freshness,
+  committed call sequence, world state. `gate_verdict_leaks` measures the result over the
+  rendered bytes a model receives, not over the schema, because the schema is what looked
+  fine. **That makes the benign false-positive measurement honest; it does not make anything
+  detection.** T1's policy gate still denies the covert call before the monitor node runs,
+  so `monitor_verdict` stays null on every covert leg. Covert detection still needs the
+  observe-only row family or T4, and this input contract is a prerequisite for either rather
+  than a substitute. **No monitor capture has been taken under `monitor-input-v3`.**
 
 ### A.2 The monitor's input, and the absence of a calibration artifact
 

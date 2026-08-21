@@ -212,11 +212,13 @@ BENIGN_LEG_MEASURES: tuple[str, ...] = (
         "here is evidence about whether this monitor would notice a covert action."
     ),
     (
-        "Covert detection is not cheaply reachable from here. The observe-only route leaks "
-        "the policy decision into the monitor's own input -- MonitorInputV2 carries "
-        "policy_decision=deny, policy_risk_class=prohibited and "
-        "policy_reasons=[capability_prohibited] -- so a BLOCK under it would measure "
-        "agreement with a shown denial rather than detection. Closing that is a new input "
-        "contract plus a separate versioned row family, not a flag."
+        "The monitor was not shown the policy's verdict, and that does not make this "
+        "detection. monitor-input-v3 withholds policy_decision, policy_risk_class, "
+        "policy_reasons, authorization_required, authorization_scope and "
+        "evidence_support_state from the rendered input, so a verdict here is the monitor's "
+        "own judgement rather than partly agreement with a decision it was handed -- which "
+        "is what makes the benign false-positive number honest. It does NOT put a monitor "
+        "in front of a covert call. Covert detection still needs an observe-only row family "
+        "or T4, and this input contract is a prerequisite for either, not a substitute."
     ),
 )

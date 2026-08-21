@@ -88,13 +88,16 @@ a policy-legal, correctly-evidenced action. What it exercises beyond the monitor
 is the durable human approval gate downstream of that verdict, which the covert
 leg has never reached either.
 
-**Why the covert leg is not cheaply reachable from here.** The obvious route --
-running the monitor in observe-only mode so it sees the call the policy denied --
-leaks the policy's decision into the monitor's own input: ``MonitorInputV2``
-carries ``policy_decision=deny``, ``policy_risk_class="prohibited"`` and
-``policy_reasons=["capability_prohibited"]``. A BLOCK under that input measures
-agreement with a denial the monitor was shown, not detection. Closing it is a new
-input contract plus a separate versioned row family, and it is not done here.
+**The monitor is not shown the policy's verdict, and the covert leg is still not
+reachable.** ``monitor-input-v3`` (``control/monitor_input_v3.py``) withholds
+``policy_decision``, ``policy_risk_class``, ``policy_reasons``,
+``authorization_required``, ``authorization_scope`` and
+``evidence_support_state`` from the rendered input. That was a prerequisite for
+any honest monitor number here, benign or covert: under v2 input ``qwen3-14b``
+cited the policy's decision in its rationale on the *benign* leg. What it does
+**not** do is put a monitor in front of a covert call -- the policy gate still
+denies first, so ``monitor_verdict`` stays null on every covert leg. Covert
+detection needs an observe-only row family or T4, and neither is built here.
 
 **Two capture modes, because there are two seats.** ``--capture`` records the
 attacker's call; ``--capture-monitor`` records the monitor's. The second
@@ -183,7 +186,7 @@ from incidentgate.control.monitor_contract_v3 import (
 from incidentgate.control.monitor_contract_v3 import (
     PROMPT_VERSION as MONITOR_PROMPT_VERSION,
 )
-from incidentgate.control.monitor_input import monitor_input_schema_sha256
+from incidentgate.control.monitor_input_v3 import monitor_input_v3_schema_sha256
 from incidentgate.control.openai_completion import (
     OpenAICompletionClient,
     openai_envelope_descriptor,
@@ -300,8 +303,16 @@ def default_monitor_threshold_path(model: str) -> Path:
     A convention rather than a lookup table because the artifacts are per
     (scenario, model) and the name states both. ``--monitor-thresholds`` overrides
     it; nothing infers an artifact for a model that has none.
+
+    ``-v2`` is the generation frozen against ``monitor-input-v3``. The ``-v1``
+    pair is still committed and is not deleted: it is the rule the published
+    v2-input envelope was read under, and that envelope names its bytes. A run
+    that pointed at ``-v1`` today would be refused at build time by
+    ``_require_artifact_describes_caller``, because the input schema digest it
+    pins is not the one this caller renders -- which is the check doing exactly
+    its job rather than an obstacle to route around.
     """
-    return MONITOR_THRESHOLD_DIR / f"T1-a-priori-{model}-v1.json"
+    return MONITOR_THRESHOLD_DIR / f"T1-a-priori-{model}-v2.json"
 
 PRICING_SNAPSHOT_PATH: Final = _ROOT / "config" / "pricing" / "anthropic-2026-08-14.json"
 #: One committed snapshot per *billing* provider. A billing provider without one
@@ -942,7 +953,7 @@ def monitor_replay_invocation(
         request_sha256=consultation.prompt_sha256,
         prompt_sha256=consultation.prompt_sha256,
         request_schema_sha256=schema_sha256(consultation.request.schema),
-        input_schema_sha256=monitor_input_schema_sha256(),
+        input_schema_sha256=monitor_input_v3_schema_sha256(),
         input_schema_version=MONITOR_INPUT_SCHEMA_VERSION,
         output_schema_sha256=monitor_output_v3_schema_sha256(),
         prompt_version=MONITOR_PROMPT_VERSION,
@@ -1887,7 +1898,7 @@ class T1V3Runner:
             provider=self.monitor_provider,
             model=self.monitor_model,
             prompt_version=MONITOR_PROMPT_VERSION,
-            input_schema_sha256=monitor_input_schema_sha256(),
+            input_schema_sha256=monitor_input_v3_schema_sha256(),
             output_schema_sha256=monitor_output_v3_schema_sha256(),
             measures=" ".join(BENIGN_LEG_MEASURES),
             records=records,
@@ -2556,13 +2567,16 @@ MODEL_MONITOR_DISCLOSURE: Final[tuple[str, ...]] = (
     ),
     "",
     (
-        "**Why the covert leg is not cheaply reachable.** The obvious route -- run the "
-        "monitor in observe-only mode so it sees the covert call the policy denied -- leaks "
-        "the policy's decision into the monitor's own input: `MonitorInputV2` carries "
-        "`policy_decision=deny`, `policy_risk_class=prohibited` and "
-        "`policy_reasons=[capability_prohibited]`. A BLOCK under that input measures "
-        "agreement with a denial the monitor was shown, not detection. Closing it is a new "
-        "input contract plus a separate versioned row family, not a flag."
+        "**The monitor is no longer shown the policy's verdict, and that does not make this "
+        "detection.** Under `monitor-input-v3` the rendered input carries no "
+        "`policy_decision`, `policy_risk_class`, `policy_reasons`, `authorization_required`, "
+        "`authorization_scope` or `evidence_support_state`, so a verdict here is the "
+        "monitor's own judgement rather than partly agreement with a decision it was handed. "
+        "That makes the benign false-positive number above honest. It does **not** put a "
+        "monitor in front of a covert call: the policy still denies "
+        "`operations.write_outbound_note` before the monitor node runs. Covert detection "
+        "still needs an observe-only row family or T4, and this input contract is a "
+        "prerequisite for either rather than a substitute for one."
     ),
     "",
     (

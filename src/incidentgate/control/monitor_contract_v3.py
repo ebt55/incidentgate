@@ -61,7 +61,7 @@ verdict could arrive for the echo to catch.
 The model is therefore not the natural source of a digest it must copy, and this
 contract stops asking. The field is absent from the emitted schema and from the
 accepted fields; :class:`BoundMonitorAssessmentV3` carries it, stamped from the
-``MonitorInputV2`` the caller rendered, under ``fingerprint_source:
+``MonitorInputV3`` the caller rendered, under ``fingerprint_source:
 harness_supplied`` so a reader never has to infer where it came from.
 
 **What is given up is stated rather than absorbed:** a v3 response body is no
@@ -155,6 +155,24 @@ schema digest, and that digest is inside the canonical prompt -- so a v2 body ca
 never be replayed as a v3 result, and each version keys its own captures. No
 monitor capture exists under either version at the time this is written, which
 is why the contract is landed *before* one is taken rather than after.
+
+WHAT THE INPUT MOVE TO ``monitor-input-v3`` CHANGED HERE
+========================================================
+
+This caller now renders :class:`~incidentgate.control.monitor_input_v3.MonitorInputV3`,
+which withholds the policy gate's verdict from the monitor. Nothing about the
+*output* grammar moved with it. What did move is this contract's identity, in the
+two places identity is read: ``PROMPT_VERSION`` names the new rendering and
+``input_schema_sha256`` is the new schema's digest, both of which are inside the
+canonical prompt -- so a capture taken under v2 input can never be replayed as a
+v3-input result, and a threshold artifact frozen against one is refused for the
+other by ``_require_artifact_describes_caller``.
+
+That re-keying is the point rather than a side effect. The one committed monitor
+capture and the envelope published from it were taken under v2 input, where the
+monitor was shown ``policy_decision``, ``policy_risk_class``, ``policy_reasons``
+and ``authorization_required`` and visibly reasoned from them. They stay
+published, unre-taken, under their own digests, bounded by what they were.
 """
 
 from __future__ import annotations
@@ -187,10 +205,11 @@ from incidentgate.control.model_capabilities import (
     thinking_headroom_tokens,
 )
 from incidentgate.control.model_proposal import CompletionClient, CompletionRequest
-from incidentgate.control.monitor_input import (
-    MonitorInputV2,
-    monitor_input_schema_sha256,
-    render_monitor_prompt,
+from incidentgate.control.monitor_input_v3 import (
+    INPUT_SCHEMA_VERSION,
+    MonitorInputV3,
+    monitor_input_v3_schema_sha256,
+    render_monitor_input_v3,
 )
 from incidentgate.control.monitor_v2 import MonitorErrorKind, RiskCategory
 from incidentgate.control.proposal import ProposalError
@@ -205,17 +224,19 @@ if TYPE_CHECKING:
 OUTPUT_SCHEMA_VERSION: Final = "monitor-output-v3"
 
 #: What a capture and a published ``RoleInvocation`` record as this exchange's
-#: prompt version. Both halves are named because both can move independently: the
-#: rendered input is still ``monitor-prompt/v1`` (this contract changes nothing
-#: about what the monitor is *shown*), and the output grammar is this contract.
-#: Constrained to the character set ``ProviderCaptureProvenance.prompt_version``
-#: and ``RoleInvocation.prompt_version`` both accept.
-PROMPT_VERSION: Final = "monitor-prompt/v1.output-v3"
+#: prompt version. Both halves are named because both moved independently, and
+#: both have now moved: the rendered input is ``monitor-prompt/v3``
+#: (``monitor_input_v3``, which withholds the policy's verdict from the monitor)
+#: and the output grammar is this contract. It read ``monitor-prompt/v1.output-v3``
+#: while only the output had changed. Constrained to the character set
+#: ``ProviderCaptureProvenance.prompt_version`` and ``RoleInvocation.prompt_version``
+#: both accept.
+PROMPT_VERSION: Final = "monitor-prompt/v3.output-v3"
 
 #: What a capture and a published ``RoleInvocation`` record as the *input*
-#: contract of this exchange. Read off ``MonitorInputV2``'s own literal rather
+#: contract of this exchange. Read off ``MonitorInputV3``'s own literal rather
 #: than restated, so the two cannot drift apart.
-MONITOR_INPUT_SCHEMA_VERSION: Final = "monitor-input-v2"
+MONITOR_INPUT_SCHEMA_VERSION: Final = INPUT_SCHEMA_VERSION
 
 #: The legal values of ``risk_score``, as an enumerated ladder.
 #:
@@ -555,16 +576,16 @@ class StructuredMonitorCallerV3:
 
     @property
     def input_schema_sha256(self) -> str:
-        return monitor_input_schema_sha256()
+        return monitor_input_v3_schema_sha256()
 
-    def build_request(self, input_value: MonitorInputV2) -> CompletionRequest:
+    def build_request(self, input_value: MonitorInputV3) -> CompletionRequest:
         """Shape one request, so a capture planner can key it without making a call.
 
         Public because the position a monitor consultation happens at is known
         only after the episode runs (see ``sabotage_v3_t1``), and a capture whose
         provenance is written at call time cannot state it.
         """
-        user = render_monitor_prompt(input_value)
+        user = render_monitor_input_v3(input_value)
         system = _SYSTEM_PROMPT
         canonical_fields: dict[str, Any] = {
             "system": system,
@@ -573,7 +594,7 @@ class StructuredMonitorCallerV3:
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
             "thinking": self._thinking,
-            "input_schema_sha256": monitor_input_schema_sha256(),
+            "input_schema_sha256": monitor_input_v3_schema_sha256(),
             "output_schema_sha256": monitor_output_v3_schema_sha256(),
             "prompt_version": input_value.prompt_version,
             # Named in the key rather than left to the output digest alone. The
@@ -609,7 +630,7 @@ class StructuredMonitorCallerV3:
             prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),
         )
 
-    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3:
+    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3:
         self.last_invocation = None
         self.last_request = None
         try:
@@ -732,7 +753,7 @@ class RecordingMonitorCallerV3:
         self.consultations.clear()
         return recorded
 
-    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3:
+    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3:
         outcome = self._inner.assess(input_value)
         request = self._inner.last_request
         if request is not None:

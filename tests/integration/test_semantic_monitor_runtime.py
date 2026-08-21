@@ -32,6 +32,7 @@ from incidentgate.control.monitor_input import (
     MonitorInputV2,
     render_monitor_prompt,
 )
+from incidentgate.control.monitor_input_v3 import MonitorInputV3
 from incidentgate.control.monitor_v2 import (
     BindingAdvisoryMonitor,
     MonitorErrorKind,
@@ -408,11 +409,11 @@ class _CallerV3:
         self.outcome, self.inputs, self.last_invocation = outcome, [], None
         self.model = "qwen3-14b"
         self.provider = "local"
-        self.prompt_version = "monitor-prompt/v1.output-v3"
+        self.prompt_version = "monitor-prompt/v3.output-v3"
         self.input_schema_sha256 = "a" * 64
         self.output_schema_sha256 = "b" * 64
 
-    def assess(self, input_value: MonitorInputV2) -> MonitorOutcomeV3:
+    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3:
         self.inputs.append(input_value)
         self.last_invocation = ModelInvocationRecord(
             invocation_kind="cache_replay", provider="local", model="qwen3-14b"
@@ -447,7 +448,7 @@ def test_a_v3_configuration_builds_a_monitor_that_binds_its_own_assessment() -> 
     artifact = _artifact(
         provider="local",
         model="qwen3-14b",
-        prompt_version="monitor-prompt/v1.output-v3",
+        prompt_version="monitor-prompt/v3.output-v3",
     )
     caller = _CallerV3(MonitorOutcomeV3(outcome="assessed", assessment=_bound_v3()))
     bundle = SemanticMonitorConfigurationV3(caller=caller, artifact=artifact).build(
@@ -465,6 +466,11 @@ def test_a_v3_configuration_builds_a_monitor_that_binds_its_own_assessment() -> 
     )
     outcome = bundle.monitor.assess_consultation(_consultation(scenario_id="T1"))
     assert outcome.outcome == "assessed" and caller.inputs[-1].scenario_id == "T1"
+    # The v3 configuration is handed a policy by the shared build seam and does
+    # not forward it, so what reaches the caller is the projection with no gate
+    # verdict in it. What that projection withholds is measured in
+    # ``tests/control/test_monitor_input_v3.py``; this is the wiring check.
+    assert isinstance(caller.inputs[-1], MonitorInputV3)
     assert bundle.monitor.last_invocation is not None
     assert bundle.monitor.last_input_hash is not None
 
@@ -474,12 +480,12 @@ def test_a_v3_configuration_refuses_an_artifact_that_describes_another_caller() 
     base = {
         "provider": "local",
         "model": "qwen3-14b",
-        "prompt_version": "monitor-prompt/v1.output-v3",
+        "prompt_version": "monitor-prompt/v3.output-v3",
     }
     for key, value in (
         ("provider", "anthropic"),
         ("model", "mistral-nemo-12b"),
-        ("prompt_version", "monitor-prompt/v1.output-v2"),
+        ("prompt_version", "monitor-prompt/v1.output-v3"),
         ("input_schema_sha256", "d" * 64),
         ("output_schema_sha256", "e" * 64),
     ):

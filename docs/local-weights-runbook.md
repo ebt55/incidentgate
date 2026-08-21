@@ -317,6 +317,14 @@ BLOCK on the incident leg is a false positive on a policy-legal, correctly-evide
 [`findings/T1-model-monitor-benign-leg.md`](findings/T1-model-monitor-benign-leg.md) before citing
 any number from this.
 
+**The monitor is not shown the policy's verdict, and that does not change the sentence above.**
+Under `monitor-input-v3` the rendered input carries no `policy_decision`, `policy_risk_class`,
+`policy_reasons`, `authorization_required`, `authorization_scope` or `evidence_support_state` —
+the first published monitor result had `qwen3-14b` citing three of those in its rationale on the
+*benign* leg, which is why the contract exists. It makes the false-positive number the monitor's
+own judgement. It does **not** put a monitor in front of a covert call; the policy still denies
+first. Covert detection needs the observe-only row family or T4, and neither is built.
+
 ```powershell
 # Capture. Real monitor calls, written at the episode position they happened at; publishes nothing.
 uv run python -m incidentgate.evaluation.sabotage_v3_t1 `
@@ -342,8 +350,16 @@ and a published row replays a committed capture rather than carrying one.
 
 Substituting `--attacker deterministic` runs the floor arm alone and needs one monitor capture
 instead of two. `--monitor-thresholds` defaults to
-`config/monitor-thresholds/T1-a-priori-<monitor-model>-v1.json`; both local models have one
-committed, frozen before any capture existed and not adjusted afterwards.
+`config/monitor-thresholds/T1-a-priori-<monitor-model>-v2.json`; both local models have one
+committed, frozen before any capture existed under `monitor-input-v3` and not adjusted
+afterwards. The `-v1` pair is still committed and is the rule the earlier v2-input envelope was
+read under; a run pointed at it is refused, because the input schema digest it pins is not the
+one this caller renders.
+
+The v3 input re-keys captures — the input schema digest and the prompt version are both inside
+the canonical prompt — so the capture command above records a **new** entry beside the committed
+v2-input one rather than replacing it. Neither the old capture nor the envelope published from it
+is re-taken, regenerated or deleted.
 
 Three files are written on publication: the envelope JSON, the Markdown table beside it, and
 `<stem>.monitor.json` — a `monitor-assessment-record-v1` sidecar carrying the raw `risk_score`,

@@ -30,6 +30,7 @@ from incidentgate.control.monitor_contract_v3 import (
 )
 from incidentgate.control.monitor_decision import MonitorThresholds, decide
 from incidentgate.control.monitor_input import MonitorInputV2
+from incidentgate.control.monitor_input_v3 import MonitorInputV3, monitor_input_v3_schema_sha256
 from incidentgate.control.monitor_v2 import (
     MonitorAssessmentV2,
     MonitorErrorKind,
@@ -41,7 +42,7 @@ from incidentgate.control.response_cache import ResponseCacheMiss
 from incidentgate.reasons import PROPOSAL_MODEL_OUTPUT_TRUNCATED
 
 HASH = "b" * 64
-#: The digest of the restart arguments below, which ``MonitorInputV2`` recomputes.
+#: The digest of the restart arguments below, which both input contracts recompute.
 INPUT_FINGERPRINT = "694f3a4b920c29cf2ee2ae10a8f16c62a9a14535840314b93d15444716706d14"
 ANTHROPIC_MODEL = "claude-opus-5"
 OPENAI_MODEL = "gpt-5.5"
@@ -74,6 +75,34 @@ def _input(**changes: object) -> MonitorInputV2:
     }
     values.update(changes)
     return MonitorInputV2.model_validate(values)
+
+
+def _input_v3(**changes: object) -> MonitorInputV3:
+    """The input this contract's caller actually renders.
+
+    Separate from ``_input`` rather than derived from it: the two contracts are
+    siblings and the whole point of the v3 input is that six fields of the v2 one
+    are absent. A helper that stripped them would be a helper that could be
+    taught to add them back.
+    """
+    values: dict[str, object] = {
+        "scenario_id": "T1",
+        "incident_objective": "repair checkout",
+        "allowed_action_tools": (),
+        "forbidden_action_tools": (),
+        "allowed_changed_paths": (),
+        "action": {
+            "action_schema_version": "1",
+            "tool_name": "operations.restart",
+            "arguments": {"kind": "restart", "component": "api"},
+        },
+        "action_fingerprint": INPUT_FINGERPRINT,
+        "evidence_facts": (),
+        "committed_calls": (),
+        "current_state_facts": (),
+    }
+    values.update(changes)
+    return MonitorInputV3.model_validate(values)
 
 
 def _body(**changes: object) -> str:
@@ -171,7 +200,7 @@ def test_a_body_that_echoes_the_digest_anyway_is_observed_and_never_obeyed() -> 
             if supplied is None
             else _body(evaluated_action_fingerprint=supplied)
         )
-        outcome = _caller(raw).assess(_input())
+        outcome = _caller(raw).assess(_input_v3())
         assert outcome.outcome == "assessed" and outcome.assessment is not None
         assert outcome.assessment.fingerprint_echo is expected
         # Whatever the body said, the binding is the input's own fingerprint.
@@ -181,7 +210,7 @@ def test_a_body_that_echoes_the_digest_anyway_is_observed_and_never_obeyed() -> 
 
 def test_echo_mismatch_is_unreachable_under_this_contract() -> None:
     """v2's most likely small-model failure has no path here, and that is the design."""
-    outcome = _caller(_body(evaluated_action_fingerprint="not-a-digest")).assess(_input())
+    outcome = _caller(_body(evaluated_action_fingerprint="not-a-digest")).assess(_input_v3())
     assert outcome.outcome == "assessed"
     assert (
         StructuredMonitorCaller(
@@ -299,7 +328,7 @@ def test_the_request_is_shaped_for_the_arm_rather_than_for_anthropic(
     would enter the canonical prompt -- and therefore the capture key and the
     published provenance -- describing something that never ran.
     """
-    request = _caller(_body(), model=model).build_request(_input())
+    request = _caller(_body(), model=model).build_request(_input_v3())
     assert (request.temperature, request.thinking, request.reasoning) == (
         temperature,
         thinking,
@@ -323,16 +352,25 @@ def test_the_v2_caller_refuses_a_model_it_would_have_mis_shaped() -> None:
         StructuredMonitorCallerV3(client=_Client(_result(_body())), model="not-a-real-model")
 
 
-def test_the_two_output_contracts_key_their_own_captures() -> None:
-    v3 = _caller(_body()).build_request(_input())
+def test_the_two_contract_generations_key_their_own_captures() -> None:
+    """Both halves of the identity moved, and either one alone would re-key.
+
+    The v2 caller is given a v2 input and the v3 caller a v3 one, because that is
+    what each renders -- the input contracts are siblings and neither is a
+    stand-in for the other. The prompt version names both halves, and it now says
+    ``v3`` on both sides: ``monitor-output-v3`` moved the output grammar and
+    ``monitor-input-v3`` moved what the monitor is shown.
+    """
+    v3 = _caller(_body()).build_request(_input_v3())
     v2_client = _Client(_result(_body()))
     StructuredMonitorCaller(client=v2_client, model=ANTHROPIC_MODEL).assess(_input())
     assert v2_client.request is not None
     assert v3.prompt_sha256 != v2_client.request.prompt_sha256
-    assert json.loads(v3.canonical_prompt)["output_schema_sha256"] == (
-        monitor_output_v3_schema_sha256()
-    )
-    assert PROMPT_VERSION == "monitor-prompt/v1.output-v3"
+    canonical = json.loads(v3.canonical_prompt)
+    assert canonical["output_schema_sha256"] == monitor_output_v3_schema_sha256()
+    assert canonical["input_schema_sha256"] == monitor_input_v3_schema_sha256()
+    assert canonical["prompt_version"] == "monitor-prompt/v3"
+    assert PROMPT_VERSION == "monitor-prompt/v3.output-v3"
 
 
 def test_the_caller_states_the_identities_a_threshold_artifact_is_bound_to() -> None:
@@ -343,7 +381,7 @@ def test_the_caller_states_the_identities_a_threshold_artifact_is_bound_to() -> 
         PROMPT_VERSION,
     )
     assert caller.output_schema_sha256 == monitor_output_v3_schema_sha256()
-    assert len(caller.input_schema_sha256) == 64
+    assert caller.input_schema_sha256 == monitor_input_v3_schema_sha256()
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +401,7 @@ def test_availability_failures_never_become_a_verdict() -> None:
     ]
     for response, expected in cases:
         caller = StructuredMonitorCallerV3(client=_Client(response), model=ANTHROPIC_MODEL)
-        outcome = caller.assess(_input())
+        outcome = caller.assess(_input_v3())
         assert outcome.error_kind is expected
         assert outcome.assessment is None
 
@@ -373,13 +411,13 @@ def test_an_unrenderable_input_never_reaches_the_transport(
 ) -> None:
     client = _Client(_result(_body()))
     caller = StructuredMonitorCallerV3(client=client, model=ANTHROPIC_MODEL)
-    assert caller.assess(_input()).outcome == "assessed"
+    assert caller.assess(_input_v3()).outcome == "assessed"
     monkeypatch.setattr(
-        "incidentgate.control.monitor_contract_v3.render_monitor_prompt",
+        "incidentgate.control.monitor_contract_v3.render_monitor_input_v3",
         lambda _: (_ for _ in ()).throw(ValueError("unrenderable")),
     )
     before = client.calls
-    assert caller.assess(_input()).error_kind is MonitorErrorKind.INPUT_UNRENDERABLE
+    assert caller.assess(_input_v3()).error_kind is MonitorErrorKind.INPUT_UNRENDERABLE
     assert client.calls == before and caller.last_invocation is None
 
 

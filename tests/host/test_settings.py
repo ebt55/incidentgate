@@ -154,6 +154,10 @@ def test_anthropic_settings_are_explicit_complete_and_repr_safe() -> None:
                 "DATABASE_URL": "postgresql://example",
                 "ADVISORY_MONITOR_PROVIDER": "anthropic",
                 "ANTHROPIC_API_KEY": "secret",
+                # Blanked explicitly. ANTHROPIC_MODEL has a committed default now,
+                # so an env dict that merely omits it no longer reaches the state
+                # this asserts -- which is the change working, not a weaker test.
+                "ANTHROPIC_MODEL": "",
             }
         )
     with pytest.raises(ValueError, match="ADVISORY_MONITOR_PROVIDER"):
@@ -179,11 +183,41 @@ def test_anthropic_settings_are_explicit_complete_and_repr_safe() -> None:
         {"anthropic_model": MONITOR_MODEL},
     ],
 )
-def test_direct_partial_anthropic_settings_are_rejected_consistently(
+def test_a_half_configured_anthropic_credential_is_inert_rather_than_refused(
     kwargs: dict[str, str],
 ) -> None:
-    with pytest.raises(ValueError, match="Anthropic configuration"):
-        HostSettings(database_url="postgresql://example", **kwargs)
+    """Relaxed from a strict pairing, deliberately, and the reason is in the settings.
+
+    This asserted ``bool(key) != bool(model)`` was an error. That was right while
+    ``ANTHROPIC_MODEL`` had no default: either half alone was someone's
+    half-finished edit. It now has a committed default, so the model is always
+    present and the strict form would refuse every host without Anthropic
+    credentials -- which is every contributor running the deterministic host, and
+    CI.
+
+    What the pairing protected is provider-conditional and is asserted below and
+    in ``test_committed_host_settings.py``: the *provider* needs both. A credential
+    with no provider activates nothing, because ``ADVISORY_MONITOR_PROVIDER``
+    selects the arm and defaults to ``fixture``.
+    """
+    settings = HostSettings(database_url="postgresql://example", **kwargs)
+    assert settings.monitor_provider == "fixture"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"anthropic_api_key": "secret"},
+        {"anthropic_model": MONITOR_MODEL},
+        {},
+    ],
+)
+def test_naming_the_anthropic_provider_still_requires_both(kwargs: dict[str, str]) -> None:
+    """The property the strict pairing was really carrying, at the same call site."""
+    with pytest.raises(ValueError, match="Anthropic provider requires"):
+        HostSettings(
+            database_url="postgresql://example", monitor_provider="anthropic", **kwargs
+        )
 
 
 def test_unknown_anthropic_model_is_rejected_at_settings_construction() -> None:

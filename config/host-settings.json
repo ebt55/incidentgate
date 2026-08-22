@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Non-credential host settings, committed so they are the same for everyone and",
+    "reviewable in version control. Credentials and DATABASE_URL are NOT here and",
+    "are never read from this file -- they stay in .env, which is gitignored.",
+    "",
+    "INCIDENTGATE_ALLOW_PROVIDER_SPEND is deliberately absent. It is an",
+    "authorisation, not a setting: committing it would make a deliberate act in one",
+    "shell into a standing property of the repository, which is the opposite of what",
+    "the spend gate is for.",
+    "",
+    "Every key here may be overridden by an environment variable of the same name,",
+    "so a one-off port change or a CI tweak needs no edit to a committed file. A",
+    "loader test asserts this file contains no credential-shaped key."
+  ],
+  "ADVISORY_MONITOR_PROVIDER": "fixture",
+  "ANTHROPIC_MODEL": "claude-opus-5",
+  "ANTHROPIC_TIMEOUT_SECONDS": "10",
+  "INCIDENTGATE_UI_BIND_HOST": "127.0.0.1",
+  "INCIDENTGATE_UI_PORT": "8090",
+  "LANGFUSE_BASE_URL": "https://jp.cloud.langfuse.com",
+  "PROPOSAL_PROVIDER": "deterministic",
+  "_unset_comment": [
+    "null means 'a known setting with no value', which is not the same as a key",
+    "nobody has heard of. Both are only required when PROPOSAL_PROVIDER is 'model',",
+    "and the committed default is 'deterministic'. Writing empty strings instead",
+    "would claim they are configured to be empty."
+  ],
+  "PROPOSAL_MODEL": null,
+  "PROPOSAL_CACHE_DIR": null
+}

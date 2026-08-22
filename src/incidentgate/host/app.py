@@ -74,8 +74,14 @@ class HostSettings:
                 "model proposals require PROPOSAL_CACHE_DIR; the host has no pricing "
                 "snapshot with which to record a live provider call honestly"
             )
-        if bool(self.anthropic_api_key) != bool(self.anthropic_model):
-            raise ValueError("Anthropic configuration must provide API key and model together")
+        # The same relaxation as in ``settings_from_env``, and for the same reason:
+        # with a committed default the model is always present, so a strict pairing
+        # would refuse every host that has no Anthropic credentials. The
+        # provider-conditional check below is what carries the property.
+        if self.monitor_provider == "anthropic" and not (
+            self.anthropic_api_key and self.anthropic_model
+        ):
+            raise ValueError("Anthropic provider requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL")
         if self.anthropic_model is not None and not is_known_model(self.anthropic_model):
             # The monitor is built per request, so its own guard would first fire mid-incident.
             # Checking here makes a typo'd model id a startup failure instead, before any
@@ -88,9 +94,68 @@ class HostSettings:
             raise ValueError("ANTHROPIC_TIMEOUT_SECONDS must be between 0 and 60")
 
 
+#: Settings that live in a committed file because they are the same for everyone.
+HOST_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "config" / "host-settings.json"
+
+#: Names that must never appear in the committed file. Credentials for the obvious
+#: reason, and ``INCIDENTGATE_ALLOW_PROVIDER_SPEND`` for a less obvious one: it is
+#: an authorisation rather than a setting, and committing it would turn a
+#: deliberate act in one shell into a standing property of the repository.
+_NEVER_COMMITTED = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "DATABASE_URL",
+        "INCIDENTGATE_ALLOW_PROVIDER_SPEND",
+    }
+)
+
+
+def committed_host_settings(path: Path | None = None) -> dict[str, str]:
+    """The committed non-credential settings, refusing any file that carries a secret.
+
+    Read as defaults that an environment variable of the same name overrides, so a
+    one-off port change or a CI tweak needs no edit to a committed file.
+
+    The refusal is not decoration. This file is in version control and a secret
+    written here would be published by the act of committing it, which is exactly
+    the mistake that is easy to make when a settings file already exists and looks
+    like the place configuration goes. Refusing at load time makes it a startup
+    failure rather than something noticed later.
+
+    Keys beginning with an underscore are commentary. JSON has no comment syntax
+    and the alternative -- an undocumented settings file -- is worse.
+    """
+    location = HOST_SETTINGS_PATH if path is None else path
+    if not location.is_file():
+        return {}
+    payload = json.loads(location.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("committed host settings must be a JSON object")
+    forbidden = sorted(_NEVER_COMMITTED & set(payload))
+    if forbidden:
+        raise ValueError(
+            "committed host settings must not contain credentials or spend "
+            f"authorisation: {', '.join(forbidden)}"
+        )
+    return {
+        name: str(value)
+        for name, value in payload.items()
+        if not name.startswith("_") and value is not None
+    }
+
+
 def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
-    """Read only host-owned named environment values; reject partial tracing config."""
-    values = os.environ if env is None else env
+    """Read host-owned settings: committed defaults, overridden by the environment.
+
+    Credentials and ``DATABASE_URL`` are read from the environment only and are
+    never sourced from the committed file, which :func:`committed_host_settings`
+    refuses to load if it names one.
+    """
+    environment = os.environ if env is None else env
+    values: dict[str, str] = {**committed_host_settings(), **dict(environment)}
     database_url = values.get("DATABASE_URL")
     if not database_url:
         raise ValueError("DATABASE_URL is required")
@@ -98,7 +163,12 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
         values.get(name) or None
         for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL")
     )
-    if any(langfuse) and not all(langfuse):
+    # Keyed on the two *credentials*, not on all three. LANGFUSE_BASE_URL now has a
+    # committed default, so an all-three ``any`` would fire for everyone who has no
+    # Langfuse keys -- the same failure the Anthropic pairing had, from the same
+    # cause. What the check is for is unchanged: tracing must not be half
+    # configured, and it is the keys that turn it on.
+    if any(langfuse[:2]) and not all(langfuse):
         raise ValueError(
             "Langfuse configuration must provide public key, secret key, and base URL together"
         )
@@ -114,9 +184,24 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> HostSettings:
     api_key, model = values.get("ANTHROPIC_API_KEY") or None, values.get("ANTHROPIC_MODEL") or None
     if provider == "anthropic" and not (api_key and model):
         raise ValueError("Anthropic provider requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL")
-    if bool(api_key) != bool(model):
-        # Credentials do not activate external behavior, but partial configuration is still invalid.
-        raise ValueError("Anthropic configuration must provide API key and model together")
+    # RELAXED DELIBERATELY, AND NOT SLIPPED IN.
+    #
+    # This used to be ``if bool(api_key) != bool(model): raise`` -- set one, set
+    # both. That was right while ANTHROPIC_MODEL had no default: a model without a
+    # key, or a key without a model, was someone's half-finished edit.
+    #
+    # ANTHROPIC_MODEL now has a committed default, so the model is *always* set and
+    # the key is absent for everyone without credentials -- which is every
+    # contributor running the deterministic host and CI. The strict pairing would
+    # refuse all of them at startup, for a configuration that is complete and
+    # correct.
+    #
+    # What the check was actually protecting is the line above: the anthropic
+    # provider needs both. That is provider-conditional and unchanged. A key with
+    # no model can no longer occur, because a model always exists; a model with no
+    # key is now the ordinary case and is inert, since the provider defaults to
+    # ``fixture`` and nothing reaches Anthropic without ``ADVISORY_MONITOR_PROVIDER``
+    # naming it.
     proposal_provider = values.get("PROPOSAL_PROVIDER", "deterministic").lower()
     if proposal_provider not in {"deterministic", "model"}:
         raise ValueError("PROPOSAL_PROVIDER must be deterministic or model")
@@ -153,7 +238,12 @@ def telemetry_config(settings: HostSettings) -> TelemetryConfig:
         settings.langfuse_secret_key,
         settings.langfuse_base_url,
     )
-    if any(values) and not all(values):
+    # Keyed on the two credentials, matching ``settings_from_env``. The base URL
+    # has a committed default, so an all-three ``any`` fires for every host with no
+    # Langfuse keys. ``external`` still requires all three, so tracing is exported
+    # only when it is fully configured -- which is the property, and it is
+    # unchanged.
+    if any(values[:2]) and not all(values):
         raise ValueError(
             "Langfuse configuration must provide public key, secret key, and base URL together"
         )

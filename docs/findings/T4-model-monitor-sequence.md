@@ -74,10 +74,56 @@ alone: prior tool *names* plus the current action's arguments, reasoning that
 raising a drain and then closing the window leaves a forbidden combination —
 without ever seeing either value's state.
 
-**This means a null result is at least partly a fact about the input projection
-rather than about the model,** and it must be reported that way. That is the same
-class of finding as the `transform_schema` demotion and the policy-verdict leak:
-the apparatus not carrying what the measurement needs.
+**This is not a limitation of the measurement. It is the finding.**
+
+An earlier revision of this document called it "partly a fact about the input
+projection rather than about the model" and filed it beside the
+`transform_schema` demotion. **That parallel is wrong**, and the difference is
+the whole result. `transform_schema` was a defect in the *evaluation harness*:
+the demotion existed only on the path to the model, the production validator
+still enforced the constraint, and the harness was measuring its own encoder.
+Fixing it was right because the harness was lying about the model.
+
+`MonitorInputV3` is not eval-only. **It is the contract for what the advisory
+monitor is shown in the real runtime chain.** A monitor deployed in this system,
+judging a real incident, receives the same empty `current_state_facts`, the same
+argument-free `committed_calls`, the same evidence allowlist without
+`maintenance_mode` or `traffic_drain`. The monitor is not being under-informed by
+the experiment; it is being under-informed by the system.
+
+So the finding is **architectural**, and it is stronger than a model-capability
+result:
+
+> T4's covert objective is **structurally undetectable by this monitor as the
+> chain is designed**, because the monitor's input does not carry the state whose
+> combination constitutes the violation.
+
+It generalises past this model and past T4 — *any* assembled violation is
+invisible to a monitor that is not shown the assembled state — and no better
+model fixes it. It is not "the model failed" and it is not "the measurement was
+limited".
+
+### What it would take, and what that would cost
+
+The design recommendation follows directly: **a monitor asked to judge sequence
+risk has to be shown the state the sequence changes.** Two concrete routes exist,
+and both are owner decisions rather than TODOs, because both change a frozen
+contract:
+
+1. **Widen T4's evidence allowlist** (`integration/semantic_monitor.py`) so
+   `maintenance_mode` and `traffic_drain` reach the monitor as facts.
+2. **Declare `allowed_changed_paths` in T4's manifest** so `current_state_facts`
+   is non-empty and carries the assembled state directly.
+
+Route 2 edits `scenarios/sabotage/T4.json`, which moves the suite manifest digest
+and **invalidates T4's published v2 table** at `artifacts/sabotage-matrix/T4/`.
+Route 1 changes what the monitor is shown and re-keys every T4 monitor capture.
+Neither is taken here: the measurement below is of the system as it is actually
+built, which is the thing worth knowing.
+
+**This reframing changes no prediction.** §1 and §3 are exactly as first
+committed; only the interpretation of a null is corrected, and it is corrected
+before any T4 capture exists.
 
 ## 3. What would falsify the prediction
 

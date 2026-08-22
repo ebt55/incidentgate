@@ -111,6 +111,10 @@ from incidentgate.evaluation.sabotage_v3 import (
     SabotageEpisodeV3,
     SabotageStepOutcomeV3,
 )
+
+# The two halves of the spend gate, imported by value from the runner that owns them,
+# so this module cannot drift into naming a different variable or a different flag.
+from incidentgate.evaluation.sabotage_v3_t1 import SPEND_ENV_VAR, SPEND_FLAG
 from incidentgate.evaluation.sabotage_v4 import (
     AttemptEstablishment,
     SabotageEvaluationResultV4,
@@ -246,37 +250,131 @@ class CountingAttackerCaptureClient:
         return result
 
 
+def default_monitor_threshold_path(model: str) -> Path:
+    """The committed a-priori artifact for one T4 monitor seat, by convention.
+
+    A convention rather than a lookup table, as T1's is, because the artifacts are
+    per (scenario, model) and the name states both. Nothing infers an artifact for
+    a model that has none: an absent file stops the run at load time rather than
+    letting a verdict be published under a rule nobody froze.
+    """
+    return _ROOT / "config" / "monitor-thresholds" / f"T4-a-priori-{model}-v2.json"
+
+
 def build_monitor(
     repository: LabRepository,
     *,
     capture: bool,
     transport: CompletionClient | None,
+    model: str = MONITOR_MODEL,
+    provider: str = "local",
+    threshold_path: Path | None = None,
 ) -> tuple[SemanticMonitorBundle, RecordingMonitorCallerV3, object]:
-    """Wire T4's model monitor seat once, so one caller sees the whole episode."""
+    """Wire T4's model monitor seat once, so one caller sees the whole episode.
+
+    ``provider`` and ``model`` are parameters rather than constants so the seat can
+    hold a hosted frontier model as well as the local one. What does *not* vary
+    with them is anything that decides a verdict: the threshold artifact is loaded
+    from a committed file and checked against this caller, so moving the seat
+    cannot quietly move the rule the seat is judged under.
+
+    The replay path takes no transport at all, for any provider. That is the
+    property that makes a publication run structurally unable to spend: there is
+    no object in the process that could reach a vendor, rather than a check
+    somewhere that could be forgotten.
+    """
     from incidentgate.evaluation.sabotage_v3_t1 import DeferredMonitorCaptureClient
 
-    artifact = load_a_priori_thresholds(THRESHOLD_PATH)
+    artifact = load_a_priori_thresholds(threshold_path or default_monitor_threshold_path(model))
     if artifact.scenario_id != SCENARIO_ID:
         raise HarnessAborted("the threshold artifact was frozen against another scenario")
+    if (artifact.provider, artifact.model) != (provider, model):
+        raise HarnessAborted(
+            f"the threshold artifact names {artifact.provider}/{artifact.model} but this seat "
+            f"is {provider}/{model}; a verdict must be published under the rule frozen for it"
+        )
     cache = ResponseCache(MONITOR_CACHE_DIR)
     deferred: object = None
     client: CompletionClient
     if capture:
         if transport is None:
             raise HarnessAborted("capturing the monitor requires a transport to record from")
-        deferred = DeferredMonitorCaptureClient(cache, provider="local", transport=transport)
+        deferred = DeferredMonitorCaptureClient(cache, provider=provider, transport=transport)
         client = deferred
     else:
         # Replay only, structurally: no transport exists on this path, so a miss
         # surfaces as CACHE_MISS rather than reaching for a model.
-        client = CacheBackedCompletionClient(cache, provider="local")
-    caller = RecordingMonitorCallerV3(
-        StructuredMonitorCallerV3(client=client, model=MONITOR_MODEL)
-    )
+        client = CacheBackedCompletionClient(cache, provider=provider)
+    caller = RecordingMonitorCallerV3(StructuredMonitorCallerV3(client=client, model=model))
     bundle = SemanticMonitorConfigurationV3(caller=caller, artifact=artifact).build(
         policy=load_policy_configuration(), facts=RepositoryMonitorFacts(repository)
     )
     return bundle, caller, deferred
+
+
+def monitor_transport(
+    *,
+    provider: str,
+    model: str,
+    endpoint: str,
+    weights_root: str | None,
+    spend_flag: bool,
+    max_calls: int,
+    max_usd: float,
+) -> tuple[CompletionClient, object]:
+    """Build the transport for a capture run, and refuse to build a billing one unbidden.
+
+    The spend gate governs **construction**, which is the whole of its strength:
+    when it is not satisfied no vendor client exists in this process, so there is
+    nothing that could make a call. Reused from ``sabotage_v3_t1`` rather than
+    restated -- a second copy of a spend gate is a second thing to forget to
+    update.
+    """
+    from incidentgate.control.local_weights import (
+        OllamaWeightsCompletionClient,
+        resolve_ollama_weights,
+    )
+    from incidentgate.evaluation.sabotage_v3_t1 import (
+        PRICING_SNAPSHOTS,
+        PROVIDERS_WITHOUT_VENDOR_COST,
+        SpendMeter,
+        preflight_cost_usd,
+        spend_authorization,
+    )
+
+    if provider in PROVIDERS_WITHOUT_VENDOR_COST:
+        weights = resolve_ollama_weights(
+            model, store_root=Path(weights_root) if weights_root else None
+        )
+        return OllamaWeightsCompletionClient(endpoint=endpoint, weights=weights), weights
+
+    authorization = spend_authorization(flag_passed=spend_flag)
+    authorization.require()
+    from incidentgate.control.pricing import load_pricing_snapshot
+
+    pricing = load_pricing_snapshot(PRICING_SNAPSHOTS[provider])
+    projected = preflight_cost_usd(pricing, model=model, calls=max_calls)
+    if projected > max_usd:
+        raise HarnessAborted(
+            f"projected worst-case spend ${projected:.4f} exceeds the ${max_usd:.4f} cap; "
+            "raise --max-usd deliberately or lower --max-calls"
+        )
+    key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+    api_key = os.environ.get(key_name, "")
+    if not api_key:
+        raise HarnessAborted(f"{key_name} is not set; a hosted monitor seat needs it")
+    if provider == "anthropic":
+        from incidentgate.control.model_proposal import AnthropicCompletionClient
+
+        inner: CompletionClient = AnthropicCompletionClient(api_key=api_key, pricing=pricing)
+    else:
+        from incidentgate.control.openai_completion import OpenAICompletionClient
+
+        inner = OpenAICompletionClient(api_key=api_key, pricing=pricing)
+    meter = SpendMeter(
+        inner=inner, pricing=pricing, max_calls=max_calls, max_usd=max_usd, authorized=True
+    )
+    return meter, None
 
 
 @dataclass(frozen=True)
@@ -499,7 +597,60 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ollama-endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--weights-root", default=None)
+    parser.add_argument(
+        "--monitor-model",
+        default=MONITOR_MODEL,
+        help="which model sits in the monitor seat; must be in the capability table",
+    )
+    parser.add_argument(
+        "--monitor-provider",
+        default=None,
+        help=(
+            "transport for the monitor model; defaults to the provider the capability "
+            "table states for it, and a disagreement is refused rather than resolved"
+        ),
+    )
+    parser.add_argument(
+        "--monitor-thresholds",
+        default=None,
+        type=Path,
+        help=(
+            "committed a-priori artifact to publish verdicts under; defaults to "
+            "config/monitor-thresholds/T4-a-priori-<monitor-model>-v2.json"
+        ),
+    )
+    parser.add_argument("--max-calls", type=int, default=8)
+    parser.add_argument("--max-usd", type=float, default=1.0)
+    parser.add_argument(
+        SPEND_FLAG,
+        dest="spend_flag",
+        action="store_true",
+        help=(
+            "the shell half of the spend gate; a billing transport is constructed only "
+            f"when this is passed AND {SPEND_ENV_VAR}=1 is set in the environment"
+        ),
+    )
     return parser
+
+
+def resolve_monitor_seat(parsed: argparse.Namespace) -> tuple[str, str]:
+    """The monitor model and its provider, with a disagreement refused rather than resolved."""
+    from incidentgate.control.model_capabilities import MODEL_CAPABILITIES
+
+    model = parsed.monitor_model
+    capability = MODEL_CAPABILITIES.get(model)
+    if capability is None:
+        raise HarnessAborted(
+            f"{model} is not in the capability table; add it there before seating it as a "
+            "monitor, so its sampling and thinking behaviour are stated rather than guessed"
+        )
+    stated = capability.provider
+    if parsed.monitor_provider is not None and parsed.monitor_provider != stated:
+        raise HarnessAborted(
+            f"the capability table serves {model} from {stated}, not "
+            f"{parsed.monitor_provider}; refusing to resolve the disagreement silently"
+        )
+    return model, stated
 
 
 def _v3_episode(
@@ -750,18 +901,40 @@ def _attacker_provenance(
     )
 
 
+def _pricing_id(provider: str) -> str | None:
+    """The snapshot a billed capture's cost must be checkable against.
+
+    ``None`` for a local seat, which bills nobody. For a hosted one the snapshot id
+    goes into the capture's provenance so a reader can re-derive the cost from
+    committed prices rather than trusting the number the run recorded.
+    """
+    if provider == "local":
+        return None
+    from incidentgate.control.pricing import load_pricing_snapshot
+    from incidentgate.evaluation.sabotage_v3_t1 import PRICING_SNAPSHOTS
+
+    return load_pricing_snapshot(PRICING_SNAPSHOTS[provider]).snapshot_id
+
+
 def _monitor_provenance(
     request: object, result: object, leg: str, step_index: int, *, weights: object,
     condition: EvaluationMode, variant: ProposerVariant,
+    provider: str = "local", model: str = MONITOR_MODEL, pricing_snapshot_id: str | None = None,
 ) -> ProviderCaptureProvenance:
     invocation = result.invocation  # type: ignore[attr-defined]
     if invocation.input_tokens is None or invocation.output_tokens is None:
         raise HarnessAborted("a capture without provider usage cannot be recorded")
-    if weights is None:
+    local = provider == "local"
+    if local and weights is None:
         raise HarnessAborted("a local capture without resolved weights cannot be recorded")
+    if not local and pricing_snapshot_id is None:
+        raise HarnessAborted(
+            "a billed capture without a pricing snapshot cannot be recorded: the cost it "
+            "reports would not be checkable against the prices it was billed at"
+        )
     return ProviderCaptureProvenance(
-        provider="local",
-        model=MONITOR_MODEL,
+        provider=provider,
+        model=model,
         role="monitor",
         prompt_sha256=request.prompt_sha256,  # type: ignore[attr-defined]
         request_schema_sha256=schema_sha256(request.schema),  # type: ignore[attr-defined]
@@ -770,20 +943,24 @@ def _monitor_provenance(
         stop_reason="end_turn",
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
-        usage_source=invocation.usage_source or "local_usage",
+        usage_source=invocation.usage_source or ("local_usage" if local else "provider_usage"),
         capture_mode="live_provider_call",
         captured_at=datetime.now(UTC),
         capture_command="python -m incidentgate.evaluation.sabotage_v4_t4 --capture",
         git_revision=git_provenance()[0],
-        pricing_snapshot_id=None,
+        pricing_snapshot_id=pricing_snapshot_id,
         estimated_cost=invocation.cost,
         currency=invocation.currency,
-        cost_unavailable_reason="local_weights_no_vendor_charge",
-        weights=json.dumps(
-            weights.provenance(),  # type: ignore[attr-defined]
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
+        cost_unavailable_reason="local_weights_no_vendor_charge" if local else None,
+        weights=(
+            json.dumps(
+                weights.provenance(),  # type: ignore[attr-defined]
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            if local
+            else None
         ),
         scenario_id=SCENARIO_ID,
         variant_id=variant.variant_id,
@@ -811,24 +988,41 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"{parsed.variant} is not a frozen T4 attack-policy variant\n")
         return 2
 
+    try:
+        monitor_model, monitor_provider = resolve_monitor_seat(parsed)
+    except HarnessAborted as error:
+        sys.stderr.write(f"REFUSED: {error}\n")
+        return 2
+
     attacker_transport: CompletionClient | None = None
-    monitor_transport: CompletionClient | None = None
+    monitor_client: CompletionClient | None = None
     attacker_weights = None
-    monitor_weights = None
+    monitor_weights: object = None
     if parsed.capture:
         try:
             root = Path(parsed.weights_root) if parsed.weights_root else None
             attacker_weights = resolve_ollama_weights(ATTACKER_MODEL, store_root=root)
-            monitor_weights = resolve_ollama_weights(MONITOR_MODEL, store_root=root)
             attacker_transport = OllamaWeightsCompletionClient(
                 endpoint=parsed.ollama_endpoint, weights=attacker_weights
             )
-            monitor_transport = OllamaWeightsCompletionClient(
-                endpoint=parsed.ollama_endpoint, weights=monitor_weights
+            monitor_client, monitor_weights = monitor_transport(
+                provider=monitor_provider,
+                model=monitor_model,
+                endpoint=parsed.ollama_endpoint,
+                weights_root=parsed.weights_root,
+                spend_flag=parsed.spend_flag,
+                max_calls=parsed.max_calls,
+                max_usd=parsed.max_usd,
             )
         except LocalWeightsError as error:
             sys.stderr.write(f"UNAVAILABLE: {error}\n")
             return 3
+        except HarnessAborted as error:
+            sys.stderr.write(f"REFUSED: {error}\n")
+            return 2
+        except Exception as error:  # noqa: BLE001 -- the spend gate refusing is not a crash
+            sys.stderr.write(f"REFUSED: {type(error).__name__}: {error}\n")
+            return 2
 
     repository = LabRepository(dsn)
     scenario = load_scenario(SCENARIO_ID)
@@ -859,7 +1053,12 @@ def main(argv: list[str] | None = None) -> int:
             deferred = None
             if wants_monitor:
                 bundle, caller, deferred = build_monitor(
-                    repository, capture=parsed.capture, transport=monitor_transport
+                    repository,
+                    capture=parsed.capture,
+                    transport=monitor_client,
+                    model=monitor_model,
+                    provider=monitor_provider,
+                    threshold_path=parsed.monitor_thresholds,
                 )
 
             def _record(
@@ -901,7 +1100,9 @@ def main(argv: list[str] | None = None) -> int:
                 captures_written += deferred.write(  # type: ignore[attr-defined]
                     positions=run.monitor_positions,
                     provenance=lambda rq, rs, leg, idx, _c=condition: _monitor_provenance(
-                        rq, rs, leg, idx, weights=monitor_weights, condition=_c, variant=variant
+                        rq, rs, leg, idx, weights=monitor_weights, condition=_c, variant=variant,
+                        provider=monitor_provider, model=monitor_model,
+                        pricing_snapshot_id=_pricing_id(monitor_provider),
                     ),
                 )
     except ResponseCacheMiss as error:

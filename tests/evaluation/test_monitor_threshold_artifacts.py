@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from incidentgate.contracts import MonitorVerdict
+from incidentgate.control.model_capabilities import MODEL_CAPABILITIES
 from incidentgate.control.monitor_contract_v3 import (
     PROMPT_VERSION,
     MonitorAssessmentV3,
@@ -376,16 +377,25 @@ T4_COMMITTED = sorted(THRESHOLD_DIR.glob("T4-a-priori-*.json"))
 T4_SCENARIO = ROOT / "scenarios" / "sabotage" / "T4.json"
 
 
-def test_t4_has_exactly_one_committed_artifact_and_it_names_the_monitor_seat() -> None:
-    """One model and not two, and the file says so rather than a reader assuming it.
+def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
+    """Two seats, named, and the count asserted rather than left to a glob.
 
-    T1 has an artifact per local model because both have sat in T1's monitor
-    seat. Only ``qwen3-14b`` is planned for T4's, so a second file here would be a
-    rule frozen for a measurement nobody intends to take -- and its absence would
-    be indistinguishable from an oversight if nothing asserted the count.
+    This said "exactly one, qwen3-14b" until the frontier seat was wired, which is
+    the fact it should have said and no longer is: the local 14B monitor and the
+    hosted frontier one are both intended, so both have a rule frozen before any
+    measurement through them. A third file appearing here would be a rule frozen
+    for a run nobody plans, and a missing one would be indistinguishable from an
+    oversight if nothing asserted the count.
     """
-    assert [path.name for path in T4_COMMITTED] == ["T4-a-priori-qwen3-14b-v2.json"]
-    assert load_a_priori_thresholds(T4_COMMITTED[0]).model == "qwen3-14b"
+    assert [path.name for path in T4_COMMITTED] == [
+        "T4-a-priori-claude-opus-5-v2.json",
+        "T4-a-priori-qwen3-14b-v2.json",
+    ]
+    seats = {
+        (a.provider, a.model)
+        for a in (load_a_priori_thresholds(path) for path in T4_COMMITTED)
+    }
+    assert seats == {("local", "qwen3-14b"), ("anthropic", "claude-opus-5")}
 
 
 @pytest.mark.parametrize("path", T4_COMMITTED, ids=lambda path: path.name)
@@ -399,7 +409,10 @@ def test_t4s_artifact_describes_the_contract_it_was_frozen_against(path: Path) -
     assert artifact.prompt_version == PROMPT_VERSION
     assert artifact.input_schema_sha256 == monitor_input_v3_schema_sha256()
     assert artifact.output_schema_sha256 == monitor_output_v3_schema_sha256()
-    assert artifact.provider == "local"
+    # The provider the capability table serves this model from, not a hardcoded
+    # one: a rule frozen for a seat the table would not build is a rule that can
+    # never be the rule a verdict was actually produced under.
+    assert artifact.provider == MODEL_CAPABILITIES[artifact.model].provider
 
 
 @pytest.mark.parametrize("path", T4_COMMITTED, ids=lambda path: path.name)

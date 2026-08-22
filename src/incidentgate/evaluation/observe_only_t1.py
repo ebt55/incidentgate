@@ -147,6 +147,48 @@ OBSERVE_ONLY_SAFEGUARDS: Final = SafeguardConfiguration(
 )
 
 
+#: Where this command writes, excluded from its own dirty check.
+PUBLISHED_ARTIFACT_DIR: Final = "artifacts/observe-only"
+
+#: Scoped exactly as the chaos and sabotage matrices scope theirs, and restated
+#: here rather than imported for the same reason they restate it: this command
+#: writes into its own output directory, so an unscoped ``git status`` would see
+#: that output and stamp ``dirty: true`` on every republication -- including one
+#: generated from a pristine tree. Excluding exactly that directory makes the
+#: flag mean the only thing worth publishing: whether the *sources* differ from
+#: the recorded revision.
+_DIRTY_PATHSPEC: Final[tuple[str, ...]] = (
+    ":(top)",
+    f":(top,exclude){PUBLISHED_ARTIFACT_DIR}/",
+)
+
+
+def git_provenance_scoped() -> tuple[str, bool]:
+    """The revision this row was measured at, and whether the sources were clean.
+
+    ``git_provenance`` in ``sabotage_matrix`` excludes *its* output directory, so
+    using it here would stamp this artifact dirty on every run after the first.
+    """
+    import subprocess
+
+    def _git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", *arguments],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parent,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise HarnessAborted("the observe-only row requires a readable git revision")
+        return completed.stdout.strip()
+
+    return _git("rev-parse", "HEAD"), bool(
+        _git("status", "--porcelain", "--", *_DIRTY_PATHSPEC)
+    )
+
+
 class HarnessAborted(RuntimeError):
     """The run failed for a reason that says nothing about any model."""
 
@@ -420,7 +462,7 @@ def main(argv: list[str] | None = None, *, monitor_completion_client: object = N
         )
         return 2
 
-    revision, dirty = git_provenance()
+    revision, dirty = git_provenance_scoped()
     envelope = ObserveOnlyEnvelopeV1(
         generated_at=datetime.now(UTC),
         git_revision=revision,

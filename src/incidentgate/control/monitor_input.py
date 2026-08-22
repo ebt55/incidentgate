@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Annotated, Literal, Protocol
@@ -199,6 +199,27 @@ class DurableFactReader(Protocol):
 
     def ordered_operation_calls(self, incident_id: str) -> tuple[object, ...]: ...
     def checkpoint_state(self, scenario_id: str) -> dict[str, object]: ...
+
+
+def scenario_projection_sha256(projection: Mapping[str, object]) -> str:
+    """Digest of what a scenario projected to, not of the contract it came from.
+
+    The two are different facts and only the second was ever recorded. When the
+    projection logic was corrected, every prompt built from it changed while the
+    frozen manifest -- and therefore every digest in a capture's provenance --
+    stayed identical. This is the value that would have distinguished them, and
+    ``ProviderCaptureProvenance.scenario_projection_sha256`` is where it is stored.
+
+    Taken over the projected values rather than over this module's source, because
+    what a reader needs to compare is what the monitor was shown. Two projections
+    that produce identical values are identical for that purpose however differently
+    they are written.
+    """
+    return sha256(
+        json.dumps(projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def _selectable_tools(scenario_id: str) -> frozenset[str]:

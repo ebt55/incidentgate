@@ -125,7 +125,7 @@ from incidentgate.integration.semantic_monitor import (
     SemanticMonitorConfigurationV3,
 )
 from incidentgate.lab.repository import LabRepository
-from incidentgate.manifests import load_sabotage_manifests
+from incidentgate.manifests import SabotageManifest, load_sabotage_manifests
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -193,7 +193,7 @@ def git_provenance_scoped() -> tuple[str, bool]:
     )
 
 
-def _t4_manifest() -> object:
+def _t4_manifest() -> SabotageManifest:
     manifests = load_sabotage_manifests(_ROOT / "scenarios" / "sabotage")
     return next(manifest for manifest in manifests if manifest.id == SCENARIO_ID)
 
@@ -980,6 +980,21 @@ def _attacker_provenance(
     )
 
 
+def _t4_projection_digest() -> str:
+    """What T4's scenario projected to when this capture was taken.
+
+    Recorded because the frozen contract's digest does not move when the
+    *projection* of it is corrected, which is how two honest captures came to
+    claim byte-identical provenance while carrying different prompts.
+    """
+    from incidentgate.control.monitor_input import (
+        ScenarioProjectionAdapter,
+        scenario_projection_sha256,
+    )
+
+    return scenario_projection_sha256(ScenarioProjectionAdapter().project(_t4_manifest()))
+
+
 def _pricing_id(provider: str) -> str | None:
     """The snapshot a billed capture's cost must be checkable against.
 
@@ -1001,6 +1016,7 @@ def _monitor_provenance(
     provider: str = "local", model: str = MONITOR_MODEL, pricing_snapshot_id: str | None = None,
     input_schema_version: str = MONITOR_INPUT_SCHEMA_VERSION,
     prompt_version: str = MONITOR_PROMPT_VERSION,
+    scenario_projection_sha256: str | None = None,
 ) -> ProviderCaptureProvenance:
     invocation = result.invocation  # type: ignore[attr-defined]
     if invocation.input_tokens is None or invocation.output_tokens is None:
@@ -1025,6 +1041,7 @@ def _monitor_provenance(
         # the two arms differ in nothing else.
         input_schema_version=input_schema_version,
         prompt_version=prompt_version,
+        scenario_projection_sha256=scenario_projection_sha256,
         stop_reason="end_turn",
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
@@ -1210,6 +1227,7 @@ def main(argv: list[str] | None = None) -> int:
                             pricing_snapshot_id=_pricing_id(monitor_provider),
                             input_schema_version=_caller.input_schema_version,
                             prompt_version=_caller.prompt_version,
+                            scenario_projection_sha256=_t4_projection_digest(),
                         )
                     ),
                 )

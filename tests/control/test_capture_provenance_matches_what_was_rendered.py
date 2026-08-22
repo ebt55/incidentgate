@@ -1,10 +1,10 @@
 """A capture must record the contract it was actually taken under.
 
-THE DEFECT CLASS, WHICH THIS IS THE THIRD INSTANCE OF
-=====================================================
+THE DEFECT CLASS, WHICH THIS IS THE THIRD AND FOURTH INSTANCE OF
+================================================================
 
-Three guards in this repository exist for one reason: **the record must match what
-produced it.**
+Every guard in this repository of this shape exists for one reason: **the record
+must match what produced it.**
 
 * ``tests/test_published_revision_stamps.py`` — a published artifact stamped a
   ``git_revision`` reachable from no ref, so the run it claimed to describe could
@@ -36,44 +36,33 @@ captures, two distinct keys at each of six positions, every one of them claiming
 ``monitor-input-v3``. A pair-matching check would not have caught it -- both halves
 of the label were consistently wrong -- and this does.
 
-The severity was bounded by something worth recording: **captures are keyed by what
-was rendered, not by what they claim.** The input schema digest is inside the
-canonical prompt, so a v4 rendering hashes differently from a v3 one and a
-mislabelled capture can never be *served* in place of a correct one; a v3 replay
-misses rather than silently reading v4 bytes. The damage was confined to what a
-reader and a published row would cite, which is why the repair was to re-take the
-captures rather than to edit the field.
+WHAT THIS GUARD FOUND ON ITS FIRST RUN, AND HOW IT WAS CLOSED
+=============================================================
 
-WHAT THIS GUARD FOUND ON ITS FIRST RUN, AND HAS NOT RESOLVED
-============================================================
+A fourth instance of the same class, found by the guard rather than by reading.
 
-A fourth instance of the same class, and it is **open**.
+The scenario projection was not versioned. A capture recorded the scenario
+contract it was projected *from* -- and that contract did not change -- but nothing
+recorded the projection that did the projecting. When ``ScenarioProjectionAdapter``
+was corrected (its allowlist had been excluding two thirds of T4's honest plan),
+every T4 monitor prompt changed while every field of its provenance stayed
+identical. Two captures at one position then claimed byte-identical identities and
+carried different prompt digests, and neither was dishonest.
 
-The scenario projection is not versioned. A capture records the scenario contract
-it was projected *from* -- and that contract did not change -- but nothing records
-the projection that did the projecting. When ``ScenarioProjectionAdapter`` was
-corrected (the allowlist had been excluding two thirds of T4's honest plan), every
-T4 monitor prompt changed while every field of its provenance stayed the same.
+Closed the same way the other two were: by recording the missing fact.
+``ProviderCaptureProvenance.scenario_projection_sha256`` is a digest of what the
+scenario projected *to*, it is part of the identity below, and it is optional with
+``None`` meaning "not recorded" for captures that predate it. Nothing is
+backfilled -- a digest reconstructed for an old capture would be a guess presented
+as a record.
 
-So T4's six pre-correction captures and six post-correction ones claim byte-identical
-identities and carry different prompt digests. Both are honest records of what was
-rendered at the time; the identity simply cannot tell them apart. The check below
-fires on exactly that, correctly, and there is no honest way to make it pass by
-adjusting the check.
-
-The resolutions are a design decision rather than a fix:
-
-* record a projection version in the provenance -- additive and nullable, on the
-  same "``None`` means not recorded, never backfilled" discipline as
-  ``operation_ledger.arguments``; or
-* treat a capture whose rendering the current code cannot reproduce as superseded
-  and retire it, which costs the primary record behind a published finding.
-
-Until that is ruled on, the post-correction captures are **measured and not
-published**: they exist in the working tree and are not committed, so this guard
-stays green over a corpus that is internally consistent, rather than green because
-it was weakened.
-"""
+The severity of the original mislabelling was bounded by something worth keeping
+in view: **captures are keyed by what was rendered, not by what they claim.** The
+input schema digest is inside the canonical prompt, so a v4 rendering hashes
+differently from a v3 one and a mislabelled capture can never be *served* in place
+of a correct one; a v3 replay misses rather than silently reading v4 bytes. The
+damage was confined to what a reader and a published row would cite, which is why
+the repair was to re-take the captures rather than to edit the field."""
 
 from __future__ import annotations
 
@@ -113,6 +102,12 @@ IDENTITY = (
     "model",
     "input_schema_version",
     "prompt_version",
+    # Added after this guard found the fourth instance: the frozen contract's
+    # digest does not move when the *projection* of it is corrected, so without
+    # this two honest captures from either side of that correction claim one
+    # identity. ``None`` on a capture that predates the field, which is a distinct
+    # identity from any recorded digest -- exactly the separation wanted.
+    "scenario_projection_sha256",
 )
 
 

@@ -50,6 +50,23 @@ class ProviderCaptureProvenance(ContractModel):
         min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9._/-]*$"
     )
     prompt_version: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9._/-]*$")
+    #: Digest of the *scenario projection* this prompt was built from, as distinct
+    #: from the scenario contract it was projected out of.
+    #:
+    #: WHY A CONTRACT DIGEST IS NOT ENOUGH, FOUND BY A GUARD RATHER THAN BY READING.
+    #:
+    #: ``ScenarioProjectionAdapter`` was corrected -- its allowlist had been
+    #: excluding two thirds of T4's honest plan -- and every T4 monitor prompt
+    #: changed while every field of its provenance stayed identical. The frozen
+    #: manifest had not moved, so nothing recorded that the projection *of* it had.
+    #: Two captures at one position then claimed byte-identical provenance and
+    #: carried different prompt digests, and neither was dishonest.
+    #:
+    #: ``None`` means **not recorded**: the capture predates this field. It never
+    #: means "no projection", and it is not backfilled -- a digest reconstructed for
+    #: an old capture would be a guess presented as a record, the same line
+    #: ``operation_ledger.arguments`` and ``request_envelope`` both draw.
+    scenario_projection_sha256: str | None = Field(default=None, pattern=_SHA256.pattern)
     stop_reason: Literal["end_turn"]
     input_tokens: StrictInt = Field(ge=0)
     output_tokens: StrictInt = Field(ge=0)

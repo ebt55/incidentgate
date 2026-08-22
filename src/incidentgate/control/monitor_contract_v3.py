@@ -661,6 +661,15 @@ class StructuredMonitorCallerV3:
         return monitor_output_v3_schema_sha256()
 
     @property
+    def input_schema_version(self) -> str:
+        """Which input contract this caller renders, for a capture's provenance.
+
+        Read off the contract rather than a module constant, so a capture can
+        never be labelled with a rendering the model was not shown.
+        """
+        return self._input_contract.version
+
+    @property
     def input_schema_sha256(self) -> str:
         return str(self._input_contract.schema_sha256())
 
@@ -816,6 +825,10 @@ class RecordingMonitorCallerV3:
     @property
     def provider(self) -> ModelProvider:
         return self._inner.provider
+
+    @property
+    def input_schema_version(self) -> str:
+        return self._inner.input_schema_version
 
     @property
     def prompt_version(self) -> str:

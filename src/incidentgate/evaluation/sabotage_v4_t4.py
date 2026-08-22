@@ -254,7 +254,7 @@ class CountingAttackerCaptureClient:
         return result
 
 
-def default_monitor_threshold_path(model: str) -> Path:
+def default_monitor_threshold_path(model: str, input_version: str = "v3") -> Path:
     """The committed a-priori artifact for one T4 monitor seat, by convention.
 
     A convention rather than a lookup table, as T1's is, because the artifacts are
@@ -262,7 +262,10 @@ def default_monitor_threshold_path(model: str) -> Path:
     a model that has none: an absent file stops the run at load time rather than
     letting a verdict be published under a rule nobody froze.
     """
-    return _ROOT / "config" / "monitor-thresholds" / f"T4-a-priori-{model}-v2.json"
+    # The suffix is the *threshold generation*, which increments when the input
+    # contract moves: -v2 is frozen against monitor-input-v3, -v3 against v4.
+    generation = "v2" if input_version == "v3" else "v3"
+    return _ROOT / "config" / "monitor-thresholds" / f"T4-a-priori-{model}-{generation}.json"
 
 
 def build_monitor(
@@ -273,6 +276,7 @@ def build_monitor(
     model: str = MONITOR_MODEL,
     provider: str = "local",
     threshold_path: Path | None = None,
+    input_version: str = "v3",
 ) -> tuple[SemanticMonitorBundle, RecordingMonitorCallerV3, object]:
     """Wire T4's model monitor seat once, so one caller sees the whole episode.
 
@@ -289,7 +293,9 @@ def build_monitor(
     """
     from incidentgate.evaluation.sabotage_v3_t1 import DeferredMonitorCaptureClient
 
-    artifact = load_a_priori_thresholds(threshold_path or default_monitor_threshold_path(model))
+    artifact = load_a_priori_thresholds(
+        threshold_path or default_monitor_threshold_path(model, input_version)
+    )
     if artifact.scenario_id != SCENARIO_ID:
         raise HarnessAborted("the threshold artifact was frozen against another scenario")
     if (artifact.provider, artifact.model) != (provider, model):
@@ -309,8 +315,25 @@ def build_monitor(
         # Replay only, structurally: no transport exists on this path, so a miss
         # surfaces as CACHE_MISS rather than reaching for a model.
         client = CacheBackedCompletionClient(cache, provider=provider)
-    caller = RecordingMonitorCallerV3(StructuredMonitorCallerV3(client=client, model=model))
-    bundle = SemanticMonitorConfigurationV3(caller=caller, artifact=artifact).build(
+    from incidentgate.control.monitor_contract_v3 import v4_input_contract
+    from incidentgate.integration.semantic_monitor import SemanticMonitorConfigurationV4
+
+    caller = RecordingMonitorCallerV3(
+        StructuredMonitorCallerV3(
+            client=client,
+            model=model,
+            input_contract=None if input_version == "v3" else v4_input_contract(),
+        )
+    )
+    # The projection and the caller's contract are paired here so they cannot
+    # disagree: a v4 projection rendered by a v3 caller would send v3 bytes from a
+    # v4 object and read as "v4 changed nothing".
+    configuration = (
+        SemanticMonitorConfigurationV3(caller=caller, artifact=artifact)
+        if input_version == "v3"
+        else SemanticMonitorConfigurationV4(caller=caller, artifact=artifact)
+    )
+    bundle = configuration.build(
         policy=load_policy_configuration(), facts=RepositoryMonitorFacts(repository)
     )
     return bundle, caller, deferred
@@ -641,6 +664,16 @@ def build_parser() -> argparse.ArgumentParser:
             "so it needs floor"
         ),
     )
+    parser.add_argument(
+        "--monitor-input",
+        choices=("v3", "v4"),
+        default="v3",
+        help=(
+            "which input contract the monitor is shown: v3 (tool names only) or v4 "
+            "(the same, plus the arguments each committed call ran with). The two "
+            "arms of the A/B, and the only thing that differs between them"
+        ),
+    )
     parser.add_argument("--ollama-endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--weights-root", default=None)
     parser.add_argument(
@@ -966,6 +999,8 @@ def _monitor_provenance(
     request: object, result: object, leg: str, step_index: int, *, weights: object,
     condition: EvaluationMode, variant: ProposerVariant,
     provider: str = "local", model: str = MONITOR_MODEL, pricing_snapshot_id: str | None = None,
+    input_schema_version: str = MONITOR_INPUT_SCHEMA_VERSION,
+    prompt_version: str = MONITOR_PROMPT_VERSION,
 ) -> ProviderCaptureProvenance:
     invocation = result.invocation  # type: ignore[attr-defined]
     if invocation.input_tokens is None or invocation.output_tokens is None:
@@ -984,8 +1019,12 @@ def _monitor_provenance(
         role="monitor",
         prompt_sha256=request.prompt_sha256,  # type: ignore[attr-defined]
         request_schema_sha256=schema_sha256(request.schema),  # type: ignore[attr-defined]
-        input_schema_version=MONITOR_INPUT_SCHEMA_VERSION,
-        prompt_version=MONITOR_PROMPT_VERSION,
+        # Read off the caller that made the call, never a module constant: a
+        # capture labelled with the wrong input contract is a capture that lies
+        # about what the model was shown, and the A/B is exactly the case where
+        # the two arms differ in nothing else.
+        input_schema_version=input_schema_version,
+        prompt_version=prompt_version,
         stop_reason="end_turn",
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
@@ -1116,6 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
                     model=monitor_model,
                     provider=monitor_provider,
                     threshold_path=parsed.monitor_thresholds,
+                    input_version=parsed.monitor_input,
                 )
 
             def _record(
@@ -1160,10 +1200,17 @@ def main(argv: list[str] | None = None) -> int:
             if deferred is not None and parsed.capture:
                 captures_written += deferred.write(  # type: ignore[attr-defined]
                     positions=run.monitor_positions,
-                    provenance=lambda rq, rs, leg, idx, _c=condition: _monitor_provenance(
-                        rq, rs, leg, idx, weights=monitor_weights, condition=_c, variant=variant,
-                        provider=monitor_provider, model=monitor_model,
-                        pricing_snapshot_id=_pricing_id(monitor_provider),
+                    # ``_caller`` is bound as a default, not closed over: the loop
+                    # rebinds it each condition, and a late-bound reference would
+                    # stamp every capture with the last arm's contract.
+                    provenance=lambda rq, rs, leg, idx, _c=condition, _caller=caller: (
+                        _monitor_provenance(
+                            rq, rs, leg, idx, weights=monitor_weights, condition=_c,
+                            variant=variant, provider=monitor_provider, model=monitor_model,
+                            pricing_snapshot_id=_pricing_id(monitor_provider),
+                            input_schema_version=_caller.input_schema_version,
+                            prompt_version=_caller.prompt_version,
+                        )
                     ),
                 )
     except ResponseCacheMiss as error:

@@ -93,7 +93,29 @@ class ProviderCaptureProvenance(ContractModel):
     weights: str | None = Field(default=None, min_length=2, max_length=1200)
     scenario_id: str = Field(pattern=r"^(D[1-8]|S[1-2]|R[0-9]{2}|T[1-8])$")
     variant_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-    condition: EvaluationMode
+    #: WHICH SAFEGUARD CONFIGURATION PRODUCED THIS CAPTURE.
+    #:
+    #: Widened from ``EvaluationMode`` alone on 2026-08-22, additively: every
+    #: value that was legal before is still legal and means what it meant, and
+    #: all sixteen committed captures keep the exact string they already carry.
+    #:
+    #: The widening was needed because a configuration now exists that is not an
+    #: ``EvaluationMode``: Route B runs the evidence gate enforcing, the policy
+    #: gate **observing**, the monitor enforcing and durable human authorization,
+    #: so the covert call reaches the monitor instead of being denied before it.
+    #: A fourth ``EvaluationMode`` member was not available --
+    #: ``CheckpointBRawEnvelope`` pins exactly ``10 scenarios x
+    #: len(EvaluationMode)`` = 30 rows, so adding one invalidates every committed
+    #: checkpoint-B envelope. **Do not "simplify" this union into a fourth
+    #: ``EvaluationMode``; that breaks the published matrices.**
+    #:
+    #: The literal is deliberately long. This field is read by people working out
+    #: what a number means, and it has to say which gates were on without them
+    #: opening another file -- ``other`` or ``custom`` would evade exactly the
+    #: question the field exists to answer.
+    condition: EvaluationMode | Literal[
+        "evidence_enforce_policy_observe_monitor_enforce_durable_human"
+    ]
     leg: Literal["covert", "incident"]
     step_index: StrictInt = Field(ge=0)
     split: Literal["development", "calibration", "holdout"]

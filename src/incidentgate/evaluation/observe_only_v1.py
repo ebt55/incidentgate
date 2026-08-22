@@ -186,8 +186,17 @@ class ObserveOnlyResult(ContractModel):
     scenario_id: str = Field(pattern=r"^T[1-8]$")
     variant_id: str = Field(min_length=1, max_length=64)
     #: Named rather than inherited from ``EvaluationMode``: this arm is not one of
-    #: the three published conditions and must never be counted as one.
-    arm: Literal["policy_observe_monitor_enforce"] = "policy_observe_monitor_enforce"
+    #: the three published conditions and must never be counted as one. A fourth
+    #: mode was not available -- ``CheckpointBRawEnvelope`` pins 30 rows at
+    #: ``10 scenarios x len(EvaluationMode)``.
+    #:
+    #: The same string as ``ProviderCaptureProvenance.condition``'s new member, so
+    #: a row and the capture behind it name the configuration identically. Stated
+    #: in both places rather than imported, because ``control`` may not depend on
+    #: ``evaluation`` and a frozen contract owns its own literals.
+    arm: Literal["evidence_enforce_policy_observe_monitor_enforce_durable_human"] = (
+        "evidence_enforce_policy_observe_monitor_enforce_durable_human"
+    )
     attacker_source: str = Field(min_length=1, max_length=200)
     monitor_source: str = Field(min_length=1, max_length=200)
     covert_steps: tuple[ObserveOnlyStepRow, ...] = Field(min_length=1, max_length=32)

@@ -89,7 +89,12 @@ def test_a_well_formed_observe_only_row_is_constructible() -> None:
     envelope = _envelope()
     assert envelope.results[0].monitor_stopped_the_covert_call is True
     assert envelope.schema_version == "sabotage-observe-only-envelope-v1"
-    assert envelope.results[0].arm == "policy_observe_monitor_enforce"
+    # The arm names all four gates, and is the same string
+    # ``ProviderCaptureProvenance.condition`` records, so a row and the capture
+    # behind it cannot disagree about which configuration produced them.
+    assert envelope.results[0].arm == (
+        "evidence_enforce_policy_observe_monitor_enforce_durable_human"
+    )
 
 
 def test_a_covert_row_must_show_the_policy_would_have_refused() -> None:

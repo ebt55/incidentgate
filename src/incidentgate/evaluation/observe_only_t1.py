@@ -64,7 +64,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Final
 
-from incidentgate.contracts import EvaluationMode
 from incidentgate.control.attack_policies import (
     T1_ATTACK_VARIANTS_BY_ID,
 )
@@ -320,10 +319,6 @@ def main(argv: list[str] | None = None, *, monitor_completion_client: object = N
         sys.stderr.write(f"{parsed.variant} is not a frozen T1 attack-policy variant\n")
         return 2
 
-    if parsed.capture_monitor:
-        sys.stderr.write(f"REFUSED: {_CAPTURE_BLOCKED}\n")
-        return 2
-
     transport: CompletionClient | None = None
     weights = None
     if parsed.capture_monitor:
@@ -471,30 +466,22 @@ def main(argv: list[str] | None = None, *, monitor_completion_client: object = N
     return 0
 
 
-#: WHY THE CAPTURE PATH IS NOT WIRED, AND WHAT IT IS WAITING ON.
+#: What a capture from this arm records as the configuration that produced it.
 #:
-#: ``ResponseCache.store`` requires a :class:`ProviderCaptureProvenance` for any
-#: real capture, and that contract requires ``condition: EvaluationMode``. This
-#: arm is not an ``EvaluationMode`` -- that is the whole reason it is a separate
-#: row family -- so there is no honest value to put there. Passing ``COMPLETE``
-#: would assert the capture was taken under the full chain, which is exactly the
-#: kind of manufactured field this project refuses elsewhere (see
-#: ``monitor_thresholds`` on fabricating a calibration digest).
+#: ``ProviderCaptureProvenance.condition`` was ``EvaluationMode`` alone until
+#: 2026-08-22; it was widened additively to admit this value, because a
+#: configuration now exists that is not an ``EvaluationMode`` and the field's job
+#: is to say which configuration produced a capture. A fourth ``EvaluationMode``
+#: member was not available: ``CheckpointBRawEnvelope`` pins 30 rows at
+#: ``10 scenarios x len(EvaluationMode)``.
 #:
-#: Closing it means widening ``ProviderCaptureProvenance.condition`` to admit
-#: this arm's label. That is additive -- all sixteen committed captures keep
-#: validating and no published bytes move -- but it changes a frozen contract
-#: that every published capture validates against, so it is an owner's call
-#: rather than one to make while passing through.
+#: Long on purpose -- it names all four gates, so a reader of a capture can tell
+#: what was on without opening anything else. Identical to
+#: ``ObserveOnlyResult.arm`` so a row and the capture behind it agree.
 #:
-#: ``split`` is not a problem: the variant's frozen label is a historical name
-#: (see ``attack_policies``) and recording it is accurate.
-_CAPTURE_BLOCKED: Final = (
-    "the observe-only capture path is not wired: ProviderCaptureProvenance requires "
-    "condition: EvaluationMode and this arm is deliberately not one. Widening that "
-    "contract is an owner's decision; nothing here will fabricate a condition to "
-    "satisfy a validator. Replay and publication work; only --capture-monitor is blocked."
-)
+#: ``split`` needs no such treatment: the variant's frozen label is a historical
+#: name (see ``attack_policies``) and recording it is accurate.
+OBSERVE_ONLY_CONDITION: Final = "evidence_enforce_policy_observe_monitor_enforce_durable_human"
 
 
 def _capture_provenance(
@@ -541,9 +528,7 @@ def _capture_provenance(
         ),
         scenario_id=SCENARIO_ID,
         variant_id=DEFAULT_VARIANT_ID,
-        # Unreachable: main() refuses --capture-monitor before this runs. Left
-        # constructing nothing rather than guessing a condition. See _CAPTURE_BLOCKED.
-        condition=EvaluationMode.COMPLETE,
+        condition=OBSERVE_ONLY_CONDITION,
         leg=leg,  # type: ignore[arg-type]
         step_index=step_index,
         split="development",

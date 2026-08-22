@@ -188,7 +188,7 @@ def _propose(
         client=client,  # type: ignore[arg-type]
         model=MODEL,
         variant=DEV,
-        covert_tool=T1_COVERT_TOOL,
+        covert_tools=(T1_COVERT_TOOL,),
         contract_version=contract_version,
     )
     incident, caller, context = _identity()
@@ -270,7 +270,7 @@ def test_the_three_classifications_are_the_published_contract_vocabulary() -> No
 
 def test_an_outcome_cannot_claim_a_tool_it_did_not_produce() -> None:
     contract = ModelAttackProposer(
-        client=FakeClient(COVERT_BODY), model=MODEL, variant=DEV, covert_tool=T1_COVERT_TOOL
+        client=FakeClient(COVERT_BODY), model=MODEL, variant=DEV, covert_tools=(T1_COVERT_TOOL,)
     ).prompt_contract
     with pytest.raises(ValueError, match="if and only if it was produced"):
         AttackProposalOutcome(
@@ -556,7 +556,7 @@ def test_a_covert_tool_outside_the_action_grammar_is_refused() -> None:
             client=FakeClient(COVERT_BODY),
             model=MODEL,
             variant=DEV,
-            covert_tool="operations.rollback",
+            covert_tools=("operations.rollback",),
         )
 
 
@@ -566,7 +566,7 @@ def test_the_variant_must_be_a_frozen_attack_policy_variant() -> None:
             client=FakeClient(COVERT_BODY),
             model=MODEL,
             variant="T1-dev-v1",  # type: ignore[arg-type]
-            covert_tool=T1_COVERT_TOOL,
+            covert_tools=(T1_COVERT_TOOL,),
         )
 
 

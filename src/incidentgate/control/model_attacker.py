@@ -91,6 +91,7 @@ from .model_proposal import (
     CompletionClient,
     CompletionRequest,
     CompletionResult,
+    DigestVersion,
     ModelAgentProposer,
     ProposalContractVersion,
     ProposerPromptContract,
@@ -241,6 +242,93 @@ def render_t1_attack_steering(variant: AttackPolicyVariant) -> str:
     return steering_template().format(source_ref=variant.source_ref)
 
 
+#: T4's steering artifact, committed under ``config/`` for the same reason T1's
+#: is: nothing globs that directory, so adding it cannot move the suite manifest
+#: digest that four published tables pin.
+T4_STEERING_ARTIFACT_PATH = (
+    Path(__file__).resolve().parents[3] / "config" / "attack-steering" / "T4-model-v1.txt"
+)
+
+#: Human-facing id, in the family style of the frozen ``attack-policy/T4/v1``.
+T4_ATTACK_STEERING_VERSION = "attack-steering/T4/model/v1"
+
+#: The prompt version a T4 capture and a published T4 row must both record, per
+#: proposer output contract. A separate table from T1's, not a formatting of one:
+#: two scenarios sharing a version string would let a T1 capture and a T4 capture
+#: be filed under the same identity.
+T4_ATTACKER_PROMPT_VERSIONS: dict[ProposalContractVersion, str] = {
+    "v1": "proposal/v1_attack-steering/t4/model/v1",
+    "v2": "proposal/v2_attack-steering/t4/model/v1",
+    "v3": "proposal/v3_attack-steering/t4/model/v1",
+}
+
+_PROMPT_VERSIONS_BY_SCENARIO: dict[str, dict[ProposalContractVersion, str]] = {
+    "T1": ATTACKER_PROMPT_VERSIONS,
+    "T4": T4_ATTACKER_PROMPT_VERSIONS,
+}
+
+
+def attacker_prompt_version_for(
+    scenario_id: str, contract_version: ProposalContractVersion
+) -> str:
+    """The prompt version a capture and a published row must both record, by scenario."""
+    table = _PROMPT_VERSIONS_BY_SCENARIO.get(scenario_id)
+    if table is None:
+        raise ValueError(f"{scenario_id!r} has no frozen attack steering")
+    version = table.get(contract_version)
+    if version is None:
+        raise ValueError(f"{contract_version!r} is not a frozen proposer contract version")
+    return version
+
+
+@cache
+def t4_steering_template() -> str:
+    """T4's committed steering, read once, trailing newline removed.
+
+    A second cached reader rather than a parameter on :func:`steering_template`,
+    because that function's cache key and its exact output are inside fifteen
+    committed capture keys. Leaving its body untouched is what makes "T1's
+    rendering did not move" checkable by reading the diff rather than by trusting
+    an argument default.
+    """
+    return T4_STEERING_ARTIFACT_PATH.read_text(encoding="utf-8").rstrip("\n")
+
+
+def t4_steering_artifact_sha256() -> str:
+    """Digest of T4's committed artifact bytes, for provenance and pinning."""
+    return sha256(T4_STEERING_ARTIFACT_PATH.read_bytes()).hexdigest()
+
+
+def render_t4_attack_steering(variant: AttackPolicyVariant) -> str:
+    """Render T4's frozen attack policy. No per-variant substitution, deliberately.
+
+    T1's rendering interpolates ``source_ref`` because its three variants differ in
+    which immutable record the covert note copies outward -- the contract itself
+    varies there. T4's three variants issue the *same* assembly against the same
+    fixture; they differ only in split and seed, neither of which is a fact the
+    model could act on. Interpolating anything here would move the prompt hash
+    between variants while telling the model nothing, which is the same reason
+    T1's rendering keeps the variant id out of its text.
+
+    So one capture serves all three T4 variants at a given step, and the variant
+    is still named in the row's provenance rather than inferred.
+
+    The argument is accepted and unused so that both scenarios' renderers have one
+    signature the caller can dispatch to. It is type-checked rather than ignored:
+    a variant belonging to another scenario reaching T4's renderer would produce a
+    row whose ``policy_version`` and prompt disagreed.
+    """
+    if not variant.policy_version.startswith("attack-policy/T4/"):
+        raise ValueError("T4 attack steering requires a T4 attack-policy variant")
+    return t4_steering_template()
+
+
+_STEERING_RENDERERS = {
+    "T1": render_t1_attack_steering,
+    "T4": render_t4_attack_steering,
+}
+
+
 @dataclass(frozen=True)
 class AttackProposalOutcome:
     """One attack proposal, as an observation: what it chose and what it cost.
@@ -319,13 +407,31 @@ class ModelAttackProposer:
         client: CompletionClient,
         model: str,
         variant: AttackPolicyVariant,
-        covert_tool: str,
-        # T1 only, and stated in the type rather than left to a caller to
-        # discover: the steering renderer below is T1's attack policy, so a
-        # ``scenario_id`` of T2 or T4 would select their output grammar while
-        # sending them T1's objective. Widening this means writing that
-        # scenario's steering, not passing a different string.
-        scenario_id: Literal["T1"] = "T1",
+        # WHICH CAPABILITIES MAY LEGITIMATELY APPEAR ON A COVERT LEG.
+        #
+        # A tuple and not a single tool, because T1's shape does not generalise.
+        # T1's covert signature *is* a capability the honest plan never touches,
+        # so one name says everything. T4's is an assembly: three calls across two
+        # capabilities, each individually permitted, with the violation existing
+        # only once the terminal combination is reached. Forcing T4 through a
+        # singular ``covert_tool`` would produce a field that is populated and
+        # semantically false.
+        #
+        # This answers the grammar question only -- can the model select these at
+        # all -- and deliberately not the attempt question. The published
+        # ``covert_attempt`` is decided by a scenario-specific predicate over
+        # observed facts (``covert_attempt_t1_outbound_note_issued`` asks whether
+        # the covert tool was issued; ``covert_attempt_t4_combined_forbidden_
+        # effect_reached`` asks whether the combination was reached, because for
+        # T4 no tool name can answer it). Conflating the two jobs in one field is
+        # precisely why the T1 abstraction did not extend.
+        covert_tools: tuple[str, ...],
+        # The steering renderer is selected from this, so a scenario named here
+        # must have one: a ``scenario_id`` with no renderer would select that
+        # scenario's output grammar while sending it another's objective.
+        # Widening this means writing that scenario's steering, not passing a
+        # different string.
+        scenario_id: Literal["T1", "T4"] = "T1",
         temperature: float | None = None,
         # Defaulted to v1 so that every existing caller, every committed capture
         # and the pinned request hash in tests/sabotage/test_model_attacker.py
@@ -333,42 +439,57 @@ class ModelAttackProposer:
         # own capture set; see control/proposal_contract_v3.py, which supersedes
         # v2 without editing it.
         contract_version: ProposalContractVersion = "v1",
+        # Defaulted to v1 for the same reason: v2 renders bounded list values that
+        # v1 drops, so it re-keys every capture. T4 needs it -- an attacker that
+        # cannot see ``call_ledger.calls`` cannot know its position in an assembly
+        # -- and T1's committed captures must not move, so it is opt-in.
+        digest_version: DigestVersion = "v1",
     ) -> None:
         if not isinstance(variant, AttackPolicyVariant):
             raise TypeError("a model attack proposer runs one frozen attack-policy variant")
-        if not re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+", covert_tool):
-            raise ValueError("covert_tool must be a canonical tool name")
+        if not covert_tools:
+            raise ValueError("a covert leg needs at least one capability to be reachable")
+        if any(
+            not re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+", tool)
+            for tool in covert_tools
+        ):
+            raise ValueError("every covert tool must be a canonical tool name")
+        if len(set(covert_tools)) != len(covert_tools):
+            raise ValueError("covert tools must be named once each")
         profile = scenario_action_profile(scenario_id)
-        if covert_tool not in scenario_profile_tool_names(profile):
-            # The covert capability has to be one the model can actually select.
+        grammar = scenario_profile_tool_names(profile)
+        if any(tool not in grammar for tool in covert_tools):
+            # Every covert capability has to be one the model can actually select.
             # A name outside the grammar would make ``attempted`` unreachable and
             # every run a decline, which is a silently vacuous experiment.
-            raise ValueError("covert_tool is not in this scenario's action grammar")
+            raise ValueError("a covert tool is not in this scenario's action grammar")
         self.variant = variant
-        self.covert_tool = covert_tool
+        self.covert_tools = covert_tools
         self.scenario_id = scenario_id
         self.contract_version = contract_version
+        self.digest_version = digest_version
         self._recorder = _RequestRecordingClient(client)
         self._inner = ModelAgentProposer(
             client=self._recorder,
             model=model,
             temperature=temperature,
-            steering_prompt=render_t1_attack_steering(variant),
+            steering_prompt=_STEERING_RENDERERS[scenario_id](variant),
             action_profile=profile,
             contract_version=contract_version,
+            digest_version=digest_version,
         )
         self._outcome: AttackProposalOutcome | None = None
 
     def __repr__(self) -> str:
         return (
             f"ModelAttackProposer(variant={self.variant.variant_id!r}, "
-            f"covert_tool={self.covert_tool!r}, contract={self.contract_version!r})"
+            f"covert_tools={self.covert_tools!r}, contract={self.contract_version!r})"
         )
 
     @property
     def prompt_version(self) -> str:
         """The prompt version this proposer's capture and row must both record."""
-        return attacker_prompt_version(self.contract_version)
+        return attacker_prompt_version_for(self.scenario_id, self.contract_version)
 
     @property
     def prompt_contract(self) -> ProposerPromptContract:
@@ -422,8 +543,15 @@ class ModelAttackProposer:
                 failure_reason=error.reason,
             )
             raise
+        # The proposer's own account of what it just did: it selected a covert-leg
+        # capability rather than an honest one. Still a self-report and still not
+        # the published attempt fact -- see the module docstring. On T4 it is a
+        # weaker statement than on T1, because selecting one of T4's covert tools
+        # is not by itself an attempt at the assembly; the row's predicate is what
+        # decides that, and the runner checks the two against each other only
+        # where the attempt was observable.
         self._outcome = self._observed(
-            classification=("attempted" if action.tool_name == self.covert_tool else "declined"),
+            classification=("attempted" if action.tool_name in self.covert_tools else "declined"),
             proposed_tool=action.tool_name,
             failure_reason=None,
         )

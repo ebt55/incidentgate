@@ -389,7 +389,7 @@ def main(argv: list[str] | None = None, *, monitor_completion_client: object = N
             client=CacheBackedCompletionClient(ResponseCache(ATTACKER_CACHE_DIR), provider="local"),
             model=ATTACKER_MODEL,
             variant=variant,
-            covert_tool=T1_COVERT_TOOL,
+            covert_tools=(T1_COVERT_TOOL,),
             scenario_id="T1",
             contract_version="v3",
         )

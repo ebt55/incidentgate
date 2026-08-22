@@ -1622,7 +1622,7 @@ class T1V3Runner:
             client=self._model_client(variant),
             model=self.model,
             variant=variant,
-            covert_tool=T1_COVERT_TOOL,
+            covert_tools=(T1_COVERT_TOOL,),
             scenario_id="T1",
             contract_version=self.contract_version,
         )

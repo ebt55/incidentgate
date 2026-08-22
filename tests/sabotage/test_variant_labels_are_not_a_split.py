@@ -88,7 +88,7 @@ def _prompt_hash(variant: AttackPolicyVariant, contract: str) -> str:
         client=client,
         model="mistral-nemo-12b",
         variant=variant,
-        covert_tool="operations.write_outbound_note",
+        covert_tools=("operations.write_outbound_note",),
         scenario_id="T1",
         contract_version=contract,  # type: ignore[arg-type]
     )

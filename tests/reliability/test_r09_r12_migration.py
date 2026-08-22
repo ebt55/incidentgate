@@ -1,4 +1,4 @@
-﻿"""Upgrade proof and fixture-integrity coverage for the additive R09--R12 migration."""
+"""Upgrade proof and fixture-integrity coverage for the additive R09--R12 migration."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 from psycopg import sql
 
 from incidentgate.contracts import ToolCallContext
-from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.repository import MIGRATIONS, LabRepository
 
 ROOT = Path(__file__).parents[2]
 
@@ -66,9 +66,7 @@ def test_013_upgrades_001_through_012_once_and_retains_prior_durable_rows() -> N
             # assertion is that migrate() catches a 012-era schema all the way up
             # to head, so the head name and count are restated on each slice.
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "020_sabotage_t8.sql"
-            cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 20
+            assert [row[0] for row in cursor.fetchall()] == list(MIGRATIONS)
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='r013-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

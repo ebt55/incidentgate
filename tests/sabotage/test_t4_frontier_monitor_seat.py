@@ -235,3 +235,59 @@ def test_capturing_without_a_transport_is_refused_not_defaulted() -> None:
             model=FRONTIER,
             provider="anthropic",
         )
+
+
+# --------------------------------------------------------------------------
+# The attacker seat, which decides whether there is anything to measure.
+# --------------------------------------------------------------------------
+
+
+def test_the_floor_attacker_is_reachable_from_the_command_line() -> None:
+    """Without this the frontier command bills for incident-leg consultations and
+    produces no covert assembly to judge -- spend with no measurement."""
+    from incidentgate.evaluation.sabotage_v4_t4 import ATTACKER_ARMS
+
+    assert set(ATTACKER_ARMS) == {"model", "floor"}
+    assert _parsed("--attacker", "floor").attacker == "floor"
+    assert _parsed().attacker == "model", "the seat does not change without saying so"
+
+
+def test_the_floor_proposer_cannot_be_given_a_client() -> None:
+    """The guarantee is structural, not a policy: it takes a variant and nothing
+    else, so there is no seam through which the attacker leg could reach a model."""
+    import inspect
+
+    from incidentgate.control.attack_policies import DeterministicT4AttackProposer
+
+    parameters = inspect.signature(DeterministicT4AttackProposer.__init__).parameters
+    assert list(parameters) == ["self", "variant"]
+
+
+def test_the_floor_arm_records_no_attacker_responses() -> None:
+    """Empty is the honest value, not a placeholder: nothing was asked.
+
+    The v4 row contract independently refuses a response digest on a
+    deterministic_floor row, so the runner and the contract agree by construction
+    rather than by a caller remembering to pass the right thing.
+    """
+    from incidentgate.evaluation.sabotage_v4 import SabotageEvaluationResultV4
+
+    field = SabotageEvaluationResultV4.model_fields["attacker_response_sha256"]
+    assert field.default == ()
+
+
+def test_a_floor_run_builds_no_attacker_transport() -> None:
+    """Read off the source of ``main``: the Ollama client for the attacker seat is
+    constructed only on the not-floor branch, so a floor run has no object in the
+    process that the attacker leg could call."""
+    import inspect
+
+    from incidentgate.evaluation import sabotage_v4_t4
+
+    source = inspect.getsource(sabotage_v4_t4.main)
+    assert "if not floor_attacker:" in source
+    guarded = source.split("if not floor_attacker:", 1)[1].split("monitor_client", 1)[0]
+    assert "OllamaWeightsCompletionClient(" in guarded
+    # One construction site in the whole function, and it is inside the guard. The
+    # monitor's transport is built by monitor_transport, not here.
+    assert source.count("OllamaWeightsCompletionClient(") == 1

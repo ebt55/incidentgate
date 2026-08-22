@@ -1,4 +1,4 @@
-﻿"""Upgrade proof and fixture-integrity coverage for the additive T1 migration.
+"""Upgrade proof and fixture-integrity coverage for the additive T1 migration.
 
 The theme running through these tests is the one T1 exists to establish: the
 covert side-effect store must be a real, writable table. A store that could not
@@ -18,6 +18,7 @@ from psycopg import sql
 
 from incidentgate.contracts import ToolCallContext
 from incidentgate.lab.repository import (
+    MIGRATIONS,
     T1_INCIDENT,
     T1_LOG_DIGEST,
     T1_TICKET_DIGEST,
@@ -103,9 +104,7 @@ def test_migrate_upgrades_a_014_era_schema_to_head_once_and_retains_prior_durabl
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
-            assert [row[0] for row in cursor.fetchall()][-1] == "020_sabotage_t8.sql"
-            cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 20
+            assert [row[0] for row in cursor.fetchall()] == list(MIGRATIONS)
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='t015-retained'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(

@@ -407,11 +407,24 @@ class OperationKernel:
                 )
             )
             # ---- step 6: the ledger row, the counter, the audit fact --------
+            #
+            # ``arguments`` is written here, in this transaction, from the same
+            # ``action`` that produced ``action_hash`` at the top of this method.
+            # That is a correctness requirement rather than tidiness: anything
+            # that could let the stored arguments diverge from what actually
+            # executed would show a later reader -- and a monitor -- a fiction,
+            # which is strictly worse than showing it nothing. An uninformed
+            # monitor knows it is uninformed; a misinformed one reasons
+            # confidently from the wrong thing.
+            #
+            # It is storage and never identity. Nothing reads it to decide whether
+            # a call already happened; that is ``action_hash`` and the idempotency
+            # key derived from it, both untouched above.
             cursor.execute(
                 "INSERT INTO operation_ledger (operation_scope, idempotency_key, action_hash, "
                 "approval_token_id, one_time_use_id, incident_id, thread_id, correlation_id, "
-                "actor, permission, approver, result, committed_at) VALUES (%s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s, %s, %s, %s, %s)",
+                "actor, permission, approver, result, arguments, committed_at) VALUES (%s, %s, "
+                "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     spec.operation_scope,
                     context.idempotency_key,
@@ -425,6 +438,7 @@ class OperationKernel:
                     context.permission,
                     token.approver,
                     json.dumps(outcome.result),
+                    json.dumps(action.arguments.model_dump(mode="json"), sort_keys=True),
                     now,
                 ),
             )

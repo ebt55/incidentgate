@@ -1385,6 +1385,11 @@ class LedgerCall:
     operation_scope: str
     tool_name: str | None
     result: Mapping[str, object]
+    #: What the call was asked to do, as opposed to what it left behind. `None`
+    #: means the row predates migration 021 and nothing was recorded; it never
+    #: means the call had no arguments, which is an empty mapping. Defaulted so
+    #: every existing construction of this dataclass stays valid.
+    arguments: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1616,6 +1621,37 @@ class AuditTimelineEvent(ContractModel):
     timestamp: datetime
 
 
+#: Every migration, in the order `migrate` applies them. A tuple and not a glob
+#: over `db/`: a file that exists but is not listed here is never applied, and
+#: making that a deliberate edit is the point. Exposed at module level so a test
+#: can assert that a migrated database's journal is exactly this sequence, rather
+#: than pinning the last name and having to be edited for a reason unrelated to
+#: what it checks.
+MIGRATIONS: Final[tuple[str, ...]] = (
+    "001_d1.sql",
+    "002_checkpoint_a.sql",
+    "003_checkpoint_b_collection.sql",
+    "004_checkpoint_b_upgrade.sql",
+    "005_checkpoint_b_collection_runs.sql",
+    "006_checkpoint_b_backfill_collection_runs.sql",
+    "007_checkpoint_b_no_action.sql",
+    "008_checkpoint_b_d6_runs.sql",
+    "009_checkpoint_b_d6_run_binding.sql",
+    "010_checkpoint_b_d5_d8.sql",
+    "011_reliability_r01_r04.sql",
+    "012_reliability_r05_r08.sql",
+    "013_reliability_r09_r12.sql",
+    "014_audit_insertion_sequence.sql",
+    "015_sabotage_t1.sql",
+    "016_operation_ledger_sequence.sql",
+    "017_sabotage_t4.sql",
+    "018_sabotage_t2.sql",
+    "019_sabotage_t7.sql",
+    "020_sabotage_t8.sql",
+    "021_operation_ledger_arguments.sql",
+)
+
+
 class LabRepository:
     def __init__(self, dsn: str, *, clock: Callable[[], datetime] = _utc_now) -> None:
         self.dsn = dsn
@@ -1665,28 +1701,7 @@ class LabRepository:
 
     def migrate(self) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
-            names = (
-                "001_d1.sql",
-                "002_checkpoint_a.sql",
-                "003_checkpoint_b_collection.sql",
-                "004_checkpoint_b_upgrade.sql",
-                "005_checkpoint_b_collection_runs.sql",
-                "006_checkpoint_b_backfill_collection_runs.sql",
-                "007_checkpoint_b_no_action.sql",
-                "008_checkpoint_b_d6_runs.sql",
-                "009_checkpoint_b_d6_run_binding.sql",
-                "010_checkpoint_b_d5_d8.sql",
-                "011_reliability_r01_r04.sql",
-                "012_reliability_r05_r08.sql",
-                "013_reliability_r09_r12.sql",
-                "014_audit_insertion_sequence.sql",
-                "015_sabotage_t1.sql",
-                "016_operation_ledger_sequence.sql",
-                "017_sabotage_t4.sql",
-                "018_sabotage_t2.sql",
-                "019_sabotage_t7.sql",
-                "020_sabotage_t8.sql",
-            )
+            names = MIGRATIONS
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at "
                 "timestamptz NOT NULL DEFAULT now())"
@@ -3878,7 +3893,7 @@ class LabRepository:
         """
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT sequence, operation_scope, result FROM operation_ledger "
+                "SELECT sequence, operation_scope, result, arguments FROM operation_ledger "
                 "WHERE incident_id = %s ORDER BY sequence ASC",
                 (incident_id,),
             )
@@ -3893,6 +3908,10 @@ class LabRepository:
                     operation_scope=str(row["operation_scope"]),
                     tool_name=None if call is None else str(call),
                     result=result,
+                    # None for a row written before migration 021, and that is the
+                    # honest value: not recorded, never "no arguments". An
+                    # argument-free call records an empty mapping.
+                    arguments=cast("dict[str, object] | None", row["arguments"]),
                 )
             )
         return tuple(calls)

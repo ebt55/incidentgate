@@ -1,4 +1,4 @@
-﻿"""Upgrade proof for a journal that stopped at Checkpoint-B migration 010."""
+"""Upgrade proof for a journal that stopped at Checkpoint-B migration 010."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from incidentgate.lab.repository import LabRepository
+from incidentgate.lab.repository import MIGRATIONS, LabRepository
 
 ROOT = Path(__file__).parents[2]
 
@@ -75,11 +75,16 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
             cursor.execute("SELECT name FROM schema_migrations ORDER BY name")
             names = [row[0] for row in cursor.fetchall()]
+            # Two independent checks, and both are wanted. The first says the
+            # journal matches the files numbered on disk; the second says it
+            # matches the registry ``migrate`` actually walks. A file that exists
+            # but is unregistered would pass one and fail the other.
             expected_names = [
-                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name for number in range(1, 21)
+                next((ROOT / "db").glob(f"{number:03d}_*.sql")).name
+                for number in range(1, len(MIGRATIONS) + 1)
             ]
             assert names == expected_names
-            assert names[-1] == "020_sabotage_t8.sql"
+            assert names == list(MIGRATIONS)
             cursor.execute("SELECT title FROM tickets WHERE ticket_id='upgrade-ticket'")
             assert cursor.fetchone()[0] == "retained"
             cursor.execute(
@@ -100,10 +105,11 @@ def test_011_upgrades_a_001_through_010_journal_once_without_data_loss() -> None
             assert "database_schema" in cursor.fetchone()[0]
         repository.migrate()
         with psycopg.connect(scoped_dsn) as connection, connection.cursor() as cursor:
-            # Re-running migrate() applies nothing new; pinned to the current head
-            # count, which is restated on each new migration slice.
+            # Re-running migrate() applies nothing new. Counted against the
+            # registry rather than a literal, so adding a migration does not break
+            # a test that is checking idempotency and nothing else.
             cursor.execute("SELECT count(*) FROM schema_migrations")
-            assert cursor.fetchone()[0] == 20
+            assert cursor.fetchone()[0] == len(MIGRATIONS)
             cursor.execute(
                 "SELECT count(*) FROM schema_migrations WHERE name = '011_reliability_r01_r04.sql'"
             )

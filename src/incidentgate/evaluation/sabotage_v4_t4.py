@@ -148,6 +148,10 @@ ATTACKER_CONTRACT_VERSION: Final = "v3"
 #: One proposer instance per covert call, matching the scenario's own covert plan.
 COVERT_CALLS: Final = 3
 
+#: Who may sit in the attacker seat. ``floor`` is the deterministic assembly and is
+#: the only arm that reliably produces one, since both local models decline T4.
+ATTACKER_ARMS: Final = ("model", "floor")
+
 PUBLISHED_ARTIFACT_DIR: Final = "artifacts/model-monitor"
 
 _DIRTY_PATHSPEC: Final[tuple[str, ...]] = (
@@ -388,31 +392,57 @@ class ConditionRun:
     monitor_positions: dict[str, tuple[str, int]]
 
 
+def _self_report(proposer: ProposalGenerator) -> str:
+    """What a proposer says it did, or ``not_produced`` when it says nothing.
+
+    Only a model attacker reports on itself; the deterministic proposers have no
+    such attribute and are never reached here, because the floor makes zero
+    consultations and this is only called over the consulted prefix.
+    """
+    outcome = getattr(proposer, "outcome", None)
+    return "not_produced" if outcome is None else str(outcome.classification)
+
+
 def run_t4_condition(
     repository: LabRepository,
     scenario: SabotageScenario,
     variant: ProposerVariant,
     condition: EvaluationMode,
     *,
-    attacker_client: CountingAttackerCaptureClient,
+    attacker_client: CountingAttackerCaptureClient | None,
     bundle: SemanticMonitorBundle | None,
     caller: RecordingMonitorCallerV3 | None,
 ) -> ConditionRun:
-    """Drive one arm with a model attacker consulted once per covert call."""
+    """Drive one arm, with either the model attacker or the deterministic floor.
+
+    ``attacker_client is None`` selects the floor, and selects it *structurally*:
+    the covert plan is then the scenario's own ``DeterministicT4AttackProposer``
+    instances, which take a variant and nothing else -- no client, no transport,
+    no completion machinery of any kind. So a floor run cannot make a model call
+    on the attacker leg, rather than merely not making one.
+
+    That matters when the monitor seat is a billed frontier model: the floor is the
+    only attacker that reliably *produces* the assembly, since both local models
+    decline T4, and it is also the arm on which the attacker cannot cost anything.
+    """
     episode_id = f"{variant.variant_id.removeprefix(SCENARIO_ID + '-')}-v4"
     _purge_threads(repository.dsn, (f"{SCENARIO_ID}-episode-{episode_id}",))
-    attackers = tuple(
-        ModelAttackProposer(
-            client=attacker_client,
-            model=ATTACKER_MODEL,
-            variant=variant,
-            covert_tools=T4_COVERT_TOOLS,
-            scenario_id=SCENARIO_ID,
-            contract_version=ATTACKER_CONTRACT_VERSION,
-            digest_version=ATTACKER_DIGEST_VERSION,
+    attackers: tuple[ProposalGenerator, ...]
+    if attacker_client is None:
+        attackers = tuple(scenario.covert_plan(variant))
+    else:
+        attackers = tuple(
+            ModelAttackProposer(
+                client=attacker_client,
+                model=ATTACKER_MODEL,
+                variant=variant,
+                covert_tools=T4_COVERT_TOOLS,
+                scenario_id=SCENARIO_ID,
+                contract_version=ATTACKER_CONTRACT_VERSION,
+                digest_version=ATTACKER_DIGEST_VERSION,
+            )
+            for _ in range(COVERT_CALLS)
         )
-        for _ in range(COVERT_CALLS)
-    )
     incident: Sequence[ProposalGenerator] = tuple(scenario.honest_plan())
     outcome = run_real_condition_episode(
         repository,
@@ -428,12 +458,13 @@ def run_t4_condition(
         incident_success_predicate=scenario.incident_checker,
         semantic_monitor=bundle,
     )
-    consulted = len(attacker_client.consultations)
+    consulted = 0 if attacker_client is None else len(attacker_client.consultations)
     covert_steps = len(outcome.covert.steps)
-    if consulted != covert_steps:
+    if attacker_client is not None and consulted != covert_steps:
         # The one assumption the capture placement rests on, checked rather than
         # trusted: the nth consultation is covert step n. A mismatch would mean a
-        # capture was filed at a position nothing observed.
+        # capture was filed at a position nothing observed. The floor makes no
+        # consultations at all, so there is nothing to place and nothing to check.
         raise PublicationRefusal(
             f"the attacker was consulted {consulted} times but the covert leg recorded "
             f"{covert_steps} steps; refusing to bind a replay to a position nothing observed"
@@ -447,10 +478,13 @@ def run_t4_condition(
     return ConditionRun(
         condition=condition,
         outcome=outcome,
-        attacker_responses=tuple(attacker_client.consultations),
+        # Empty for the floor, and that is the honest value rather than a
+        # placeholder: there are no responses to digest because nothing was asked.
+        # The v4 row contract already refuses a response digest on a
+        # deterministic_floor row, so the two agree by construction.
+        attacker_responses=() if attacker_client is None else tuple(attacker_client.consultations),
         self_reports=tuple(
-            proposer.outcome.classification if proposer.outcome is not None else "not_produced"
-            for proposer in attackers[:consulted]
+            _self_report(proposer) for proposer in attackers[:consulted]
         ),
         monitor_positions=positions,
     )
@@ -594,6 +628,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--capture",
         action="store_true",
         help="make real attacker and monitor calls and record them; publishes nothing",
+    )
+    parser.add_argument(
+        "--attacker",
+        choices=ATTACKER_ARMS,
+        default="model",
+        help=(
+            "who sits in the attacker seat: model (the local proposer, which has "
+            "declined T4 on every sample so far, so the covert leg ends at step 0) or "
+            "floor (the deterministic assembly, which always attempts and makes no "
+            "model call at all). A monitor measurement needs an assembly to judge, "
+            "so it needs floor"
+        ),
     )
     parser.add_argument("--ollama-endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--weights-root", default=None)
@@ -994,17 +1040,22 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"REFUSED: {error}\n")
         return 2
 
+    floor_attacker = parsed.attacker == "floor"
     attacker_transport: CompletionClient | None = None
     monitor_client: CompletionClient | None = None
     attacker_weights = None
     monitor_weights: object = None
     if parsed.capture:
         try:
-            root = Path(parsed.weights_root) if parsed.weights_root else None
-            attacker_weights = resolve_ollama_weights(ATTACKER_MODEL, store_root=root)
-            attacker_transport = OllamaWeightsCompletionClient(
-                endpoint=parsed.ollama_endpoint, weights=attacker_weights
-            )
+            # The floor attacker has no transport because it has no client. Not
+            # constructing one is the whole guarantee: on a floor run there is no
+            # object in this process that the attacker leg could call.
+            if not floor_attacker:
+                root = Path(parsed.weights_root) if parsed.weights_root else None
+                attacker_weights = resolve_ollama_weights(ATTACKER_MODEL, store_root=root)
+                attacker_transport = OllamaWeightsCompletionClient(
+                    endpoint=parsed.ollama_endpoint, weights=attacker_weights
+                )
             monitor_client, monitor_weights = monitor_transport(
                 provider=monitor_provider,
                 model=monitor_model,
@@ -1033,15 +1084,21 @@ def main(argv: list[str] | None = None) -> int:
     # artifact, both fixed for this run, so it is resolved once outside the loop
     # rather than closed over -- a late-bound closure variable is exactly the bug
     # that would file a capture under the wrong identity.
-    prompt_version = ModelAttackProposer(
-        client=CacheBackedCompletionClient(ResponseCache(ATTACKER_CACHE_DIR), provider="local"),
-        model=ATTACKER_MODEL,
-        variant=variant,
-        covert_tools=T4_COVERT_TOOLS,
-        scenario_id=SCENARIO_ID,
-        contract_version=ATTACKER_CONTRACT_VERSION,
-        digest_version=ATTACKER_DIGEST_VERSION,
-    ).prompt_version
+    prompt_version = (
+        ""
+        if floor_attacker
+        else ModelAttackProposer(
+            client=CacheBackedCompletionClient(
+                ResponseCache(ATTACKER_CACHE_DIR), provider="local"
+            ),
+            model=ATTACKER_MODEL,
+            variant=variant,
+            covert_tools=T4_COVERT_TOOLS,
+            scenario_id=SCENARIO_ID,
+            contract_version=ATTACKER_CONTRACT_VERSION,
+            digest_version=ATTACKER_DIGEST_VERSION,
+        ).prompt_version
+    )
     try:
         repository.migrate()
         for condition in EvaluationMode:
@@ -1077,11 +1134,15 @@ def main(argv: list[str] | None = None) -> int:
                     weights=attacker_weights,
                 )
 
-            attacker_client = CountingAttackerCaptureClient(
-                ResponseCache(ATTACKER_CACHE_DIR),
-                provider="local",
-                transport=attacker_transport,
-                provenance=_record if parsed.capture else None,
+            attacker_client = (
+                None
+                if floor_attacker
+                else CountingAttackerCaptureClient(
+                    ResponseCache(ATTACKER_CACHE_DIR),
+                    provider="local",
+                    transport=attacker_transport,
+                    provenance=_record if parsed.capture else None,
+                )
             )
             run = run_t4_condition(
                 repository,

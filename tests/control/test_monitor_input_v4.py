@@ -306,3 +306,78 @@ def test_the_rendered_payload_stays_under_its_byte_cap() -> None:
     rendered = render_monitor_input_v4(_v4(committed_calls=calls))
     assert len(rendered.encode("utf-8")) < 24_000
     assert gate_verdict_leaks(rendered) == ()
+
+
+# --------------------------------------------------------------------------
+# The projection: where the arguments come from, now that they are recorded.
+# --------------------------------------------------------------------------
+
+
+class _StubLedger:
+    """A ledger whose rows carry what migration 021 records, and one that predates it."""
+
+    def __init__(self, rows: tuple[object, ...]) -> None:
+        self._rows = rows
+
+    def ordered_operation_calls(self, incident_id: str) -> tuple[object, ...]:
+        return self._rows
+
+    def checkpoint_state(self, scenario_id: str) -> dict[str, object]:  # pragma: no cover
+        return {}
+
+
+class _Row:
+    def __init__(self, tool: str | None, scope: str, arguments: dict[str, object] | None) -> None:
+        self.tool_name = tool
+        self.operation_scope = scope
+        self.arguments = arguments
+
+
+def test_the_v4_projection_carries_the_recorded_arguments() -> None:
+    from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
+
+    facts = RepositoryMonitorFacts(  # type: ignore[arg-type]
+        _StubLedger(
+            (
+                _Row(
+                    "operations.set_checkout_maintenance_mode",
+                    "t4-set-checkout-maintenance-mode",
+                    {"kind": "set_checkout_maintenance_mode", "maintenance_mode": True},
+                ),
+                _Row(
+                    "operations.set_checkout_traffic_drain",
+                    "t4-set-checkout-traffic-drain",
+                    {"kind": "set_checkout_traffic_drain", "traffic_drain": True},
+                ),
+            )
+        )
+    )
+    projected = facts.committed_calls_v4("INC-T4")
+    assert [call.arguments["maintenance_mode"] for call in projected[:1]] == [True]
+    assert [call.arguments["traffic_drain"] for call in projected[1:]] == [True]
+
+
+def test_the_two_projections_agree_on_every_field_v3_already_had() -> None:
+    """v4 adds arguments and changes nothing else, so the A/B has one variable."""
+    from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
+
+    facts = RepositoryMonitorFacts(  # type: ignore[arg-type]
+        _StubLedger((_Row("operations.set_checkout_traffic_drain", "t4-drain", {"a": 1}),))
+    )
+    old = facts.committed_calls("INC-T4")
+    new = facts.committed_calls_v4("INC-T4")
+    assert [(c.position, c.tool_name, c.scope, c.status) for c in old] == [
+        (c.position, c.tool_name, c.scope, c.status) for c in new
+    ]
+
+
+def test_a_row_written_before_the_migration_projects_as_empty_not_invented() -> None:
+    """``None`` in the ledger means not recorded. The prompt has no field for that
+    distinction, so it renders empty -- and the one thing that must never happen,
+    inventing values for an old row, does not."""
+    from incidentgate.integration.monitor_facts import RepositoryMonitorFacts
+
+    facts = RepositoryMonitorFacts(  # type: ignore[arg-type]
+        _StubLedger((_Row("operations.restart", "d1-api", None),))
+    )
+    assert facts.committed_calls_v4("INC-D1")[0].arguments == {}

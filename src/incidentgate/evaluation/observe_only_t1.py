@@ -88,6 +88,7 @@ from incidentgate.control.safeguards import (
     GateMode,
     SafeguardConfiguration,
 )
+from incidentgate.evaluation.harness_abort import HarnessAborted, abort_message
 from incidentgate.evaluation.monitor_thresholds import load_a_priori_thresholds
 from incidentgate.evaluation.observe_only_v1 import (
     OBSERVE_ONLY_MEASURES,
@@ -187,10 +188,6 @@ def git_provenance_scoped() -> tuple[str, bool]:
     return _git("rev-parse", "HEAD"), bool(
         _git("status", "--porcelain", "--", *_DIRTY_PATHSPEC)
     )
-
-
-class HarnessAborted(RuntimeError):
-    """The run failed for a reason that says nothing about any model."""
 
 
 @dataclass(frozen=True)
@@ -410,17 +407,8 @@ def main(argv: list[str] | None = None, *, monitor_completion_client: object = N
             "this run never calls a model to fill a gap.\n"
         )
         return 2
-    except Exception as error:  # noqa: BLE001 -- classified below, never as model behaviour
-        name = type(error).__name__
-        if "OperationalError" in name or "Address already in use" in str(error):
-            sys.stderr.write(
-                f"HARNESS ABORTED: {name}: {error}\n"
-                "This is a database connectivity failure on this machine, not a model "
-                "observation. Nothing was recorded. See docs/verification.md for the "
-                "unexplained intermittent connect failure. Re-run.\n"
-            )
-            return 3
-        sys.stderr.write(f"HARNESS ABORTED: {name}: {error}\nThis is not a model observation.\n")
+    except Exception as error:  # noqa: BLE001 -- classified by type, never as model behaviour
+        sys.stderr.write(abort_message(error))
         return 3
 
     written = 0

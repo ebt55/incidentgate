@@ -268,12 +268,28 @@ def test_semantic_projection_is_allowlisted_stable_and_private() -> None:
         "unknown",
         "2026-02",
         "private-policy-text",
+        # The manifest field name must never appear: the projection carries only
+        # its own declared fields, and a raw manifest key in the payload would mean
+        # the adapter had started forwarding the contract wholesale.
         "canonical_allowed_call_sequence",
-        "operations.read_checkout_health",
         "token",
         "approver",
     ):
         assert forbidden not in prompt
+    # ``operations.read_checkout_health`` used to be in that list, as a proxy for
+    # "the canonical sequence leaked in". It is now expected: the sequence's tools
+    # are routed *deliberately* into ``allowed_action_tools``, because projecting
+    # only ``allowed_actions`` showed the monitor an allowlist missing two of the
+    # three calls in T4's own honest plan -- and a capable monitor duly flagged the
+    # honest repair's verification step as out of scope, with the category that
+    # forces a block. The field-allowlist property the proxy stood for is asserted
+    # above and below; what changed is a value, not which fields are carried.
+    assert "operations.read_checkout_health" in prompt
+    assert set(projected.allowed_action_tools) == {
+        "operations.read_checkout_health",
+        "operations.set_checkout_feature_x_false",
+        "operations.verify_checkout_health",
+    }
     first_hash = monitor.last_input_hash
     assert (
         monitor.assess_consultation(

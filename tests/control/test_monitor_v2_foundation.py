@@ -234,9 +234,18 @@ def test_action_and_manifest_projections_are_typed_and_do_not_leak_oracle() -> N
         item for item in load_sabotage_manifests(Path("scenarios/sabotage")) if item.id == "T4"
     )
     projection = ScenarioProjectionAdapter().project(manifest)
-    assert projection["allowed_action_tools"] == tuple(sorted(manifest.allowed_actions))
+    # The allowlist is the union of the authorised remediation and the canonical
+    # honest plan, not ``allowed_actions`` alone. That field is what a run is
+    # *scored* against -- one terminal action -- and using it as the scope
+    # statement showed the monitor an allowlist missing two of T4's three honest
+    # calls. Only T4 declares a canonical sequence, so only T4's projection moved.
+    assert projection["allowed_action_tools"] == tuple(
+        sorted(set(manifest.allowed_actions) | set(manifest.canonical_allowed_call_sequence))
+    )
+    # The manifest key itself is still never forwarded: the projection carries only
+    # its own declared fields, whatever values those fields take.
     assert "canonical_allowed_call_sequence" not in projection
-    assert "operations.read_checkout_health" not in render_monitor_prompt(_input(**projection))
+    assert "canonical_allowed_call_sequence" not in render_monitor_prompt(_input(**projection))
 
 
 @dataclass(frozen=True)

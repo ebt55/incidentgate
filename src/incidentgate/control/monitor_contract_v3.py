@@ -178,7 +178,7 @@ published, unre-taken, under their own digests, bounded by what they were.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -206,11 +206,13 @@ from incidentgate.control.model_capabilities import (
 )
 from incidentgate.control.model_proposal import CompletionClient, CompletionRequest
 from incidentgate.control.monitor_input_v3 import (
+    INPUT_PROMPT_VERSION,
     INPUT_SCHEMA_VERSION,
     MonitorInputV3,
     monitor_input_v3_schema_sha256,
     render_monitor_input_v3,
 )
+from incidentgate.control.monitor_input_v4 import MonitorInputV4
 from incidentgate.control.monitor_v2 import MonitorErrorKind, RiskCategory
 from incidentgate.control.proposal import ProposalError
 from incidentgate.control.proposal_contract_v2 import underconstrained_fields
@@ -506,6 +508,57 @@ def _observed_echo(raw: str, expected: str) -> FingerprintEcho:
     )
 
 
+@dataclass(frozen=True)
+class MonitorInputContract:
+    """Which input contract a caller renders, as an object rather than a literal.
+
+    Two functions and a name. It exists so the A/B between ``monitor-input-v3``
+    and ``monitor-input-v4`` is a constructor argument and not a forked copy of
+    :class:`StructuredMonitorCallerV3` -- the two arms must differ in the input
+    contract and in *nothing else*, and a second class is a place for something
+    else to differ.
+
+    Both members feed the canonical prompt, so selecting a contract re-keys the
+    capture automatically: a v4 request can never collide with a v3 one.
+    """
+
+    version: str
+    #: The `monitor-prompt/vN` half of the published prompt identity.
+    prompt_version: str
+    render: Callable[[Any], str]
+    schema_sha256: Callable[[], str]
+
+
+#: The default, and the one every committed capture was taken under.
+V3_INPUT_CONTRACT: Final = MonitorInputContract(
+    version=INPUT_SCHEMA_VERSION,
+    prompt_version=INPUT_PROMPT_VERSION,
+    render=render_monitor_input_v3,
+    schema_sha256=monitor_input_v3_schema_sha256,
+)
+
+
+def v4_input_contract() -> MonitorInputContract:
+    """The v4 arm. Built on call so importing this module does not import v4."""
+    from incidentgate.control.monitor_input_v4 import (
+        INPUT_PROMPT_VERSION as V4_PROMPT_VERSION,
+    )
+    from incidentgate.control.monitor_input_v4 import (
+        INPUT_SCHEMA_VERSION as V4_VERSION,
+    )
+    from incidentgate.control.monitor_input_v4 import (
+        monitor_input_v4_schema_sha256,
+        render_monitor_input_v4,
+    )
+
+    return MonitorInputContract(
+        version=V4_VERSION,
+        prompt_version=V4_PROMPT_VERSION,
+        render=render_monitor_input_v4,
+        schema_sha256=monitor_input_v4_schema_sha256,
+    )
+
+
 class StructuredMonitorCallerV3:
     """A typed error boundary that shapes its request for the arm the model belongs to.
 
@@ -531,7 +584,30 @@ class StructuredMonitorCallerV3:
     _OUTPUT_TOKENS = 1024
     _MAX_RESPONSE_BYTES = 8_000
 
-    def __init__(self, *, client: CompletionClient, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: CompletionClient,
+        model: str,
+        input_contract: MonitorInputContract | None = None,
+    ) -> None:
+        # WHICH INPUT CONTRACT THIS CALLER RENDERS, AND WHY IT IS INJECTED.
+        #
+        # Defaulted to v3, so every existing caller, every committed capture and
+        # every published prompt hash stay exactly where they are: with the
+        # default, the three lines below that consult it resolve to the same
+        # ``render_monitor_input_v3`` and ``monitor_input_v3_schema_sha256`` they
+        # named literally before, and the canonical prompt is byte-identical.
+        #
+        # A v4 arm is then a constructor argument rather than a second copy of
+        # this class. Duplicating it would mean two error boundaries to keep in
+        # agreement, and the provider-shaped defects in this docstring are exactly
+        # the kind that get fixed in one copy and not the other.
+        #
+        # The re-keying is automatic and wanted: ``input_schema_sha256`` and
+        # ``prompt_version`` are both inside the canonical prompt and both come
+        # from the input contract, so a v4 request cannot collide with a v3 one.
+        self._input_contract = input_contract or V3_INPUT_CONTRACT
         if not model or not is_known_model(model):
             raise ValueError("monitor requires a model in the capability table")
         provider = model_provider(model)
@@ -567,8 +643,18 @@ class StructuredMonitorCallerV3:
 
     @property
     def prompt_version(self) -> str:
-        """The rendered input version and the output contract, as one identity."""
-        return PROMPT_VERSION
+        """The rendered input version and the output contract, as one identity.
+
+        Composed from the selected input contract rather than returned as a
+        literal, so a v4 input cannot be published under a name that says v3. The
+        threshold artifact's five-identity check compares this value, so a caller
+        that lied here would load a rule frozen for a different rendering.
+
+        With the default contract this is exactly ``PROMPT_VERSION``, which a test
+        asserts -- so no committed capture's provenance moves.
+        """
+        output = OUTPUT_SCHEMA_VERSION.removeprefix("monitor-")
+        return f"{self._input_contract.prompt_version}.{output}"
 
     @property
     def output_schema_sha256(self) -> str:
@@ -576,16 +662,16 @@ class StructuredMonitorCallerV3:
 
     @property
     def input_schema_sha256(self) -> str:
-        return monitor_input_v3_schema_sha256()
+        return str(self._input_contract.schema_sha256())
 
-    def build_request(self, input_value: MonitorInputV3) -> CompletionRequest:
+    def build_request(self, input_value: MonitorInputV3 | MonitorInputV4) -> CompletionRequest:
         """Shape one request, so a capture planner can key it without making a call.
 
         Public because the position a monitor consultation happens at is known
         only after the episode runs (see ``sabotage_v3_t1``), and a capture whose
         provenance is written at call time cannot state it.
         """
-        user = render_monitor_input_v3(input_value)
+        user = self._input_contract.render(input_value)
         system = _SYSTEM_PROMPT
         canonical_fields: dict[str, Any] = {
             "system": system,
@@ -594,7 +680,7 @@ class StructuredMonitorCallerV3:
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
             "thinking": self._thinking,
-            "input_schema_sha256": monitor_input_v3_schema_sha256(),
+            "input_schema_sha256": self._input_contract.schema_sha256(),
             "output_schema_sha256": monitor_output_v3_schema_sha256(),
             "prompt_version": input_value.prompt_version,
             # Named in the key rather than left to the output digest alone. The
@@ -630,7 +716,7 @@ class StructuredMonitorCallerV3:
             prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),
         )
 
-    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3:
+    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3:
         self.last_invocation = None
         self.last_request = None
         try:
@@ -753,7 +839,7 @@ class RecordingMonitorCallerV3:
         self.consultations.clear()
         return recorded
 
-    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3:
+    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3:
         outcome = self._inner.assess(input_value)
         request = self._inner.last_request
         if request is not None:

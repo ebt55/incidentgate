@@ -390,12 +390,49 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
     assert [path.name for path in T4_COMMITTED] == [
         "T4-a-priori-claude-opus-5-v2.json",
         "T4-a-priori-qwen3-14b-v2.json",
+        "T4-a-priori-qwen3-14b-v3.json",
     ]
     seats = {
         (a.provider, a.model)
         for a in (load_a_priori_thresholds(path) for path in T4_COMMITTED)
     }
     assert seats == {("local", "qwen3-14b"), ("anthropic", "claude-opus-5")}
+
+
+def test_the_two_generations_of_the_local_seat_differ_only_in_the_input_contract() -> None:
+    """The unconfoundedness property of the v3-input/v4-input A/B, made executable.
+
+    If any decision field differed between the generations, a change in what the
+    monitor did would have two candidate causes -- the input it was shown and the
+    rule its answer was read under -- and the comparison could attribute neither.
+    So the two are required to be identical everywhere except the two fields that
+    name the rendering.
+    """
+    v3_input = load_a_priori_thresholds(THRESHOLD_DIR / "T4-a-priori-qwen3-14b-v2.json")
+    v4_input = load_a_priori_thresholds(THRESHOLD_DIR / "T4-a-priori-qwen3-14b-v3.json")
+    assert v3_input.input_schema_sha256 != v4_input.input_schema_sha256
+    assert v3_input.prompt_version != v4_input.prompt_version
+    for field in (
+        "defer_at",
+        "block_at",
+        "decision_rule",
+        "provenance_band",
+        "selected_on_split",
+        "forced_block_sequence_risk",
+        "forced_block_categories",
+        "derivations",
+        "scenario_id",
+        "scenario_contract_sha256",
+        "provider",
+        "model",
+        "output_schema_sha256",
+        "continuous_score_authority",
+        "continuous_score_edge",
+        "raw_score_publication",
+    ):
+        assert v3_input.model_dump(mode="json")[field] == v4_input.model_dump(mode="json")[field], (
+            field
+        )
 
 
 @pytest.mark.parametrize("path", T4_COMMITTED, ids=lambda path: path.name)
@@ -406,8 +443,23 @@ def test_t4s_artifact_describes_the_contract_it_was_frozen_against(path: Path) -
     assert artifact.scenario_contract_sha256 == (
         hashlib.sha256(T4_SCENARIO.read_bytes()).hexdigest()
     )
-    assert artifact.prompt_version == PROMPT_VERSION
-    assert artifact.input_schema_sha256 == monitor_input_v3_schema_sha256()
+    # The prompt version and the input digest must be a matched pair from a real
+    # caller generation -- not necessarily the current default one, since a
+    # superseded artifact must still describe the contract it was frozen against
+    # or the record citing it stops being checkable.
+    from incidentgate.control.monitor_input_v4 import (
+        INPUT_PROMPT_VERSION as V4_PROMPT,
+    )
+    from incidentgate.control.monitor_input_v4 import (
+        monitor_input_v4_schema_sha256,
+    )
+
+    generations = {
+        PROMPT_VERSION: monitor_input_v3_schema_sha256(),
+        f"{V4_PROMPT}.output-v3": monitor_input_v4_schema_sha256(),
+    }
+    assert artifact.prompt_version in generations, artifact.prompt_version
+    assert artifact.input_schema_sha256 == generations[artifact.prompt_version]
     assert artifact.output_schema_sha256 == monitor_output_v3_schema_sha256()
     # The provider the capability table serves this model from, not a hardcoded
     # one: a rule frozen for a seat the table would not build is a rule that can

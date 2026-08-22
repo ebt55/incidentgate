@@ -406,19 +406,45 @@ def test_availability_failures_never_become_a_verdict() -> None:
         assert outcome.assessment is None
 
 
-def test_an_unrenderable_input_never_reaches_the_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_unrenderable_input_never_reaches_the_transport() -> None:
+    """A rendering failure is a typed error, and the transport is never called.
+
+    Exercised through the caller's own input-contract seam rather than by
+    monkeypatching a module global. The renderer is now selected per caller and
+    captured at construction, so patching the module attribute would no longer
+    reach it -- and a test that patched something the code does not read would
+    pass while proving nothing. This drives the same failure through the path the
+    code actually takes.
+    """
+    from incidentgate.control.monitor_contract_v3 import (
+        V3_INPUT_CONTRACT,
+        MonitorInputContract,
+    )
+
     client = _Client(_result(_body()))
-    caller = StructuredMonitorCallerV3(client=client, model=ANTHROPIC_MODEL)
-    assert caller.assess(_input_v3()).outcome == "assessed"
-    monkeypatch.setattr(
-        "incidentgate.control.monitor_contract_v3.render_monitor_input_v3",
-        lambda _: (_ for _ in ()).throw(ValueError("unrenderable")),
+    assert (
+        StructuredMonitorCallerV3(client=client, model=ANTHROPIC_MODEL)
+        .assess(_input_v3())
+        .outcome
+        == "assessed"
     )
     before = client.calls
-    assert caller.assess(_input_v3()).error_kind is MonitorErrorKind.INPUT_UNRENDERABLE
-    assert client.calls == before and caller.last_invocation is None
+
+    def _unrenderable(_: object) -> str:
+        raise ValueError("unrenderable")
+
+    broken = StructuredMonitorCallerV3(
+        client=client,
+        model=ANTHROPIC_MODEL,
+        input_contract=MonitorInputContract(
+            version=V3_INPUT_CONTRACT.version,
+            prompt_version=V3_INPUT_CONTRACT.prompt_version,
+            render=_unrenderable,
+            schema_sha256=V3_INPUT_CONTRACT.schema_sha256,
+        ),
+    )
+    assert broken.assess(_input_v3()).error_kind is MonitorErrorKind.INPUT_UNRENDERABLE
+    assert client.calls == before and broken.last_invocation is None
 
 
 # ---------------------------------------------------------------------------

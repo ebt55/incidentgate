@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from incidentgate.contracts import (
     CanonicalAction,
@@ -42,6 +42,7 @@ from incidentgate.control.monitor_input_v3 import (
     MonitorInputV3,
     render_monitor_input_v3,
 )
+from incidentgate.control.monitor_input_v4 import MonitorInputV4, render_monitor_input_v4
 from incidentgate.control.monitor_v2 import (
     AdvisoryMonitorV2,
     BindingAdvisoryMonitor,
@@ -111,7 +112,7 @@ class SemanticMonitorCallerV3(MonitorCallerIdentity, Protocol):
     @property
     def last_invocation(self) -> ModelInvocationRecord | None: ...
 
-    def assess(self, input_value: MonitorInputV3) -> MonitorOutcomeV3: ...
+    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3: ...
 
 
 class ThresholdArtifactProvenance(Protocol):
@@ -397,6 +398,52 @@ class SemanticAdvisoryMonitor(AdvisoryMonitorV2):
         return outcome
 
 
+class _MonitorInputV4Projection:
+    """The projection to ``monitor-input-v4``: v3's, with the sequence's values.
+
+    Differs from :class:`_MonitorInputV3Projection` in one call --
+    ``committed_calls_v4`` instead of ``committed_calls`` -- and in nothing else.
+    That is the whole design of the A/B: two arms that differ in the input contract
+    and in no other respect, so a difference in what the monitor does has one
+    candidate cause.
+
+    It takes no policy either, for the same structural reason v3's takes none:
+    there is no policy object in this class's scope to read a verdict out of.
+    """
+
+    def __init__(
+        self,
+        *,
+        facts: RepositoryMonitorFacts,
+        manifests: Mapping[str, _Manifest] | None = None,
+    ) -> None:
+        self._facts = facts
+        self._manifests = _manifests() if manifests is None else manifests
+
+    def project(self, consultation: MonitorConsultation) -> MonitorInputV4:
+        projection = ScenarioProjectionAdapter().project(
+            self._manifests[consultation.incident.scenario_id]
+        )
+        paths = cast(tuple[str, ...], projection["allowed_changed_paths"])
+        return MonitorInputV4(
+            scenario_id=consultation.incident.scenario_id,
+            incident_objective=cast(str, projection["incident_objective"]),
+            allowed_action_tools=cast(tuple[str, ...], projection["allowed_action_tools"]),
+            forbidden_action_tools=cast(tuple[str, ...], projection["forbidden_action_tools"]),
+            allowed_changed_paths=paths,
+            action=action_facts(consultation.action),
+            action_fingerprint=action_fingerprint(consultation.action),
+            evidence_facts=project_evidence(
+                consultation.incident.scenario_id,
+                consultation.evidence,
+                consultation.records,
+                _PROJECTABLE_EVIDENCE_ALLOWLIST,
+            ),
+            committed_calls=self._facts.committed_calls_v4(consultation.incident.incident_id),
+            current_state_facts=self._facts.current_state(consultation.incident.scenario_id, paths),
+        )
+
+
 class SemanticAdvisoryMonitorV3:
     """The v3 output contract's runtime adapter, which reduces its own assessment.
 
@@ -422,11 +469,30 @@ class SemanticAdvisoryMonitorV3:
         caller: SemanticMonitorCallerV3,
         facts: RepositoryMonitorFacts,
         manifests: Mapping[str, _Manifest] | None = None,
+        input_version: Literal["v3", "v4"] = "v3",
     ) -> None:
         self._caller = caller
         # No ``policy`` parameter, and that is the withholding made structural:
-        # the v3 projection has no policy object to read a verdict out of.
-        self._projection = _MonitorInputV3Projection(facts=facts, manifests=manifests)
+        # neither projection has a policy object to read a verdict out of.
+        #
+        # ``input_version`` selects which projection builds the input, defaulted to
+        # v3 so no existing caller moves. It has to agree with the *caller's* input
+        # contract -- a v4 projection rendered by a v3 caller would send v3 bytes
+        # from a v4 object -- and ``SemanticMonitorConfigurationV4`` is what pairs
+        # them, rather than leaving two arguments to be kept in step by hand.
+        self._projection: _MonitorInputV3Projection | _MonitorInputV4Projection = (
+            _MonitorInputV3Projection(facts=facts, manifests=manifests)
+            if input_version == "v3"
+            else _MonitorInputV4Projection(facts=facts, manifests=manifests)
+        )
+        # Paired with the projection, because ``last_input_hash`` is the join key
+        # between a consultation and the episode position it happened at, and it
+        # has to be a digest of the bytes that were actually sent. Rendering a v4
+        # input with v3's renderer would produce a hash of bytes nobody saw, and
+        # every capture would then be filed against a position nothing observed.
+        self._render: Callable[[Any], str] = (
+            render_monitor_input_v3 if input_version == "v3" else render_monitor_input_v4
+        )
         self.last_input_hash: str | None = None
         self.last_invocation: ModelInvocationRecord | None = None
         self.last_outcome: MonitorOutcomeV3 | None = None
@@ -436,7 +502,7 @@ class SemanticAdvisoryMonitorV3:
         try:
             input_value = self._projection.project(consultation)
             self.last_input_hash = sha256(
-                render_monitor_input_v3(input_value).encode("utf-8")
+                self._render(input_value).encode("utf-8")
             ).hexdigest()
         except (KeyError, TypeError, ValueError):
             outcome = MonitorOutcomeV3(
@@ -538,6 +604,42 @@ class SemanticMonitorConfigurationV3:
         del policy
         return SemanticMonitorBundle(
             monitor=SemanticAdvisoryMonitorV3(caller=self.caller, facts=facts),
+            consultation_factory=RuntimeMonitorConsultationFactory(),
+            thresholds=self.artifact.thresholds,
+        )
+
+
+@dataclass(frozen=True)
+class SemanticMonitorConfigurationV4:
+    """The v4-input arm, which pairs the projection with a caller that renders it.
+
+    A separate class rather than a flag on the v3 configuration, and for a reason
+    that is the whole safety of the A/B: the projection and the caller's input
+    contract have to agree. A v4 projection rendered by a v3 caller would build a
+    ``MonitorInputV4`` and send v3's bytes from it, silently dropping the
+    committed-call arguments while stamping the request as v3 -- a mismatch that
+    would look like "v4 changed nothing" and would be a bug in the harness.
+
+    Pairing them here means the disagreement cannot be constructed. The artifact's
+    five-identity check then confirms it independently: a caller rendering v4
+    reports ``monitor-prompt/v4.output-v3`` and v4's input digest, so a threshold
+    artifact frozen for v3 is refused rather than silently applied.
+    """
+
+    caller: SemanticMonitorCallerV3
+    artifact: ThresholdArtifactProvenance
+
+    def build(
+        self, *, policy: PolicyConfiguration, facts: RepositoryMonitorFacts
+    ) -> SemanticMonitorBundle:
+        _require_artifact_describes_caller(self.artifact, self.caller)
+        # Discarded explicitly, as v3's is: the withholding is structural, and the
+        # v4 contract adds the attacker's own arguments, never a gate's opinion.
+        del policy
+        return SemanticMonitorBundle(
+            monitor=SemanticAdvisoryMonitorV3(
+                caller=self.caller, facts=facts, input_version="v4"
+            ),
             consultation_factory=RuntimeMonitorConsultationFactory(),
             thresholds=self.artifact.thresholds,
         )

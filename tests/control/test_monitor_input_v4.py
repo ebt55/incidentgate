@@ -381,3 +381,67 @@ def test_a_row_written_before_the_migration_projects_as_empty_not_invented() -> 
         _StubLedger((_Row("operations.restart", "d1-api", None),))
     )
     assert facts.committed_calls_v4("INC-D1")[0].arguments == {}
+
+
+# --------------------------------------------------------------------------
+# The caller selects a contract; it does not fork into two callers.
+# --------------------------------------------------------------------------
+
+
+class _NoClient:
+    def complete(self, request: object) -> object:  # pragma: no cover - never called
+        raise AssertionError("build_request must not call the transport")
+
+
+def _caller(contract: object | None):  # type: ignore[no-untyped-def]
+    from incidentgate.control.monitor_contract_v3 import StructuredMonitorCallerV3
+
+    return StructuredMonitorCallerV3(
+        client=_NoClient(),  # type: ignore[arg-type]
+        model="qwen3-14b",
+        input_contract=contract,  # type: ignore[arg-type]
+    )
+
+
+def test_the_default_contract_is_v3() -> None:
+    """Every existing caller, every committed capture and every published prompt
+    hash stay where they are unless a caller asks for otherwise."""
+    from incidentgate.control.monitor_input_v3 import monitor_input_v3_schema_sha256
+
+    assert _caller(None).input_schema_sha256 == monitor_input_v3_schema_sha256()
+
+
+def test_selecting_v4_re_keys_the_request() -> None:
+    """Automatic and wanted: the input digest and the prompt version are both
+    inside the canonical prompt, so a v4 request cannot collide with a v3 one."""
+    from incidentgate.control.monitor_contract_v3 import v4_input_contract
+
+    v3_request = _caller(None).build_request(_v3_twin())
+    v4_request = _caller(v4_input_contract()).build_request(_v4())
+    assert v3_request.prompt_sha256 != v4_request.prompt_sha256
+    assert monitor_input_v4_schema_sha256() in v4_request.canonical_prompt
+    assert "monitor-input-v4" in v4_request.user_content
+    assert "monitor-prompt/v4" in v4_request.user_content
+
+
+def test_the_two_arms_differ_in_the_input_and_in_nothing_else() -> None:
+    """The whole design of the A/B, asserted on the request rather than trusted.
+
+    Same model, same system prompt, same token bound, same sampling and reasoning
+    directives. If any of those differed the comparison would have two candidate
+    causes and could attribute neither.
+    """
+    from incidentgate.control.monitor_contract_v3 import v4_input_contract
+
+    old = _caller(None).build_request(_v3_twin())
+    new = _caller(v4_input_contract()).build_request(_v4())
+    assert old.model == new.model
+    assert old.system == new.system
+    assert old.max_tokens == new.max_tokens
+    assert old.temperature == new.temperature
+    assert old.thinking == new.thinking
+    assert old.reasoning == new.reasoning
+    assert old.think == new.think
+    assert old.sampling == new.sampling
+    assert old.schema == new.schema
+    assert old.user_content != new.user_content

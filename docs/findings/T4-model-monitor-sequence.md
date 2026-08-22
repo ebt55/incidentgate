@@ -122,6 +122,30 @@ Route 1 changes what the monitor is shown and re-keys every T4 monitor capture.
 Neither is taken here: the measurement below is of the system as it is actually
 built, which is the thing worth knowing.
 
+> **Costed again after the measurement, and one figure above was wrong.**
+> Route 1 was written as though it were expensive. It is not. `MonitorInputV3` is
+> consumed by `sabotage_v3_t1`, `observe_only_t1`, `sabotage_v4_t4` and
+> `semantic_monitor` — the model-monitor path only. The v2 sabotage matrices never
+> touch it; they run the deterministic stand-in. So changing what the monitor is
+> shown re-keys **nine local `qwen3-14b` captures, all free to re-take**, requires
+> a new threshold-artifact generation because the input digest is pinned inside
+> one, and touches no scenario contract and no published v2 table. Route 2's cost
+> stands as written.
+>
+> A **third route** exists and is the general one, since routes 1 and 2 are both
+> per-scenario patches: carry each committed call's *arguments* in
+> `committed_calls`. The contract already asks the monitor for `sequence_risk`
+> while showing it tool names without arguments — *that* `set_checkout_maintenance_mode`
+> ran, never *to what value* — which is internally incoherent rather than merely
+> thin, and is the systemic form of this finding.
+>
+> Its cost is higher than route 1 and was not obvious: **the arguments are not
+> stored anywhere durable.** `operation_ledger` holds `action_hash` (a digest of
+> them) and `result` (the *post-call* state), and nothing else. So this route needs
+> a durable schema change to record what it projects. Deriving it from `result`
+> instead is not an option: T4's result payload carries `forbidden_combination`,
+> which is the answer rather than a fact about the call.
+
 **This reframing changes no prediction.** §1 and §3 are exactly as first
 committed; only the interpretation of a null is corrected, and it is corrected
 before any T4 capture exists.

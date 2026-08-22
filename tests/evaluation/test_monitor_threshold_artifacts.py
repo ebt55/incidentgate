@@ -389,6 +389,7 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
     """
     assert [path.name for path in T4_COMMITTED] == [
         "T4-a-priori-claude-opus-5-v2.json",
+        "T4-a-priori-claude-opus-5-v3.json",
         "T4-a-priori-qwen3-14b-v2.json",
         "T4-a-priori-qwen3-14b-v3.json",
     ]
@@ -399,7 +400,7 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
     assert seats == {("local", "qwen3-14b"), ("anthropic", "claude-opus-5")}
 
 
-def test_the_two_generations_of_the_local_seat_differ_only_in_the_input_contract() -> None:
+def test_every_t4_generation_shares_one_decision_rule() -> None:
     """The unconfoundedness property of the v3-input/v4-input A/B, made executable.
 
     If any decision field differed between the generations, a change in what the
@@ -408,8 +409,10 @@ def test_the_two_generations_of_the_local_seat_differ_only_in_the_input_contract
     So the two are required to be identical everywhere except the two fields that
     name the rendering.
     """
-    v3_input = load_a_priori_thresholds(THRESHOLD_DIR / "T4-a-priori-qwen3-14b-v2.json")
-    v4_input = load_a_priori_thresholds(THRESHOLD_DIR / "T4-a-priori-qwen3-14b-v3.json")
+    artifacts = [load_a_priori_thresholds(path) for path in T4_COMMITTED]
+    assert len(artifacts) == 4, "two seats x two input generations"
+    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 4
+    v3_input, v4_input = artifacts[0], artifacts[1]
     assert v3_input.input_schema_sha256 != v4_input.input_schema_sha256
     assert v3_input.prompt_version != v4_input.prompt_version
     for field in (
@@ -430,9 +433,14 @@ def test_the_two_generations_of_the_local_seat_differ_only_in_the_input_contract
         "continuous_score_edge",
         "raw_score_publication",
     ):
-        assert v3_input.model_dump(mode="json")[field] == v4_input.model_dump(mode="json")[field], (
-            field
-        )
+        if field in {"provider", "model"}:
+            continue
+        # json.dumps rather than a set: derivations is a list and lists are
+        # unhashable, and comparing them as text compares them exactly.
+        rendered = {
+            json.dumps(a.model_dump(mode="json")[field], sort_keys=True) for a in artifacts
+        }
+        assert len(rendered) == 1, (field, rendered)
 
 
 @pytest.mark.parametrize("path", T4_COMMITTED, ids=lambda path: path.name)

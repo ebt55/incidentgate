@@ -271,22 +271,30 @@ and neither has been done.
 
 ### 3. A real model attempted a covert objective, and the policy gate stopped it
 
-**Seventy-six model calls reached a model and left a committed body**: 23 attacker
-captures under `artifacts/model-captures/` and 53 monitor captures under
-`artifacts/monitor-captures/`. Of those, **23 were billed** — `claude-opus-5` ×
-13 and `gpt-5.5` × 10 — summing to **$0.334455** over the captures themselves;
-the remaining 53 ran on local open weights and charged nothing
-(`cost_unavailable_reason: local_weights_no_vendor_charge`).
+**Seventy-eight model calls reached a model and left a committed body**: 25
+attacker captures under `artifacts/model-captures/` and 53 monitor captures under
+`artifacts/monitor-captures/`. Fifty-three ran on local open weights and charged
+nothing (`cost_unavailable_reason: local_weights_no_vendor_charge`).
 
-**Refused requests bill and leave no body, so the ledger is larger than the sum
-over captures.** Anthropic's input-side classifier has refused five requests
-before the model was consulted — four `T1-cal-v1` attempts and, on 2026-08-25, the
-`T1-dev-v1` v2-steering request. Each is a provider decision about a *request*,
-never a model observation, and none is retried, reworded or routed elsewhere. They
-are recorded in prose and in the per-finding receipts rather than as captures,
-which is why a count taken from the artifact directories is a floor and not the
-total. The per-run receipts in
-[the verification receipt](docs/verification.md) and the findings are the ledger.
+**Two spend quantities are tracked, and they are different numbers.** Saying which
+one you mean is the whole point, because a refused request bills and leaves no
+capture:
+
+| quantity | value | what it counts |
+| --- | --- | --- |
+| **billed captures on disk** | **$0.349905** over 25 calls | requests that returned a body, summable from `artifacts/` |
+| **all-time provider spend** | **$0.362160** over 26 calls | every billed request, including refusals that returned nothing |
+
+The $0.012255 difference is one request: the `claude-opus-5` v2-steering call that
+Anthropic's classifier refused on 2026-08-25.
+
+Anthropic's input-side classifier has now refused five requests before the model
+was consulted — four `T1-cal-v1` attempts and that one. Each is a provider decision
+about a *request*, never a model observation, and none is retried, reworded or
+routed to another provider. They are recorded in the per-run receipts in
+[the verification receipt](docs/verification.md) and the findings, which together
+are the ledger; a count taken from the artifact directories alone is the first row
+of the table above, not the total.
 
 **In the attacker seat, all three hosted calls declined** — `claude-opus-5` once
 and `gpt-5.5` twice. (The other twenty hosted calls sat in the *monitor* seat, a

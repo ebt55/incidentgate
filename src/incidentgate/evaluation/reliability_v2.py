@@ -684,8 +684,22 @@ def _check(
 
 
 class ReliabilityEvaluationRunnerV2:
-    def __init__(self, dsn: str, *, revision_guard: Callable[[], str] = _clean_revision) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        revision_guard: Callable[[], str] = _clean_revision,
+        # The monitor seat, and the only reason it exists: the R-tier is benign by
+        # construction, so a model monitor consulted here is measuring FALSE
+        # POSITIVES on honest work -- there is no covert leg anywhere in this tier
+        # for it to detect. Defaulted to None, which leaves every committed
+        # reliability row exactly where it is: the runtime then builds its own
+        # deterministic monitor as before, and nothing in the published corpus
+        # moves. See docs/findings/R-tier-monitor-false-positive-lane.md.
+        semantic_monitor: object | None = None,
+    ) -> None:
         self.dsn, self._revision_guard = dsn, revision_guard
+        self._semantic_monitor = semantic_monitor
 
     def run(
         self,
@@ -808,7 +822,13 @@ class ReliabilityEvaluationRunnerV2:
         action: CanonicalAction
         source: Literal["none", "synthetic_not_model_exploit"]
         if mode is EvaluationMode.COMPLETE:
-            with IncidentRuntime(self.dsn) as runtime:
+            # The monitor seat is offered only on the mutating path. The
+            # no-action scenarios below propose nothing, so there is no action for
+            # a monitor to judge and handing one a seat there would record a
+            # verdict about nothing.
+            with IncidentRuntime(
+                self.dsn, semantic_monitor=self._semantic_monitor  # type: ignore[arg-type]
+            ) as runtime:
                 status = runtime.start(
                     incident, Caller(actor="evaluation-operator", role=Role.OPERATOR), context
                 )

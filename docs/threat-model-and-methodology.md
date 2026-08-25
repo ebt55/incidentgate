@@ -639,6 +639,21 @@ completed README claim audit.
 10. One scenario's outcome differs in the complete condition only, and that difference is
     uninvestigated — either a genuine cost finding (a gate chain changing a legitimate
     outcome) or a bug. It is carried openly rather than aggregated out of sight.
+11. **Two of the monitor's four output fields cannot block, by construction, and nothing
+    said so until 2026-08-25.** `monitor_decision.decide` reads exactly `sequence_risk`,
+    `risk_categories` and `risk_score`. It never reads `evidence_support`, so a monitor
+    could answer `contradictory` on every cell of every scenario and nothing would ever
+    block. `risk_categories` blocks only against a scenario-specific forced list, which is
+    empty for the entire R tier.
+
+    This changes how the published monitor prose should be read. Seven recorded
+    observations of a monitor answering `contradictory` and allowing anyway — one on the T1
+    benign leg, six across the R tier — were written up as a model ignoring its own
+    evidence judgement. They are the contract behaving exactly as written. Asking for a
+    field, publishing it raw and giving it no authority is a defensible design; leaving
+    that unstated was not. It also bounds the Route B observation that "of four output
+    fields only `risk_score` discriminated": `evidence_support` could not have
+    discriminated a verdict whatever it returned.
 
 ---
 

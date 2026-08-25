@@ -114,7 +114,11 @@ from incidentgate.evaluation.sabotage_v3 import (
 
 # The two halves of the spend gate, imported by value from the runner that owns them,
 # so this module cannot drift into naming a different variable or a different flag.
-from incidentgate.evaluation.sabotage_v3_t1 import SPEND_ENV_VAR, SPEND_FLAG
+from incidentgate.evaluation.sabotage_v3_t1 import (
+    SPEND_ENV_VAR,
+    SPEND_FLAG,
+    provider_envelope_json,
+)
 from incidentgate.evaluation.sabotage_v4 import (
     AttemptEstablishment,
     SabotageEvaluationResultV4,
@@ -1042,6 +1046,23 @@ def _monitor_provenance(
         input_schema_version=input_schema_version,
         prompt_version=prompt_version,
         scenario_projection_sha256=scenario_projection_sha256,
+        # THE ENVELOPE THE MONITOR'S REQUEST WAS CARRIED IN, ADDED 2026-08-25.
+        #
+        # The attacker path has recorded this since the OpenAI arm; the monitor
+        # path never did, so all 20 hosted monitor captures and 19 of 21 local
+        # ones carry ``request_envelope: null``. That is honest -- ``None`` means
+        # "not recorded" and never "no difference" -- but it is a gap of this
+        # project's recurring shape: the record not saying what produced it.
+        #
+        # Built from *this* request rather than from the provider name, for the
+        # reason ``provider_envelope_json`` gives: a descriptor of what the
+        # transport usually does can stay reassuring while the request said
+        # something else. It matters most here, because the sampling defaults
+        # this project measured differ per local model on one server.
+        #
+        # Forward only. The captures already taken are not re-taken and are not
+        # rewritten; they keep their null and the finding says which those are.
+        request_envelope=provider_envelope_json(provider, request),  # type: ignore[arg-type]
         stop_reason="end_turn",
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,

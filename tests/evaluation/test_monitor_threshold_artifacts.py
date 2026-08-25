@@ -396,6 +396,8 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
         "T4-a-priori-claude-opus-5-v3.json",
         "T4-a-priori-gpt-5.5-v2.json",
         "T4-a-priori-gpt-5.5-v3.json",
+        "T4-a-priori-mistral-nemo-12b-v2.json",
+        "T4-a-priori-mistral-nemo-12b-v3.json",
         "T4-a-priori-qwen3-14b-v2.json",
         "T4-a-priori-qwen3-14b-v3.json",
     ]
@@ -405,6 +407,7 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
     }
     assert seats == {
         ("local", "qwen3-14b"),
+        ("local", "mistral-nemo-12b"),
         ("anthropic", "claude-opus-5"),
         ("openai", "gpt-5.5"),
     }
@@ -444,8 +447,8 @@ def test_every_t4_generation_shares_one_decision_rule() -> None:
     name the rendering.
     """
     artifacts = [load_a_priori_thresholds(path) for path in T4_COMMITTED]
-    assert len(artifacts) == 6, "three seats x two input generations"
-    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 6
+    assert len(artifacts) == 8, "four seats x two input generations"
+    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 8
     # Sorted by filename, so the first two are one seat's pair whatever seats exist.
     assert artifacts[0].model == artifacts[1].model
     v3_input, v4_input = artifacts[0], artifacts[1]

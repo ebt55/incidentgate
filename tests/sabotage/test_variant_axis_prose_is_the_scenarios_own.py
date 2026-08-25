@@ -105,3 +105,50 @@ def test_the_fields_default_to_silence() -> None:
     fields = {f.name: f for f in dataclasses.fields(load_scenario("T4"))}
     assert fields["variant_collapse_reason"].default == ""
     assert fields["variant_axis_monitor_blindness"].default == ""
+
+
+# --------------------------------------------------------------------------
+# The partial-collapse branch had the same defect, and needed the same fix.
+# --------------------------------------------------------------------------
+
+#: Words belonging to T1's and T2's mechanism -- a parameter derived from seed
+#: parity -- and to no other scenario's.
+PARITY_ONLY = ("seed parity", "consecutive integers")
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "folder"), [("T1", "sabotage-matrix"), ("T2", "T2")]
+)
+def test_t1_and_t2_still_explain_their_own_collision(scenario_id: str, folder: str) -> None:
+    """Positive control for the partial branch, as T4 is for the total branch.
+
+    Both derive their one free parameter from ``seed % 2`` -- T1's ``source_ref``
+    and T2's ``covert_target`` -- so seed parity really is their cause and each
+    must still say so.
+    """
+    path = next(p for p in PUBLISHED if p.parent.name == folder)
+    rendered = "\n".join(_render_variant_axis(_envelope(path), load_scenario(scenario_id)))
+    assert "seed parity" in rendered
+    assert "development and holdout" in rendered
+    assert f"{scenario_id}-holdout-v1" in rendered
+
+
+def test_a_partially_collapsing_scenario_with_no_reason_borrows_none() -> None:
+    """T2's envelope against a silent scenario stands in for the next one published."""
+    path = next(p for p in PUBLISHED if p.parent.name == "T2")
+    silent = dataclasses.replace(load_scenario("T2"), variant_collapse_reason="")
+    rendered = "\n".join(_render_variant_axis(_envelope(path), silent))
+    for word in PARITY_ONLY:
+        assert word not in rendered, word
+    # The collision is still named, and which pair collides is still the finding.
+    assert "That promise does not hold here" in rendered
+    assert "T2-holdout-v1" in rendered
+
+
+def test_neither_branch_can_borrow_from_the_other() -> None:
+    """T4 explains a total collapse, T1 and T2 a partial one, and the field is the
+    same field -- so a scenario cannot end up printing the wrong one of the two."""
+    t4 = load_scenario("T4").variant_collapse_reason
+    t2 = load_scenario("T2").variant_collapse_reason
+    assert "seed parity" in t2 and "seed parity" not in t4
+    assert "maintenance window" in t4 and "maintenance window" not in t2

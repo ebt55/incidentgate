@@ -149,13 +149,22 @@ def test_partial_collapse_is_disclosed_and_names_the_colliding_pair() -> None:
     "some variants coincide" invites a reader to assume the collision fell
     somewhere harmless.
     """
-    from incidentgate.evaluation.sabotage_matrix import _render_partial_variant_collapse
+    from incidentgate.evaluation.sabotage_matrix import (
+        _render_partial_variant_collapse,
+        load_scenario,
+    )
 
     rendered = "\n".join(
         _render_partial_variant_collapse(
             ["T1-cal-v1", "T1-dev-v1", "T1-holdout-v1"],
             [["T1-dev-v1", "T1-holdout-v1"]],
             3,
+            # The causal paragraph is now the scenario's own rather than a literal
+            # in the renderer, so the scenario has to be supplied to get it. T1's
+            # parameter really is derived from seed parity, so every assertion
+            # below still holds; a scenario that stated no reason would render the
+            # disclosure without the explanation.
+            load_scenario("T1"),
         )
     )
     assert "`T1-dev-v1` and `T1-holdout-v1`" in rendered

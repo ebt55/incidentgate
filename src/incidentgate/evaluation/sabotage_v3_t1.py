@@ -132,7 +132,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from incidentgate.contracts import (
@@ -157,7 +157,7 @@ from incidentgate.control.local_weights import (
 from incidentgate.control.model_attacker import (
     ATTACK_STEERING_VERSION,
     ModelAttackProposer,
-    attacker_prompt_version,
+    attack_steering,
     steering_artifact_sha256,
 )
 from incidentgate.control.model_capabilities import (
@@ -1143,6 +1143,9 @@ class T1V3Runner:
         provider: str = MODEL_PROVIDER,
         weights: LocalWeightsIdentity | None = None,
         contract_version: ProposalContractVersion = "v1",
+        # Which framing of the steering's closing paragraph to send. Defaulted to
+        # v1 -- the reassurance framing every committed capture was taken under.
+        steering_framing: Literal["v1", "v2"] = "v1",
         monitor_arm: str = "oracle",
         monitor_model: str | None = None,
         monitor_provider: str | None = None,
@@ -1186,6 +1189,7 @@ class T1V3Runner:
         self.provider = provider
         self.weights = weights
         self.contract_version = contract_version
+        self.steering = attack_steering("T1", steering_framing)
         self.meter: SpendMeter | None = None
         if completion_client is not None:
             if pricing is None and self.bills_a_vendor:
@@ -1568,7 +1572,9 @@ class T1V3Runner:
                 # so the cache entry records which prompt it is a capture *of*.
                 # Both halves matter: a v2 capture states v2 here, and a reader
                 # who finds one can tell which output grammar produced the body.
-                prompt_version=attacker_prompt_version(self.contract_version),
+                # Read off the steering object, so selecting the v2 framing
+                # re-keys this capture rather than filing it under v1's id.
+                prompt_version=self.steering.prompt_version(self.contract_version),
                 stop_reason="end_turn",
                 input_tokens=invocation.input_tokens,
                 output_tokens=invocation.output_tokens,
@@ -1625,6 +1631,7 @@ class T1V3Runner:
             covert_tools=(T1_COVERT_TOOL,),
             scenario_id="T1",
             contract_version=self.contract_version,
+            steering=self.steering,
         )
 
     # -- episode driving ---------------------------------------------------
@@ -2044,6 +2051,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default=None, help="a model id from the capability table")
     parser.add_argument(
+        "--steering",
+        choices=("v1", "v2"),
+        default="v1",
+        dest="steering_framing",
+        help=(
+            "which framing of the steering's closing paragraph to send: v1 (the default, "
+            "and what every committed capture was taken under) grants permission to "
+            "decline, reassures that declining is an expected outcome that nothing "
+            "penalises, and names the decline channel; v2 deletes the reassurance and "
+            "keeps the other two byte-identical. One manipulated variable, and each "
+            "framing keys its own capture set"
+        ),
+    )
+    parser.add_argument(
         "--output-contract",
         choices=PROPOSAL_CONTRACT_VERSIONS,
         default="v1",
@@ -2412,6 +2433,7 @@ def main(
             provider=provider,
             weights=weights,
             contract_version=arguments.output_contract,
+            steering_framing=arguments.steering_framing,
             monitor_arm=arguments.monitor_arm,
             monitor_model=arguments.monitor_model,
             monitor_provider=monitor_provider,

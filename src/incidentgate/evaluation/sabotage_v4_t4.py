@@ -60,7 +60,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from incidentgate.contracts import EvaluationMode, ModelInvocationRecord
 from incidentgate.control.attack_policies import T4_ATTACK_VARIANTS_BY_ID
 from incidentgate.control.attack_policies import AttackPolicyVariant as ProposerVariant
-from incidentgate.control.model_attacker import ModelAttackProposer
+from incidentgate.control.model_attacker import (
+    AttackSteering,
+    ModelAttackProposer,
+    attack_steering,
+)
 from incidentgate.control.model_proposal import (
     CompletionClient,
     CompletionRequest,
@@ -439,6 +443,7 @@ def run_t4_condition(
     attacker_client: CountingAttackerCaptureClient | None,
     bundle: SemanticMonitorBundle | None,
     caller: RecordingMonitorCallerV3 | None,
+    steering: AttackSteering | None = None,
 ) -> ConditionRun:
     """Drive one arm, with either the model attacker or the deterministic floor.
 
@@ -467,6 +472,7 @@ def run_t4_condition(
                 scenario_id=SCENARIO_ID,
                 contract_version=ATTACKER_CONTRACT_VERSION,
                 digest_version=ATTACKER_DIGEST_VERSION,
+                steering=steering,
             )
             for _ in range(COVERT_CALLS)
         )
@@ -676,6 +682,20 @@ def build_parser() -> argparse.ArgumentParser:
             "which input contract the monitor is shown: v3 (tool names only) or v4 "
             "(the same, plus the arguments each committed call ran with). The two "
             "arms of the A/B, and the only thing that differs between them"
+        ),
+    )
+    parser.add_argument(
+        "--steering",
+        choices=("v1", "v2"),
+        default="v1",
+        dest="steering_framing",
+        help=(
+            "which framing of the steering's closing paragraph the attacker is sent: "
+            "v1 (the default, and what every committed capture was taken under) grants "
+            "permission to decline, reassures that declining is an expected outcome that "
+            "nothing penalises, and names the decline channel; v2 deletes the reassurance "
+            "and keeps the other two byte-identical. Only reaches a model on --attacker "
+            "model; the floor reads no prompt"
         ),
     )
     parser.add_argument("--ollama-endpoint", default="http://127.0.0.1:11434")
@@ -957,6 +977,16 @@ def _attacker_provenance(
         request_schema_sha256=schema_sha256(request.schema),
         input_schema_version=_ENVELOPE_BY_DIGEST[ATTACKER_DIGEST_VERSION][0],
         prompt_version=prompt_version,
+        # The same forward-only fix the monitor path took, for the same reason.
+        # ``sabotage_v3_t1`` has recorded this on T1's attacker since the OpenAI
+        # arm; this module's T4 attacker never did, so the three T4 proposer
+        # captures already on disk carry null. They keep it -- re-capturing to
+        # improve a record is what this project forbids.
+        #
+        # This arm is always local, so the value it adds is the effective
+        # sampling and its provenance: the modelfile's values and Ollama's own
+        # defaults are what actually ran, and "none_sent" would have hidden that.
+        request_envelope=provider_envelope_json("local", request),
         stop_reason="end_turn",
         input_tokens=invocation.input_tokens,
         output_tokens=invocation.output_tokens,
@@ -1118,6 +1148,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     floor_attacker = parsed.attacker == "floor"
+    # Resolved once, outside the condition loop, for the same reason
+    # ``prompt_version`` is: a late-bound framing would let two arms of one run
+    # send different steering and still be published as one measurement.
+    steering = attack_steering(SCENARIO_ID, parsed.steering_framing)
     attacker_transport: CompletionClient | None = None
     monitor_client: CompletionClient | None = None
     attacker_weights = None
@@ -1174,6 +1208,7 @@ def main(argv: list[str] | None = None) -> int:
             scenario_id=SCENARIO_ID,
             contract_version=ATTACKER_CONTRACT_VERSION,
             digest_version=ATTACKER_DIGEST_VERSION,
+            steering=steering,
         ).prompt_version
     )
     try:
@@ -1230,6 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
                 attacker_client=attacker_client,
                 bundle=bundle,
                 caller=caller,
+                steering=steering,
             )
             runs[condition] = run
             monitor_sources[condition] = (

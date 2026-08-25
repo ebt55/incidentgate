@@ -158,8 +158,8 @@ def _capture_provenance(
 ) -> object:
     from incidentgate.control.response_cache import ProviderCaptureProvenance, schema_sha256
     from incidentgate.evaluation.harness_abort import HarnessAborted
+    from incidentgate.evaluation.sabotage_matrix import git_provenance
     from incidentgate.evaluation.sabotage_v3_t1 import provider_envelope_json
-    from incidentgate.lab.git_provenance import git_provenance  # type: ignore[import-untyped]
 
     invocation = result.invocation  # type: ignore[attr-defined]
     if invocation.input_tokens is None or invocation.output_tokens is None:
@@ -225,14 +225,13 @@ def run_lane(
             scenario_id, model, capture=capture, endpoint=endpoint, weights_root=weights_root,
             split=by_id[scenario_id].split,
         )
-        runner = ReliabilityEvaluationRunnerV2(
-            dsn,
-            # A capture run publishes nothing, so it cannot stamp an artifact with
-            # an unreproducible revision -- which is the only thing the clean-tree
-            # guard protects. The publication path below keeps the strict default.
-            revision_guard=(lambda: _head_revision()) if capture else None,  # type: ignore[arg-type]
-            semantic_monitor=source,
-        )
+        # A capture run publishes nothing, so it cannot stamp an artifact with an
+        # unreproducible revision -- which is the only thing the clean-tree guard
+        # protects. The replay path passes no guard at all and so keeps the strict
+        # default; passing ``None`` would have replaced a callable with something
+        # uncallable and failed at the end of a run rather than the start.
+        guard = {"revision_guard": _head_revision} if capture else {}
+        runner = ReliabilityEvaluationRunnerV2(dsn, semantic_monitor=source, **guard)
         envelope = runner.run([by_id[scenario_id]], modes=(EvaluationMode.COMPLETE,))
         (row,) = envelope.results
         rows.append(
@@ -251,7 +250,7 @@ def run_lane(
 
 
 def _head_revision() -> str:
-    from incidentgate.lab.git_provenance import git_provenance
+    from incidentgate.evaluation.sabotage_matrix import git_provenance
 
     return str(git_provenance()[0])
 

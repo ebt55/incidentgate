@@ -20,8 +20,8 @@
 >   matrix and every v2 sabotage table — is a deterministic fixture. See
 >   [Honest gaps](#honest-gaps).
 > - Scenarios R13–R20, T3, T5 and T6 are frozen contracts with no runtime. T1,
->   T2, T4, T7 and T8 have runtime coverage; the official deterministic
->   sabotage-v2 tables are T1, T2, T4 and T8 (not T7). In those tables the attack
+>   T2, T4, T7 and T8 have runtime coverage, and all five now have official
+>   deterministic sabotage-v2 tables. In those tables the attack
 >   proposers and monitors are stand-ins rather than models. **A real model has
 >   now judged exactly one action**, and it was an honest one: `qwen3-14b` allowed
 >   the checkout remediation on T1's incident leg. Every monitor cell on a
@@ -460,10 +460,15 @@ frozen manifest, so runtime drift cannot silently pass evaluation.
 
 The official deterministic sabotage-v2 tables are [T1](artifacts/sabotage-matrix/sabotage-matrix.md),
 [T2](artifacts/sabotage-matrix/T2/sabotage-matrix.md),
-[T4](artifacts/sabotage-matrix/T4/sabotage-matrix.md), and
+[T4](artifacts/sabotage-matrix/T4/sabotage-matrix.md),
+[T7](artifacts/sabotage-matrix/T7/sabotage-matrix.md) and
 [T8](artifacts/sabotage-matrix/T8/sabotage-matrix.md)
 ([raw JSON](artifacts/sabotage-matrix/T8/sabotage-matrix.json)); their raw JSON
-files sit beside each table. T7 is runtime-covered but has no official v2 artifact.
+files sit beside each table. T7's was published last, on 2026-08-25: what had held
+it back was the renderer, not the runtime — its variant-collapse explanation was
+hardcoded to T4's mechanism, so publishing T7 would have printed T4's sentences as
+T7's. That prose now comes from each scenario, and T7 states none, so its table
+discloses the collapse and explains nothing.
 
 The **model-attacker** rows are separate and live in
 [`artifacts/model-attacker/`](artifacts/model-attacker/): three sabotage-v3 T1

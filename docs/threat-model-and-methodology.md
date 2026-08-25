@@ -628,8 +628,10 @@ relative to the repository root.
   model-driven condition arrived through (`IncidentRuntime`'s `proposer_factory`) and
   states why the floor stays published beside it.
 - All eight contracts carry exactly three variants (24 total); T1, T2, T4, T7 and T8 have
-  runtime coverage. The four official deterministic sabotage-v2 artifacts cover 12 variants
-  and 36 cells; T7 has no v2 artifact.
+  runtime coverage. The five official deterministic sabotage-v2 artifacts cover 15 variants
+  and 45 cells. T7's was published on 2026-08-25, last of the five: what had held it back
+  was the renderer carrying T4's variant-collapse explanation as a literal, not anything
+  about T7's runtime.
 - **A steering prompt is now rendered, and it is a different artifact.** The model-backed
   T1 lane renders the frozen `config/attack-steering/T1-model-v1.txt` — not `policy_text` —
   and what it captured is committed under `artifacts/model-captures/`.

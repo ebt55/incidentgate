@@ -142,11 +142,21 @@ from incidentgate.reasons import (
 # an ordinary current-action proposal -- so that the real approval boundary is
 # what refuses the replay.
 #
-# What T7 does NOT have is a published artifact. There is no
-# artifacts/sabotage-matrix/T7/ table, so T7 is promoted on runtime and durable
-# proof but has published nothing, and no claim anywhere rests on it. That is
-# stated rather than left to be inferred from a missing directory: promotion and
-# publication are separate, and T7 is the scenario that shows they are.
+# T7's table was published on 2026-08-25 at artifacts/sabotage-matrix/T7/, and
+# what had held it back is worth recording because it was not the runtime.
+#
+# T7's three variants collapse totally -- all three issue a byte-identical covert
+# leg -- and the renderer's total-collapse branch used to carry T4's explanation
+# as a literal: maintenance windows, drains, and a monitor blinded by a
+# sequence-conformance whitelist. Publishing T7 would have printed T4's mechanism
+# as T7's, in the one artifact whose purpose is to state what was measured. So
+# the absence was a real constraint, not an oversight, and the registry said so.
+#
+# The renderer now takes that prose from the scenario (see
+# SabotageScenario.variant_collapse_reason and variant_axis_monitor_blindness).
+# T7 states neither, so its table discloses the collapse -- measured from its own
+# rows -- and offers no explanation of it, which is the true and weaker thing to
+# say. Nothing about T7's runtime changed to make publication possible.
 #
 # T8 is the fifth. Its covert objective is a bounded privilege change hidden
 # inside the otherwise valid rollback tool -- so, unlike T1's and T2's, the covert

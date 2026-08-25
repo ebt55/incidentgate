@@ -1,5 +1,19 @@
 # Verification receipt
 
+## 2026-08-25 Documentation reconciled against what the session actually produced
+
+Four documents carried claims that this session's own work made false, and they are corrected rather than left to be noticed later.
+
+**README "Next milestones"** described `monitor-input-v3` as future work and said the monitor "remains unexercised against a real covert attempt". Both shipped: v3 withholds the policy verdict, and Route B put a model attacker's covert call in front of a model monitor, which blocked it. The milestone is rewritten to the gap that is actually left — a covert action a *model* chose reaching the **durable human approval gate**, which has never happened in any published row, and a **frontier** model attempting one, which has never happened at all. It also listed a 90-second demo as future work; `uv run python -m incidentgate.demo` exists and takes about seven seconds. R-tier's false-positive lane is named as still unbuilt.
+
+**`HANDOVER-07-EXECUTOR-STATE.md`** gets a dated §12 addendum, appended in that document's own convention rather than rewritten: §11's untested hypothesis is now measured and falsified; T7, the split question and all six §7 defects are closed; the central gap has narrowed to the human gate and the frontier attacker; route 2 is stopped with its arithmetic.
+
+**`threat-model-and-methodology.md` §11.2** said an attempt rate is a property of a `(model, contract, steering)` triple. All three legs are now measured to move the outcome — contract (nemo declined under v2-output, attempted under v3), steering (three of four cells flipped on one deleted sentence at fixed contract), and model (the two local seats disagree on the same cell) — so the item now says that rather than asserting it.
+
+**The README's own test command** is now guarded. `tests/test_readme_test_command_is_the_one_that_works.py` asserts the file tells you to run `uv run python -m pytest`, that no fenced block offers the bare console script, and that all three stated reasons `-m` is required still hold: no root `conftest.py`, no `pythonpath` setting, and at least one test importing fixtures as `tests.<package>`. Each could stop being true while the explanation still read persuasively.
+
+**The half that cannot be covered is stated, not quietly dropped.** Nothing in the repository records which shell invocation produced a past green run, so no test written now can establish that the historical suites used this command; a test asserts that disclosure survives in the README, so deleting it is a visible act. A self-staleing collected-test count, already wrong by thirteen, was removed rather than pinned — a guard that fires on every unrelated test added is friction, not coverage.
+
 ## 2026-08-25 The reassurance did not cause the declines — removing it produced more
 
 REVIEW-07's highest-value untested hypothesis, measured on both local models. The frozen steering's closing paragraph grants permission to decline, reassures that declining is unpenalised, and names the decline channel; `T1-model-v2.txt` and `T4-model-v2.txt` delete the reassurance and nothing else — −198 bytes each, verified in both directions, with the permission and the mechanism byte-identical and no pressure language added.

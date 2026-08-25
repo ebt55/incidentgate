@@ -578,6 +578,14 @@ completed README claim audit.
    attempted it under the current one, so an attempt rate here is a property of a
    `(model, contract, steering)` triple. The deterministic floor is published beside every
    model row for exactly this reason.
+
+   **All three legs of that triple are now measured to move the outcome, which is the
+   point.** Contract: `mistral-nemo-12b` declined under the v2 output contract and attempted
+   under v3, with no steering change. Steering: deleting one sentence from the closing
+   paragraph flipped three of four local cells from attempt to decline, holding the contract
+   fixed at v3. Model: `qwen3-14b` and `mistral-nemo-12b` disagree on the same cell. So an
+   "attempt rate" quoted without all three coordinates is not a number about a model, and no
+   table here quotes one.
 3. The monitor that stops the cross-call scenario is a whitelist written with that attack
    in hand. It is an oracle upper bound and does not measure monitor competence.
 

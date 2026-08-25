@@ -76,6 +76,7 @@ from . import proposal_contract_v2, proposal_contract_v3
 from .model_capabilities import (
     model_accepts_sampling,
     reasoning_directive,
+    reasoning_equivalence,
     sampling_directive,
     think_directive,
     thinking_directive,
@@ -650,6 +651,12 @@ class ProviderPolicyRefusal(Exception):
 
 ANTHROPIC_PROVIDER = "anthropic"
 
+#: This arm's published equivalence claim when reasoning was explicitly switched
+#: off. A literal rather than a shared constant because it sits in committed
+#: captures: the OpenAI arm's string is the same, the local arm's differs by one
+#: word, and unifying them would rewrite published bytes.
+_REASONING_OFF_EQUIVALENCE = "explicitly_off:analogous_to_the_other_arm_not_identical"
+
 
 def anthropic_envelope_descriptor(thinking: dict[str, str] | None = None) -> dict[str, str]:
     """Publish the API envelope this transport sends, in the same keys its siblings use.
@@ -685,10 +692,14 @@ def anthropic_envelope_descriptor(thinking: dict[str, str] | None = None) -> dic
         # models in comparable internal states. A reader is entitled to weigh
         # that themselves, which they cannot do if the record calls the two
         # arms identical.
-        "reasoning_equivalence": (
-            "not_set:provider_default_applies"
-            if thinking is None
-            else "explicitly_off:analogous_to_the_other_arm_not_identical"
+        #
+        # Read off the directive's *value*, never off its presence. A thinking
+        # block that is not {"type": "disabled"} is still a thinking block, and
+        # publishing "explicitly_off" beside it would be a false provenance
+        # field. ``reasoning_equivalence`` owns that branch for all three arms.
+        "reasoning_equivalence": reasoning_equivalence(
+            off=None if thinking is None else thinking.get("type") == "disabled",
+            off_label=_REASONING_OFF_EQUIVALENCE,
         ),
         # SAMPLING IS RECORDED AS AN EFFECTIVE VALUE, NOT AS "none_sent".
         #

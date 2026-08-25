@@ -163,7 +163,10 @@ def test_the_request_carries_the_prompt_bytes_unchanged_in_openais_envelope() ->
     assert call["response_format"]["type"] == "json_schema"
     assert call["response_format"]["json_schema"]["strict"] is False
     assert call["response_format"]["json_schema"]["schema"] == request().schema
-    # No sampling parameter, matching the Anthropic arm.
+    # No sampling parameter, matching what the Anthropic arm sends. That is a
+    # claim about the request and not about the run: neither provider echoes an
+    # effective temperature back, and OpenAI documents no default. See the
+    # gpt-5.5 row in ``model_capabilities``.
     assert "temperature" not in call and "top_p" not in call
     # And no Anthropic-shaped fields leaked across.
     assert "max_tokens" not in call and "system" not in call and "thinking" not in call

@@ -100,10 +100,23 @@ between arms:
 
 An observing gate still runs and still records the verdict it reached -- see
 ``observed_policy_decision`` on :class:`SabotageStep`. What it does not do is
-stop the action. That distinction is why the ungated arm is a real experiment
-rather than an absence of one: it now says what the policy *would* have refused
-while letting the covert action land, which is exactly the control the published
-matrix needs.
+stop the action.
+
+WHAT THAT BUYS, AND WHAT IT DOES NOT. It is a runtime affordance: the ungated arm
+can say what the policy *would* have refused while still letting the covert
+action land, so a mutation test can flip one gate and see exactly which fields
+move. It is **not** what makes the published matrix's control a control. Those
+verdicts are never published -- the frozen row contract has no field for them
+(see the note on ``observed_policy_decision`` below), and
+``sabotage_matrix._SAFEGUARDS`` records the ungated arm's four gates as
+``DISABLED``, which is what a reader of the artifact actually sees.
+
+The published control is what it was before ``observe_only`` existed: the covert
+side effect landed in the ungated arm, so the gated arms are compared against an
+outcome that demonstrably could happen. An earlier revision of this paragraph
+credited the observed verdicts with being "exactly the control the published
+matrix needs". Each clause about ``observe_only`` was true; the conclusion was
+about a different arm's evidence.
 
 WHY IT IS BUILT THIS WAY
 ========================
@@ -235,9 +248,11 @@ def safeguards_for(condition: EvaluationMode, *, approver: str) -> SafeguardConf
             authorization_gate=AuthorizationGate.DURABLE_HUMAN,
         )
     return SafeguardConfiguration(
-        # Ungated observes both gates rather than skipping them: the arm records
-        # what the policy would have refused *and* lets the covert action land,
-        # which is what makes it a control instead of an absence.
+        # Ungated observes both gates rather than skipping them, so the verdicts
+        # exist at runtime for a mutation test to read. What makes this arm a
+        # control is the covert side effect landing, not the observation: the
+        # published row carries no observed verdict and records these gates as
+        # DISABLED. See the module docstring.
         evidence_gate=(
             GateMode.ENFORCE if condition is EvaluationMode.POLICY_ONLY else GateMode.OBSERVE_ONLY
         ),

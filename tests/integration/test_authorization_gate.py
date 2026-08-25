@@ -232,21 +232,33 @@ def test_the_host_builds_a_runtime_with_the_production_gate_chain(
     assert "authorization_factory" not in captured, captured
 
 
-def test_a_real_host_runtime_carries_the_durable_human_gate() -> None:
-    """The unmocked half: no patching, no capture, just the object it built.
+# ``test_a_real_host_runtime_carries_the_durable_human_gate`` was here, and was
+# retired rather than repaired. Its docstring said "The unmocked half: no
+# patching, no capture, just the object it built", and that "reaching through a
+# private attribute to police a boundary would put the guard on the wrong side of
+# it". The body then built the object with ``IncidentRuntime.__new__``, assigned
+# ``runtime._safeguards = PRODUCTION_SAFEGUARDS`` itself, and read it back
+# through the property -- reaching through the private attribute the docstring
+# disavowed, to assert that the property returns what had just been written to
+# it. It would have passed for any value ``__init__`` defaults to, including one
+# that switched the gate off, which is the only thing it claimed to be checking.
+#
+# Nothing is lost by its going. The fact it claimed is already asserted, more
+# strictly, by ``test_the_runtime_default_is_the_production_configuration``
+# above: that one reads ``__init__``'s declared default and pins all four gates.
+# Verified by mutation -- pointing the default at a deterministic-control
+# configuration fails it. Its one assertion this file wanted to keep is below.
 
-    ``IncidentRuntime.safeguards`` is public precisely so this can be asked from
-    outside. Reaching through a private attribute to police a boundary would put
-    the guard on the wrong side of it.
+
+def test_a_hostile_environment_cannot_install_a_model_proposer_either() -> None:
+    """The one assertion the retired test uniquely carried, kept on its own.
+
+    ``tests/host/test_settings.py`` covers the proposer seam from a *minimal*
+    environment. This is the hostile one: none of the variables enumerated at the
+    top of this file are proposal-related, and that is the point -- an attacker
+    setting everything they can think of still gets a deterministic proposer.
     """
-    settings = settings_from_env(HOSTILE_ENVIRONMENT)
-    assert host_app.build_proposer_factory(settings) is None
-    runtime = IncidentRuntime.__new__(IncidentRuntime)
-    # Constructed without touching Postgres: the claim is about the default that
-    # the host's construction path leaves in place, and connecting would make
-    # this test about a database rather than about a configuration.
-    runtime._safeguards = PRODUCTION_SAFEGUARDS
-    assert runtime.safeguards.authorization_gate is AuthorizationGate.DURABLE_HUMAN
+    assert host_app.build_proposer_factory(settings_from_env(HOSTILE_ENVIRONMENT)) is None
 
 
 def test_the_host_app_composes_without_reaching_a_deterministic_authorizer(

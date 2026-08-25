@@ -169,10 +169,22 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapability] = MappingProxyType(
         # a model version.
         #
         # accepts_sampling=False: the sabotage attacker sends no sampling
-        # parameter at all, on either provider, because the two arms have to be
-        # comparable and the Anthropic arm cannot send one. Recording False is
-        # what makes ModelAgentProposer refuse a temperature here, so the
-        # comparability is enforced rather than remembered.
+        # parameter at all, on either provider -- the Anthropic arm cannot send
+        # one, and this arm matches it. Recording False is what makes
+        # ModelAgentProposer refuse a temperature here, so the symmetry is
+        # enforced rather than remembered.
+        #
+        # WHAT THAT SYMMETRY IS, SINCE AN EARLIER REVISION OVERSTATED IT.
+        #
+        # It is symmetry in what is *sent*, and that is the whole of it. This
+        # comment used to conclude that the two arms were therefore "comparable",
+        # which is a claim about what was *applied* and does not follow: Anthropic
+        # documents a default temperature of 1.0 and OpenAI's Chat Completions
+        # reference documents none, so this arm's effective value is unknown and
+        # is published as unknown. See ``_SAMPLING``, which has always said so --
+        # two statements in one file, one of them drawing the stronger
+        # conclusion. Neither provider echoes an effective temperature back, so
+        # this is not a gap a capture could close.
         #
         # thinking="send_effort_none": reasoning is ON when nothing is sent.
         # Per OpenAI's reasoning guide, gpt-5.5 defaults to `medium`, reasoning
@@ -460,3 +472,48 @@ def think_directive(model: str) -> bool | None:
 def thinking_headroom_tokens(model: str) -> int:
     """Extra max_tokens this model needs because its thinking cannot be turned off."""
     return THINKING_HEADROOM_TOKENS if capability(model).thinking == "reserve_budget" else 0
+
+
+#: What a published envelope says when no reasoning directive was sent at all.
+#: Whatever the provider does by default is what ran, and this arm cannot claim
+#: analogy with an arm that switched reasoning off.
+REASONING_NOT_SET = "not_set:provider_default_applies"
+
+#: What a published envelope says when a directive was sent and it is *not* off.
+#: Nothing in this lab sends one today, which is exactly why the value has to
+#: exist: see :func:`reasoning_equivalence`.
+REASONING_EXPLICITLY_ON = "explicitly_on:not_analogous_to_an_arm_with_reasoning_off"
+
+
+def reasoning_equivalence(*, off: bool | None, off_label: str) -> str:
+    """The published claim about how this arm's reasoning setting relates to the others'.
+
+    THE BRANCH THIS REPLACES WAS ON THE WRONG QUESTION, IN THREE FILES.
+
+    Each of the three transports asked "was a directive sent?" and published
+    ``explicitly_off:...`` for every non-``None`` answer. Sent and off are not the
+    same fact. An Ollama request carrying ``think=True`` is a directive, and it
+    turns reasoning *on*; the envelope beside it would have read
+    ``reasoning_control=think=true`` and ``reasoning_equivalence=explicitly_off``
+    in the same object. Every individual clause of the old code was true of the
+    values actually sent -- which is why it survived a review, a contract pass and
+    a full gate -- and the conclusion it drew did not follow from the test it ran.
+
+    Latent rather than live: every directive this lab sends today *is* off, so no
+    committed capture carries a wrong value, and none is being re-taken. The fix
+    is to ask the right question, not to rely on the callers continuing to be
+    lucky.
+
+    ``off`` is tri-state on purpose. ``None`` means no directive was sent, which
+    is a third outcome and not a synonym for "on" -- an omitted parameter runs at
+    whatever the provider defaults to, which this lab has measured to differ per
+    provider and per local model, and the arm can claim nothing either way.
+
+    ``off_label`` is supplied by the caller because the three published strings
+    differ (the local arm compares itself to two other arms and says "arms"), and
+    those strings sit in committed captures. Passing it keeps this function from
+    rewriting published bytes while still owning the branch.
+    """
+    if off is None:
+        return REASONING_NOT_SET
+    return off_label if off else REASONING_EXPLICITLY_ON

@@ -93,13 +93,13 @@ conform. The provider-facing schema is a hint here, exactly as
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any, Final
 
 from incidentgate.contracts import ModelInvocationRecord
 from incidentgate.reasons import PROPOSAL_MODEL_OUTPUT_TRUNCATED
 
+from .model_capabilities import REASONING_EFFORT_OFF, reasoning_equivalence
 from .model_proposal import (
     CompletionRequest,
     CompletionResult,
@@ -127,6 +127,11 @@ _COMPLETE_FINISH_REASON: Final = "stop"
 #: 2026-08-20. Named as a constant because the request, the capability table and
 #: the published envelope all have to agree on it.
 _REASONING_EFFORT_FIELD: Final = "reasoning_effort"
+
+#: This arm's published equivalence claim when reasoning was explicitly switched
+#: off. See the matching constant in ``model_proposal``: it is a literal here
+#: because it sits in committed captures.
+_REASONING_OFF_EQUIVALENCE: Final = "explicitly_off:analogous_to_the_other_arm_not_identical"
 
 
 def openai_envelope_descriptor(reasoning: dict[str, str] | None = None) -> dict[str, str]:
@@ -159,10 +164,18 @@ def openai_envelope_descriptor(reasoning: dict[str, str] | None = None) -> dict[
         # equivalence. Two different parameters on two different APIs are not
         # shown to leave two models in comparable internal states, and the record
         # must not imply otherwise.
-        "reasoning_equivalence": (
-            "not_set:provider_default_applies"
-            if reasoning is None
-            else "explicitly_off:analogous_to_the_other_arm_not_identical"
+        #
+        # The effort value decides this, not the presence of the parameter. This
+        # arm is the one where the difference is most easily reached: every
+        # effort gpt-5.5 accepts other than "none" leaves reasoning on, and the
+        # old branch would have published "explicitly_off" for all of them.
+        "reasoning_equivalence": reasoning_equivalence(
+            off=(
+                None
+                if reasoning is None
+                else reasoning.get("effort") == REASONING_EFFORT_OFF
+            ),
+            off_label=_REASONING_OFF_EQUIVALENCE,
         ),
         # UNKNOWN, AND RECORDED AS UNKNOWN.
         #
@@ -366,6 +379,12 @@ class OpenAICompletionClient:
         )
 
 
-def openai_envelope_json() -> str:
-    """The envelope descriptor as canonical JSON, for recording in provenance."""
-    return json.dumps(openai_envelope_descriptor(), sort_keys=True, separators=(",", ":"))
+# ``openai_envelope_json()`` used to live here and was deleted rather than fixed.
+# It called the descriptor with no arguments, so it published
+# "reasoning_effort:omitted:provider_default_applies" for an arm that has always
+# sent reasoning_effort="none" -- the exact failure
+# ``sabotage_v3_t1.provider_envelope_json`` was written to make impossible, and
+# its docstring names it: a descriptor that describes what this transport usually
+# does can stay reassuring while the request says something else. Nothing called
+# it; ``provider_envelope_json`` builds all three arms' envelopes from the request
+# that was actually sent.

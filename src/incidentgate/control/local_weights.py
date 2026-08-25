@@ -86,8 +86,14 @@ from urllib.parse import urlparse
 from incidentgate.contracts import ModelInvocationRecord
 from incidentgate.reasons import PROPOSAL_MODEL_OUTPUT_TRUNCATED
 
+from .model_capabilities import reasoning_equivalence
 from .model_proposal import CompletionRequest, CompletionResult
 from .proposal import ProposalError
+
+#: This arm's published equivalence claim when reasoning was explicitly switched
+#: off. Plural "arms" -- it compares itself against two others, where each hosted
+#: arm compares against one. A literal because it sits in committed captures.
+_REASONING_OFF_EQUIVALENCE = "explicitly_off:analogous_to_the_other_arms_not_identical"
 
 PROVIDER: Final = "local"
 
@@ -449,10 +455,15 @@ def ollama_envelope_descriptor(
             if think is None
             else f"think={str(think).lower()}"
         ),
-        "reasoning_equivalence": (
-            "not_set:provider_default_applies"
-            if think is None
-            else "explicitly_off:analogous_to_the_other_arms_not_identical"
+        # ``think`` is a bool, so this is the arm where the old presence-based
+        # branch was most plainly wrong: ``think=True`` would have published
+        # ``reasoning_control=think=true`` and ``reasoning_equivalence`` saying
+        # reasoning was explicitly off, in the same descriptor. Nothing sends
+        # True today -- ``think_directive`` returns only False or None -- which
+        # is what kept it latent rather than published.
+        "reasoning_equivalence": reasoning_equivalence(
+            off=None if think is None else not think,
+            off_label=_REASONING_OFF_EQUIVALENCE,
         ),
         # The only arm whose sampling can be set at all, and therefore the only
         # one where a mismatch could be removed rather than merely disclosed.

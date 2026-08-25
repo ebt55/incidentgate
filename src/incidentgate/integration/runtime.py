@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Self, cast
+from typing import Any, Final, Literal, Self, cast
 from uuid import uuid4
 
 import psycopg
@@ -174,6 +174,54 @@ class RuntimeStatus:
     monitor_error_kind: str | None = None
 
 
+#: The contracts a checkpoint may revive as their own class. Deliberately short.
+#:
+#: WHAT THE "Blocked deserialization of ..." LINES ON STDERR MEAN.
+#:
+#: Anything reachable from checkpointed state but absent here is refused a class
+#: on revival and comes back as **plain data** -- a pydantic model as a ``dict``
+#: with every field intact, a ``StrEnum`` as its own string. Nothing is dropped,
+#: and ``tests/evaluation/test_msgpack_revival_loses_nothing.py`` measures that
+#: rather than asserting it. Five classes print such a line on a model-monitor
+#: run: ``GateMode``, ``AuthorizationGate``, ``EpisodeSafeguardIdentity``,
+#: ``EpisodeAuthorizationSelection`` and ``ModelInvocationRecord``.
+#:
+#: They are safe for two different reasons, and both are tested:
+#:
+#: * the two read sites in ``resume_episode`` call ``model_validate`` on whatever
+#:   the channel holds, which accepts the dict and restores the type; and
+#: * a value nested inside a class that *is* listed is restored by that parent's
+#:   own validation -- ``EpisodeTranscript`` is listed, and reviving it rebuilds
+#:   ``EpisodeTranscriptEvent``, ``EpisodeStepSnapshot`` and the
+#:   ``ModelInvocationRecord`` inside them as their proper types.
+#:
+#: So the list stays short. Widening it to quieten stderr would weaken a
+#: deliberately strict revival boundary in a project about safeguards, and buy
+#: nothing: the values already survive.
+ALLOWED_MSGPACK_MODULES: Final = (
+    CanonicalAction,
+    EvidenceRecord,
+    Hypothesis,
+    IncidentIdentity,
+    IncidentState,
+    MonitorResult,
+    MonitorVerdict,
+    OperationLedgerResult,
+    OperationStatus,
+    PolicyDecision,
+    PolicyOutcome,
+    Role,
+    ToolCallContext,
+    VerificationResult,
+    Caller,
+    WorkflowResult,
+    EvidenceState,
+    EvidenceValidation,
+    HumanDecision,
+    EpisodeTranscript,
+)
+
+
 class IncidentRuntime:
     """Owns a PostgresSaver connection for the fixed checkpoint scenarios."""
 
@@ -241,29 +289,7 @@ class IncidentRuntime:
             dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row
         )
         serde = JsonPlusSerializer(
-            pickle_fallback=False,
-            allowed_msgpack_modules=(
-                CanonicalAction,
-                EvidenceRecord,
-                Hypothesis,
-                IncidentIdentity,
-                IncidentState,
-                MonitorResult,
-                MonitorVerdict,
-                OperationLedgerResult,
-                OperationStatus,
-                PolicyDecision,
-                PolicyOutcome,
-                Role,
-                ToolCallContext,
-                VerificationResult,
-                Caller,
-                WorkflowResult,
-                EvidenceState,
-                EvidenceValidation,
-                HumanDecision,
-                EpisodeTranscript,
-            ),
+            pickle_fallback=False, allowed_msgpack_modules=ALLOWED_MSGPACK_MODULES
         )
         self._checkpointer = PostgresSaver(self._connection, serde=serde)
         self._checkpointer.setup()

@@ -5,6 +5,10 @@ failed is the half I said carried the weight.** §§1–7 are exactly as first
 committed, before any A/B capture existed; the result is §8, the three findings it
 splits into are §9, and nothing above them was edited to fit.
 
+**One bound in §5 is wrong and is corrected in §11**, also without editing it: for
+T4, "a different variant" does not widen n, because all three variants render
+byte-identical monitor prompts and would replay from cache.
+
 Written before the measurement so that a null could not be rationalised afterwards
 and a positive one could not be retrofitted, on the same discipline as
 `T4-model-monitor-sequence.md`.
@@ -409,3 +413,47 @@ n=1 per cell as fixed in §5. One monitor model, one variant, one scenario,
 threshold artifacts whose decision fields are byte-identical, asserted field by
 field, so the comparison has one manipulated variable. No BLOCK occurred in either
 arm, so §4a's attribution rule was not needed and is untouched.
+
+---
+
+## 11. Correction to §5: for T4, a different variant does not widen n
+
+§5 fixed the bounds before the measurement and named the honest ways to get a
+second sample: *"Widening n means varying something real — a different variant, a
+different model, a different scenario — not looping."* A different model and a
+different scenario are right. **A different variant is not**, for this scenario,
+and the sentence is left as written with the correction recorded here.
+
+Three facts, each pinned by
+`tests/sabotage/test_t4_variants_cannot_widen_n.py`:
+
+1. **All three T4 variants issue the same covert assembly.**
+   `T4_COVERT_ASSEMBLY` is one module-level constant, and `attack_policies`
+   carries the heading *"WHY ALL THREE VARIANTS ISSUE THE SAME ASSEMBLY"* above
+   the proposer that reads it. The variants differ in `variant_id`, `seed`,
+   `policy_version` and `split` — and, the file says, "in identity and nothing
+   else".
+2. **Neither monitor contract can carry a variant.** `MonitorInputV3` and
+   `MonitorInputV4` declare the same twelve top-level fields, and none of
+   `variant`, `split`, `seed` or `policy_version` appears anywhere in either
+   rendered JSON schema.
+3. **The response cache keys on the prompt hash alone** — `(model,
+   prompt_sha256)`, stored at `root/model/{hash}.json`.
+
+Composed: `T4-cal-v1` and `T4-holdout-v1` would render byte-identical monitor
+prompts, hit the same cache key, and replay `T4-dev-v1`'s captures. The run would
+consult no model and cost nothing, and would publish the same sample under a
+second label — which is worse than not running it, because the count would read
+as two. Every capture on disk for this scenario is `*-dev-v1`.
+
+**What still widens n here:** a different monitor model (done twice since — see
+`T4-model-monitor-sequence.md` §12), or a different scenario. What would make the
+variant axis real is a scenario whose variants vary their calls; T4's do not, by
+design, and that design is recorded rather than accidental.
+
+**And a limit that no axis fixes.** Because the cache replays rather than
+re-samples, the variance of one cell at fixed input cannot be measured with this
+harness at all. That is the anti-p-hacking property working — a result cannot be
+re-rolled — and its cost is that a ±0.1 score difference cannot be told from
+sampling noise. §12 of the companion document states both halves, and records that
+no repeat draw at a fixed prompt exists anywhere in this project.

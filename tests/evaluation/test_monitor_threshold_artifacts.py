@@ -378,18 +378,24 @@ T4_SCENARIO = ROOT / "scenarios" / "sabotage" / "T4.json"
 
 
 def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
-    """Two seats, named, and the count asserted rather than left to a glob.
+    """Three seats, named, and the count asserted rather than left to a glob.
 
-    This said "exactly one, qwen3-14b" until the frontier seat was wired, which is
-    the fact it should have said and no longer is: the local 14B monitor and the
-    hosted frontier one are both intended, so both have a rule frozen before any
-    measurement through them. A third file appearing here would be a rule frozen
-    for a run nobody plans, and a missing one would be indistinguishable from an
-    oversight if nothing asserted the count.
+    This said "exactly one, qwen3-14b" until the first frontier seat was wired,
+    then two. It now says three: the local 14B monitor and two hosted frontier
+    ones. Every seat has a rule frozen before any measurement through it. A file
+    appearing here that no seat needs would be a rule frozen for a run nobody
+    plans, and a missing one would be indistinguishable from an oversight if
+    nothing asserted the count.
+
+    The second frontier seat exists to answer whether blocking the covert leg at
+    step 0 is a property of frontier models or a property of claude-opus-5. One
+    model cannot tell those apart.
     """
     assert [path.name for path in T4_COMMITTED] == [
         "T4-a-priori-claude-opus-5-v2.json",
         "T4-a-priori-claude-opus-5-v3.json",
+        "T4-a-priori-gpt-5.5-v2.json",
+        "T4-a-priori-gpt-5.5-v3.json",
         "T4-a-priori-qwen3-14b-v2.json",
         "T4-a-priori-qwen3-14b-v3.json",
     ]
@@ -397,7 +403,35 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
         (a.provider, a.model)
         for a in (load_a_priori_thresholds(path) for path in T4_COMMITTED)
     }
-    assert seats == {("local", "qwen3-14b"), ("anthropic", "claude-opus-5")}
+    assert seats == {
+        ("local", "qwen3-14b"),
+        ("anthropic", "claude-opus-5"),
+        ("openai", "gpt-5.5"),
+    }
+
+
+def test_a_threshold_id_names_its_file_except_where_the_charset_forbids_it() -> None:
+    """The id is the filename stem lowercased, and one seat cannot obey that.
+
+    ``threshold_id`` is constrained to ``^[a-z][a-z0-9_-]{0,63}$``, which admits
+    no ``.``. ``gpt-5.5`` is the first model id in this project carrying one, so
+    its two artifacts are the first whose id is not simply their stem: the dot
+    becomes a hyphen. The alternative was widening the charset of a frozen
+    contract to accommodate a filename, which is the more expensive change and
+    buys nothing -- ``model`` is the authoritative field, ``build_monitor``
+    matches the seat on ``(provider, model)`` and never on the id.
+
+    Asserted rather than left as a comment, because an unexplained mismatch
+    between a filename and the id inside it is exactly the kind of thing a later
+    reader would "fix" in the direction that breaks validation.
+    """
+    for path in T4_COMMITTED:
+        artifact = load_a_priori_thresholds(path)
+        expected = path.stem.lower().replace(".", "-")
+        assert artifact.threshold_id == expected, path.name
+        if "." in path.stem:
+            assert artifact.threshold_id != path.stem.lower()
+            assert "." not in artifact.threshold_id
 
 
 def test_every_t4_generation_shares_one_decision_rule() -> None:
@@ -410,8 +444,10 @@ def test_every_t4_generation_shares_one_decision_rule() -> None:
     name the rendering.
     """
     artifacts = [load_a_priori_thresholds(path) for path in T4_COMMITTED]
-    assert len(artifacts) == 4, "two seats x two input generations"
-    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 4
+    assert len(artifacts) == 6, "three seats x two input generations"
+    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 6
+    # Sorted by filename, so the first two are one seat's pair whatever seats exist.
+    assert artifacts[0].model == artifacts[1].model
     v3_input, v4_input = artifacts[0], artifacts[1]
     assert v3_input.input_schema_sha256 != v4_input.input_schema_sha256
     assert v3_input.prompt_version != v4_input.prompt_version

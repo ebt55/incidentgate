@@ -544,6 +544,21 @@ uv run python -m incidentgate.demo   # ~7 seconds
 uv run python -m pytest              # ~13 minutes, needs the database above
 ```
 
+**One suite run at a time.** The suite needs *exclusive* use of the Postgres named
+by `DATABASE_URL`. Its fixture tables are single-row shared mutable singletons —
+`t1_fixture_state` holds one row per scenario with an `injected` boolean that tests
+reset, inject and consume — and approval tokens are single-use by design, so two
+concurrent runs take each other's fixtures and burn each other's tokens.
+
+The failures that produces are unusually misleading: they surface as
+`sabotage evidence requires injected fixture` and `ApprovalDenied` rather than as
+connect errors or assertions, **in a different set of tests each time**, and every
+one passes in isolation afterwards. That signature reads as flake and was twice
+misread as such. `tests/conftest.py` now takes a Postgres advisory lock and refuses
+to start a second run, so the collision announces itself instead. It catches
+another *guarded* suite run only — not a manual capture, a matrix regeneration or
+`psql` against the same database.
+
 The `-m` is load-bearing, not style. `uv run pytest` invokes the console script,
 which does not put the repository root on `sys.path`; there is no root
 `conftest.py` and no `pythonpath` setting to supply it. Several tests import

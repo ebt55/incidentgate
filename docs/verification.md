@@ -1,5 +1,41 @@
 # Verification receipt
 
+## 2026-08-25 `7b79983` verified after the fact, on an exclusive machine
+
+The commit message on `7b79983` says *"committed unverified at a hard stop"*. That was true when it was written — the suite was still running and was killed — and it is left exactly as written. This receipt records what is known now, forward-only, on the same discipline as `request_envelope`: the commit says what was known at commit time, the receipt says what is known since.
+
+Run alone, with nothing else touching the lab database:
+
+```
+2405 passed, 2 skipped, 0 failed, in 661.65s
+ruff: all checks passed
+mypy: no issues found in 85 source files
+```
+
+The same tree gave 4 failures, then 3, then 15, while two runs were racing. It passes completely with the machine to itself.
+
+## 2026-08-25 The suite needs exclusive use of the lab database, and nothing said so
+
+**The defect is the silence, not the sharing.** The fixture tables are single-row shared mutable singletons — `t1_fixture_state` holds one row per scenario with an `injected` boolean that tests reset, inject and consume — and approval tokens are single-use by design. Two concurrent runs therefore take each other's fixtures and burn each other's tokens. That constraint was real from the beginning and was written down nowhere.
+
+**The diagnostic signature, recorded because two readers in a row misread it.** The failures land on `ValueError: sabotage evidence requires injected fixture` (`lab/repository.py:2496`) and on `ApprovalDenied` (`:4541`) — a fixture that is not injected, and a token that is missing, expired or consumed. They are **never** connect errors and **never** behavioural assertions: they are what a correct system says when the thing it needed was taken from underneath it.
+
+Three further properties, and the second is the one that matters:
+
+- a racing run **fast-fails in 11.9s** against 72.9s for a green subset;
+- **the failing set varies between runs on an identical tree** — 4, then 3, then 15, then a clean 2405 alone;
+- every failing test passes in isolation immediately afterwards.
+
+An ordinary order-dependence bug fails the same way every time. Only a race repaints the target, and "different tests fail each time, all pass alone" is exactly the property that made both of us say *environmental* and stop looking. It was the strongest available clue and it was read as noise.
+
+**The guard.** `tests/conftest.py` takes a Postgres session-level advisory lock and exits the run immediately if another holds it, with a message that names the mechanism. Proved end to end rather than asserted: holding the lock from a separate connection and starting a run yields exit code 3, `no tests ran in 0.70s`, and the message. `tests/test_lab_database_exclusivity_guard.py` pins it from inside a guarded session — a second connection must be refused the lock, and the fixture must still be session-scoped and autouse.
+
+**What the guard does not do**, stated because a guard that overstates its reach is worse than none. It catches another *guarded* suite run. It does not catch a process that uses this database without running the fixture — a manual capture, a matrix regeneration, `psql`, or a suite from a checkout predating the file. And it does not make the tests order-independent or concurrency-safe, which is deliberate: the shared-singleton fixtures are by design and the symptom was telling the truth. The guard converts a misleading failure into an accurate one; it does not remove the constraint, which is now also stated in the README.
+
+**Flake-log correction.** The connect-shaped failures recorded in the 2026-08-18 entry below (`Address already in use` after a matrix run) are **not** shown to share this cause and their entry is unchanged: that class fails on *connect*, this one never does. For the failures observed on 2026-08-25 the cause moves from *unknown* to **suspected: concurrent suite runs against one shared lab database**, on the evidence above.
+
+**What would confirm it**, written down rather than asserted: on an otherwise idle machine, start two full suites concurrently and record (a) that failures appear, (b) that they land on the fixture and approval sites rather than on connect, and (c) **that the failing set differs between the two runs and between repetitions** — the varying set is the property that distinguishes this from order-dependence and is the specific thing to reproduce. Then run the same suite alone N times and record that none fails. Not yet performed.
+
 ## 2026-08-25 The R-tier lane is scoped, and scoping it found a defect
 
 Pre-registered at [`findings/R-tier-monitor-false-positive-lane.md`](findings/R-tier-monitor-false-positive-lane.md) before any capture exists. Twelve R scenarios are runnable; **eight are eligible** (R01, R02, R04, R06, R07, R08, R09, R12), and the four exclusions are pinned by `tests/evaluation/test_r_tier_monitor_lane_eligibility.py` rather than left to a glob.

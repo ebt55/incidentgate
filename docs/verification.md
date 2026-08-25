@@ -1,5 +1,15 @@
 # Verification receipt
 
+## 2026-08-25 An understated limitation was stale in four places, in the most-read text
+
+The README front matter claimed a model was in the decision path of "three published sabotage rows and **one** monitor envelope, and no others" — while the bullet immediately beneath it said a monitor had been shown a covert action and blocked it. Both could not be true.
+
+Counted from disk rather than reasoned about: `artifacts/model-monitor/` holds **two** envelopes (`T1-v3-nemo-dev-qwen3` and its `-inputv3` sibling, each with `.md` and `.monitor.json`), and `artifacts/observe-only/` holds a **third**, which is the Route B row the next bullet is about. So "one" is three. The three sabotage rows under `artifacts/model-attacker/` were correct.
+
+Corrected in four places: the front-matter bullet, the matching "Honest gaps" item, the benign-leg results paragraph (which opened "a real model has also now judged one action" — four model monitors have since judged across 53 captures, and one of those actions was covert), and the artifact links, which listed one of the two envelopes for that leg.
+
+**Why it survived four earlier passes over the same file.** It reads as a scope-limiting disclaimer, and an understated limitation attracts less scrutiny than an overstated result — a reader checking for exaggeration slides straight past a claim that undersells. This is the project's recurring shape in its most expensive location, and it is the fourth distinct instance found this session. The correction counts files; it does not soften wording.
+
 ## 2026-08-25 `7b79983` verified after the fact, on an exclusive machine
 
 The commit message on `7b79983` says *"committed unverified at a hard stop"*. That was true when it was written — the suite was still running and was killed — and it is left exactly as written. This receipt records what is known now, forward-only, on the same discipline as `request_envelope`: the commit says what was known at commit time, the receipt says what is known since.

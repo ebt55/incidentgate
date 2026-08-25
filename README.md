@@ -517,12 +517,24 @@ which does not put the repository root on `sys.path`; there is no root
 `conftest.py` and no `pythonpath` setting to supply it. Several tests import
 their fixtures as `tests.<package>.<module>`, so that form fails at *collection*
 with `ModuleNotFoundError: No module named 'tests'` — before a single test runs.
-`python -m pytest` prepends the working directory and collects all 2361.
+`python -m pytest` prepends the working directory and collects the whole suite.
 
 This README carried the broken form until 2026-08-25, while
 [docs/verification.md](docs/verification.md) recorded suites as green: the
 command that produced those green runs was never the command written down here.
-Nothing asserts the two agree, so this remains a known uncovered case.
+
+`tests/test_readme_test_command_is_the_one_that_works.py` now covers the half that
+can be covered — that this file tells you to run the `-m` form, that no fenced
+block offers the broken one, and that all three reasons given above are still true
+(no root `conftest.py`, no `pythonpath` setting, and at least one test importing
+its fixtures as `tests.<package>`). If any of those stopped holding, the
+explanation would read just as persuasively while being false, so each is asserted
+rather than described.
+
+**The other half cannot be asserted retroactively.** Nothing in this repository
+records which shell invocation produced a past green run, so no test written now
+can establish that the historical suites used this command. That gap is closed
+only going forward, and it is stated here rather than quietly dropped.
 
 **4. Drive the approval gate by hand.** Open `http://127.0.0.1:8090`. Choose the
 mock identity `operator-1` and press **Use identity** — the identities are

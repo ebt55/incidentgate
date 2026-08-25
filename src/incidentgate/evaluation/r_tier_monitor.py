@@ -230,7 +230,7 @@ def run_lane(
         # protects. The replay path passes no guard at all and so keeps the strict
         # default; passing ``None`` would have replaced a callable with something
         # uncallable and failed at the end of a run rather than the start.
-        guard = {"revision_guard": _head_revision} if capture else {}
+        guard = {"revision_guard": _head_revision if capture else _clean_revision_scoped}
         runner = ReliabilityEvaluationRunnerV2(dsn, semantic_monitor=source, **guard)
         envelope = runner.run([by_id[scenario_id]], modes=(EvaluationMode.COMPLETE,))
         (row,) = envelope.results
@@ -249,10 +249,54 @@ def run_lane(
     return rows
 
 
+#: Paths a publication run is allowed to have dirtied, because it dirties them
+#: itself. The same footgun the chaos and sabotage matrices already hit twice: a
+#: publishing runner whose own output makes the tree it checks dirty, so the
+#: *second* seat published in one session is refused by the first seat's file.
+#: Scoped here rather than by widening ``reliability_v2._clean_revision``, which
+#: is shared with the reliability publication path and must stay strict.
+_DIRTY_PATHSPEC: Final = (
+    ":(top)",
+    ":(top,exclude)artifacts/r-tier-monitor/",
+    ":(top,exclude)artifacts/monitor-captures/",
+)
+
+
 def _head_revision() -> str:
+    """HEAD, with no cleanliness requirement. Capture runs publish nothing."""
     from incidentgate.evaluation.sabotage_matrix import git_provenance
 
     return str(git_provenance()[0])
+
+
+def _clean_revision_scoped() -> str:
+    """HEAD, refusing if anything *outside this lane's own output* is dirty.
+
+    A published envelope must name a revision a reader can check out and re-run.
+    Its own artifact directory is excluded because writing the artifact is what
+    made the tree dirty, which is the same exclusion the chaos and sabotage
+    matrices already carry for the same reason.
+    """
+    import subprocess
+
+    def _git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", *arguments],
+            capture_output=True,
+            text=True,
+            cwd=_ROOT,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("a published R-tier envelope requires a readable git revision")
+        return completed.stdout.strip()
+
+    if _git("status", "--porcelain", "--", *_DIRTY_PATHSPEC):
+        raise ValueError(
+            "R-tier publication requires a clean worktree outside artifacts/r-tier-monitor/"
+        )
+    return _git("rev-parse", "HEAD")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -509,8 +509,20 @@ $env:DATABASE_URL = "postgresql://incidentgate:incidentgate_dev_only@127.0.0.1:5
 
 ```bash
 uv run python -m incidentgate.demo   # ~7 seconds
-uv run pytest                        # ~12 minutes, needs the database above
+uv run python -m pytest              # ~13 minutes, needs the database above
 ```
+
+The `-m` is load-bearing, not style. `uv run pytest` invokes the console script,
+which does not put the repository root on `sys.path`; there is no root
+`conftest.py` and no `pythonpath` setting to supply it. Several tests import
+their fixtures as `tests.<package>.<module>`, so that form fails at *collection*
+with `ModuleNotFoundError: No module named 'tests'` — before a single test runs.
+`python -m pytest` prepends the working directory and collects all 2361.
+
+This README carried the broken form until 2026-08-25, while
+[docs/verification.md](docs/verification.md) recorded suites as green: the
+command that produced those green runs was never the command written down here.
+Nothing asserts the two agree, so this remains a known uncovered case.
 
 **4. Drive the approval gate by hand.** Open `http://127.0.0.1:8090`. Choose the
 mock identity `operator-1` and press **Use identity** — the identities are

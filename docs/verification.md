@@ -98,7 +98,34 @@ This bit twice on 2026-08-25 and again on 2026-08-26, the second time immediatel
 
 **Flake-log correction.** The connect-shaped failures recorded in the 2026-08-18 entry below (`Address already in use` after a matrix run) are **not** shown to share this cause and their entry is unchanged: that class fails on *connect*, this one never does. For the failures observed on 2026-08-25 the cause moves from *unknown* to **suspected: concurrent suite runs against one shared lab database**, on the evidence above.
 
-**What would confirm it**, written down rather than asserted: on an otherwise idle machine, start two full suites concurrently and record (a) that failures appear, (b) that they land on the fixture and approval sites rather than on connect, and (c) **that the failing set differs between the two runs and between repetitions** — the varying set is the property that distinguishes this from order-dependence and is the specific thing to reproduce. Then run the same suite alone N times and record that none fails. Not yet performed.
+**What would confirm it**, written down rather than asserted: on an otherwise idle machine, start two full suites concurrently and record (a) that failures appear, (b) that they land on the fixture and approval sites rather than on connect, and (c) **that the failing set differs between the two runs and between repetitions** — the varying set is the property that distinguishes this from order-dependence and is the specific thing to reproduce. Then run the same suite alone N times and record that none fails. **Performed on 2026-08-26; the cause moves from *suspected* to *confirmed*, and the 2026-08-18 entry stays separate.**
+
+**How it was run.** Eight full-suite runs at `c9ad831` on an idle machine, interleaved solo / pair / solo / pair so that anything drifting over the hour would show up as a difference between the two solo arms. Every arm ran through the same deliberate bypass — `LAB_ALLOW_CONCURRENT_SUITES=yes-i-am-reproducing-the-race` — so the guard is *not* the difference between the arms and concurrency is the only variable. Two confounds were closed rather than assumed: the suite installs no `pytest-randomly` and no `xdist`, so collection order is deterministic and a varying failing set cannot be shuffling; and the solo arms bracket the pairs in time.
+
+| arm | concurrent | failed | errors | passed |
+| --- | --- | --- | --- | --- |
+| solo1 | no | **0** | 0 | 2468 |
+| pairA-1 | yes | 60 | 19 | 2389 |
+| pairA-2 | yes | 54 | 12 | 2402 |
+| solo2 | no | **0** | 0 | 2468 |
+| pairB-1 | yes | 56 | 19 | 2393 |
+| pairB-2 | yes | 43 | 12 | 2413 |
+| pairC-1 | yes | 49 | 12 | 2407 |
+| pairC-2 | yes | 56 | 19 | 2393 |
+
+(`pairC` is the re-run that captured failure reasons; see (b) below.)
+
+**(a) Failures appear, and only under concurrency.** Both solo arms are clean at 2468 passed. Every concurrent arm fails heavily.
+
+**(c) The failing set varies, which is the property that matters.** Between the two halves of one pair, and between repetitions: `pairA-1` and `pairA-2` share **13** of their 60 and 54; `pairB-1` and `pairB-2` share **17** of 56 and 43; `pairA-1` and `pairB-1` share **34** of 60 and 56. No two arms agree. Order-dependence would repaint the same target every time; this does not.
+
+**(b) They land where the hypothesis says, and this needed a second run to measure.** The first four arms were captured with `--tb=no`, which suppresses `longrepr` and with it the message on every `FAILED nodeid - reason` line — so the initial "zero connect-shaped failures" was a scan over empty strings and proved nothing. A seventh and eighth arm (`pairC`) were re-run with `--tb=line`. Of **105** classified failures across that pair, **72** are fixture/approval-shaped (`requires injected fixture`, `ApprovalDenied`); the remaining 33 are downstream consequences of the same shared-state corruption — `RuntimeError: T1 has not been initialized`, `assert 409 == 200`, a `ForeignKeyViolation` on `evidence_records` — and **none is connect-shaped**.
+
+That zero is a measurement rather than a dead detector: the classifier fires on the exact `psycopg.OperationalError: connection failed … Address already in use (0x00002740/10048)` string recorded in the 2026-08-18 entry, and stays silent on all five observed non-connect messages including a *different* psycopg error.
+
+**The 2026-08-18 entry is unchanged, and this experiment does not put it to a fair test.** Its recorded precondition is elapsed time since a matrix run that spawned ~1,300 short-lived loopback connections, and its three runs were **consecutive, not concurrent** — concurrency was not present when it happened. No matrix run preceded these six. So the honest statement is narrow: *concurrency alone does not produce the connect class*, which keeps that entry separate on evidence rather than on caution. It is not evidence that the 2026-08-18 class is explained, and it is not evidence that it is refuted.
+
+**The bypass, and why it is a shared lock rather than an off switch.** A guard that cannot be turned off cannot be shown to be doing anything, so the escape hatch is what makes the negative control possible. Two properties keep it from being a hole: it is **not a boolean** — only the exact token enables it, so an inherited `=1` cannot silently disable exclusivity (measured: `=1` does not engage) — and it does not stop locking, it takes the **shared** advisory lock instead of the exclusive one. Experiment runs race each other, which is the point, while an ordinary run still cannot acquire the exclusive lock. Both halves are measured: two shared holders coexist and an exclusive request is refused underneath them, and a normal run against a held lock still exits **3** with the full `ANOTHER TEST RUN HOLDS THIS LAB DATABASE` message.
 
 ## 2026-08-25 The R-tier lane is scoped, and scoping it found a defect
 

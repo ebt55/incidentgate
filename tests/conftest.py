@@ -24,6 +24,25 @@ order-dependence bug fails the same way every time; only a race repaints the
 target, and "different tests fail each time, all pass in isolation" is precisely
 the signature that made both readers reach for "environment" and stop.
 
+CONFIRMED ON 2026-08-26, RATHER THAN LEFT AS THE BEST AVAILABLE STORY
+
+Eight full-suite runs on an idle machine, interleaved solo/pair/solo/pair, every
+arm through the escape hatch below so the guard is not the difference between
+them. Both solo arms: **0 failures**, 2468 passed. All six concurrent arms fail
+heavily -- 60, 54, 56, 43, 49, 56 -- and **no two failing sets agree**: the two
+halves of one pair share 13 of 60 and 54, the next pair 17 of 56 and 43. Of 105
+classified failures, 72 are fixture/approval-shaped and the rest are downstream
+consequences of the same corruption.
+
+Two things that experiment did *not* establish, kept here because the guard
+should not be read as explaining more than it does. It did not reproduce the
+connect-shaped failures of the 2026-08-18 flake entry -- zero appeared, and that
+entry's own precondition (a just-finished matrix run, and three *consecutive*
+runs) was absent, so this is not a fair test of it either way. And the first four
+arms were captured with ``--tb=no``, whose suppressed messages made the initial
+"no connect failures" reading a scan over empty strings; the shape numbers above
+come from a re-run that actually recorded reasons.
+
 WHAT THIS GUARD DOES AND DOES NOT CATCH
 
 It takes a Postgres session-level advisory lock and **fails the run immediately**
@@ -56,6 +75,29 @@ import pytest
 #: it is written as a literal so two checkouts of this file agree on it, which is
 #: the whole mechanism.
 LAB_SUITE_LOCK_KEY = 8_270_413_615_002_119
+
+#: The one way to run concurrent suites on purpose, which exists so that the
+#: paragraph above can be *tested* rather than believed.
+#:
+#: A guard that cannot be turned off cannot be shown to be doing anything. The
+#: claim in this docstring -- that concurrency produces fixture and approval
+#: failures in a set that varies between runs -- is only a claim until two
+#: unguarded runs are put side by side, and that requires getting past this
+#: fixture on purpose.
+#:
+#: Two properties keep this from being a hole:
+#:
+#: * It is not a boolean. Only the exact token below enables it, so a stray
+#:   ``=1`` or ``=true`` inherited from some other tool cannot silently disable
+#:   exclusivity. Anything else is treated as absent.
+#: * It does not stop locking; it takes the **shared** lock instead of the
+#:   exclusive one. Experiment runs therefore race *each other*, which is the
+#:   point, while an ordinary run still cannot acquire the exclusive lock and
+#:   still refuses with the message below. Someone who starts a normal gate in
+#:   the middle of the experiment is protected exactly as before, rather than
+#:   being quietly enrolled in it.
+CONCURRENCY_EXPERIMENT_VARIABLE = "LAB_ALLOW_CONCURRENT_SUITES"
+CONCURRENCY_EXPERIMENT_TOKEN = "yes-i-am-reproducing-the-race"
 
 _MESSAGE = """
 ANOTHER TEST RUN HOLDS THIS LAB DATABASE.
@@ -100,9 +142,23 @@ def _exclusive_lab_database() -> Iterator[None]:
         yield
         return
 
+    experiment = (
+        os.environ.get(CONCURRENCY_EXPERIMENT_VARIABLE) == CONCURRENCY_EXPERIMENT_TOKEN
+    )
+    take, release = (
+        ("pg_try_advisory_lock_shared", "pg_advisory_unlock_shared")
+        if experiment
+        else ("pg_try_advisory_lock", "pg_advisory_unlock")
+    )
+    if experiment:
+        sys.stderr.write(
+            "\nlab-database exclusivity guard IN EXPERIMENT MODE: holding the shared lock, "
+            "so this run may race another experiment run. Results are not a valid gate.\n"
+        )
+
     with connection:
         acquired = connection.execute(
-            "SELECT pg_try_advisory_lock(%s)", (LAB_SUITE_LOCK_KEY,)
+            f"SELECT {take}(%s)", (LAB_SUITE_LOCK_KEY,)
         ).fetchone()
         if not acquired or not acquired[0]:
             connection.close()
@@ -110,4 +166,4 @@ def _exclusive_lab_database() -> Iterator[None]:
         try:
             yield
         finally:
-            connection.execute("SELECT pg_advisory_unlock(%s)", (LAB_SUITE_LOCK_KEY,))
+            connection.execute(f"SELECT {release}(%s)", (LAB_SUITE_LOCK_KEY,))

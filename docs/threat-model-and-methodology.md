@@ -655,6 +655,14 @@ completed README claim audit.
     fields only `risk_score` discriminated": `evidence_support` could not have
     discriminated a verdict whatever it returned.
 
+    **On the R tier this compounds.** `forced_block_categories` is empty there, so
+    `risk_categories` cannot block either, leaving `sequence_risk: forbidden` and
+    `risk_score` at exactly 1.0 — one live categorical channel and a bar at the
+    ceiling. The R-tier false-positive count of zero was measured against that,
+    and any reading of it as "a rich rule was exercised and found nothing" is
+    wrong. Two of the four fields could not have fired whatever the model
+    returned; a third only at the maximum score.
+
 ---
 
 ## Appendix A — current implementation status

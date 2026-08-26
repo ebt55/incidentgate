@@ -196,6 +196,33 @@ published as a capability floor and **not** as a false-positive rate of 0/8. It
 says nothing about whether the R-tier safeguards behave, in either direction, and
 it must not be counted alongside `qwen3-14b`'s zero.
 
+### How little could have fired, which belongs beside the zero
+
+"No false positives" reads very differently once a reader knows what the rule on
+this tier was actually able to do. Of the four fields the monitor returns:
+
+| field | can it block on the R tier? |
+| --- | --- |
+| `evidence_support` | **no** — `decide` never reads it, on any tier |
+| `risk_categories` | **no** — blocks only against `forced_block_categories`, which is empty here |
+| `sequence_risk` | **yes**, on the single value `forbidden` |
+| `risk_score` | only at **exactly 1.0**, the top rung of the ladder |
+
+So the zero was measured against **one live categorical channel and a bar at the
+ceiling**. Two of the four fields could not have produced a block whatever the
+model returned; a third could only have done so at the maximum score.
+
+*A note on the count, because it is easy to state too strongly and I nearly did:
+it is accurate to say **two** of four cannot block at all, not three.
+`risk_score` can block — at exactly 1.0, `>=` — which the threshold artifact
+already flags as "almost, not entirely, inert". The substantive point is
+unaffected and is the one above: one live channel, and a ceiling.*
+
+This does not weaken the measurement, and it is not a hedge. `qwen3-14b` returned
+`sequence_risk: none` on all eight and never came near 1.0, so it declined to use
+the channel that was live. But a reader who takes "0 false positives" as evidence
+that a rich rule was exercised and found nothing would be wrong twice over.
+
 ### What the lane says, stated so it cannot be misread
 
 - **`qwen3-14b`: 0 false positives in 8 benign scenarios.** A real count over a
@@ -248,16 +275,42 @@ an untyped one produce the **same error code and a message asserting the module 
 installed**. I read it as a stubs complaint and wrote
 `# type: ignore[import-untyped]`.
 
-Two reusable rules come out of this, and the second is the one worth keeping:
+Two reusable hazards come out of this. The first is the more general one and it
+was nearly written off as a footnote.
 
-1. A `# type: ignore[...]` suppresses the whole *line*, not the expression that
-   provoked it. Adding one to quiet a known-benign complaint blinds every other
-   diagnostic on that line, so it belongs on the narrowest line possible.
-2. **`# type: ignore[import-untyped]` on a first-party module is never correct.**
-   First-party code here is typed and checked; if mypy says a module inside
-   `incidentgate` needs stubs, the real answer is almost always that the module is
-   not there. That code, on that package, means "you have the path wrong" — and
-   its wording says the opposite.
+**1. Every narrow-looking ignore is wider than it looks.** `# type: ignore[...]`
+suppresses the whole *line*, not the expression that provoked it — and not even
+the *argument* that provoked it. Here one ignore was placed deliberately, for a
+known-benign complaint about one argument, and it silently absorbed a second,
+unrelated, fatal defect in a different argument on the same line. Nothing marks
+that it is doing double duty; the comment reads as narrow and behaves as broad.
+
+The consequence is a discipline, not a prohibition: an ignore belongs on the
+narrowest line that can carry it, and adding one to an existing multi-argument
+call means re-reading every other argument on that line, because the comment now
+vouches for all of them. A line with an ignore on it is unchecked line, however
+specific the bracketed code looks.
+
+**2. `# type: ignore[import-untyped]` on a first-party module is never correct —
+and the reason is a trap in the tool, not a lapse in the reader.**
+
+Here is the shape, which is worth recognising in general: **an error whose text
+asserts a thing exists, raised precisely because it does not.** mypy could not
+resolve `incidentgate.lab.git_provenance`. Because `incidentgate` *is* an
+installed package and carries no `py.typed` marker, mypy attributed the failure to
+the package's untypedness rather than to the missing submodule, and emitted
+*"module is installed, but missing library stubs or py.typed marker"*. Every
+clause of that is the standard, correct message for a genuinely-installed untyped
+dependency. Applied to a path that does not exist, it states the opposite of the
+truth — and a non-existent module and an untyped one arrive under the **same error
+code**, so the code cannot disambiguate them either.
+
+A reader who trusts the message reaches for the ignore that the message
+recommends, and that is exactly what happened. The defence is not to read
+diagnostics more carefully; it is to know that for a *first-party* module this
+code has only one plausible meaning. First-party code here is typed and checked,
+so it never legitimately needs stubs — `import-untyped` inside `incidentgate`
+means the path is wrong, every time.
 
 Ruff is not at fault in either case: it does not resolve imports or type-check, so
 neither construct is in its remit.

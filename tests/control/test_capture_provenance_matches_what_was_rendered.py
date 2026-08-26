@@ -91,6 +91,7 @@ GENERATIONS: dict[str, str] = {
     "monitor-input-v2": "monitor-prompt/v1.output-v3",
     "monitor-input-v3": "monitor-prompt/v3.output-v3",
     "monitor-input-v4": "monitor-prompt/v4.output-v3",
+    "monitor-input-v5": "monitor-prompt/v5.output-v3",
 }
 
 IDENTITY = (

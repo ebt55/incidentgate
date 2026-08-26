@@ -213,6 +213,7 @@ from incidentgate.control.monitor_input_v3 import (
     render_monitor_input_v3,
 )
 from incidentgate.control.monitor_input_v4 import MonitorInputV4
+from incidentgate.control.monitor_input_v5 import MonitorInputV5
 from incidentgate.control.monitor_v2 import MonitorErrorKind, RiskCategory
 from incidentgate.control.proposal import ProposalError
 from incidentgate.control.proposal_contract_v2 import underconstrained_fields
@@ -673,7 +674,9 @@ class StructuredMonitorCallerV3:
     def input_schema_sha256(self) -> str:
         return str(self._input_contract.schema_sha256())
 
-    def build_request(self, input_value: MonitorInputV3 | MonitorInputV4) -> CompletionRequest:
+    def build_request(
+        self, input_value: MonitorInputV3 | MonitorInputV4 | MonitorInputV5
+    ) -> CompletionRequest:
         """Shape one request, so a capture planner can key it without making a call.
 
         Public because the position a monitor consultation happens at is known
@@ -725,7 +728,9 @@ class StructuredMonitorCallerV3:
             prompt_sha256=sha256(canonical.encode("utf-8")).hexdigest(),
         )
 
-    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3:
+    def assess(
+        self, input_value: MonitorInputV3 | MonitorInputV4 | MonitorInputV5
+    ) -> MonitorOutcomeV3:
         self.last_invocation = None
         self.last_request = None
         try:
@@ -852,7 +857,9 @@ class RecordingMonitorCallerV3:
         self.consultations.clear()
         return recorded
 
-    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3:
+    def assess(
+        self, input_value: MonitorInputV3 | MonitorInputV4 | MonitorInputV5
+    ) -> MonitorOutcomeV3:
         outcome = self._inner.assess(input_value)
         request = self._inner.last_request
         if request is not None:

@@ -43,6 +43,7 @@ from incidentgate.control.monitor_input_v3 import (
     render_monitor_input_v3,
 )
 from incidentgate.control.monitor_input_v4 import MonitorInputV4, render_monitor_input_v4
+from incidentgate.control.monitor_input_v5 import MonitorInputV5, render_monitor_input_v5
 from incidentgate.control.monitor_v2 import (
     AdvisoryMonitorV2,
     BindingAdvisoryMonitor,
@@ -112,7 +113,9 @@ class SemanticMonitorCallerV3(MonitorCallerIdentity, Protocol):
     @property
     def last_invocation(self) -> ModelInvocationRecord | None: ...
 
-    def assess(self, input_value: MonitorInputV3 | MonitorInputV4) -> MonitorOutcomeV3: ...
+    def assess(
+        self, input_value: MonitorInputV3 | MonitorInputV4 | MonitorInputV5
+    ) -> MonitorOutcomeV3: ...
 
 
 class ThresholdArtifactProvenance(Protocol):
@@ -368,6 +371,57 @@ class _MonitorInputV3Projection:
         )
 
 
+class _MonitorInputV5Projection:
+    """v4's projection, with the state allowlist computed instead of borrowed.
+
+    It differs from ``_MonitorInputV4Projection`` in exactly one expression -- the
+    tuple handed to ``current_state`` -- and in nothing else. That is the whole
+    design of the v4/v5 A/B: two arms differing in one input, so a difference in
+    what the monitor does has one candidate cause.
+
+    ``allowed_changed_paths`` still carries the manifest's own declaration. v2
+    through v4 used that same tuple for two different questions -- *what may this
+    action change* and *what state should the monitor see* -- and a scenario
+    declaring no changed paths therefore got no state at all. Those questions are
+    separated here.
+    """
+
+    def __init__(
+        self,
+        *,
+        facts: RepositoryMonitorFacts,
+        manifests: Mapping[str, _Manifest] | None = None,
+    ) -> None:
+        self._facts = facts
+        self._manifests = _manifests() if manifests is None else manifests
+
+    def project(self, consultation: MonitorConsultation) -> MonitorInputV5:
+        projection = ScenarioProjectionAdapter().project(
+            self._manifests[consultation.incident.scenario_id]
+        )
+        scenario_id = consultation.incident.scenario_id
+        return MonitorInputV5(
+            scenario_id=scenario_id,
+            incident_objective=cast(str, projection["incident_objective"]),
+            allowed_action_tools=cast(tuple[str, ...], projection["allowed_action_tools"]),
+            forbidden_action_tools=cast(tuple[str, ...], projection["forbidden_action_tools"]),
+            allowed_changed_paths=cast(tuple[str, ...], projection["allowed_changed_paths"]),
+            action=action_facts(consultation.action),
+            action_fingerprint=action_fingerprint(consultation.action),
+            evidence_facts=project_evidence(
+                scenario_id,
+                consultation.evidence,
+                consultation.records,
+                _PROJECTABLE_EVIDENCE_ALLOWLIST,
+            ),
+            committed_calls=self._facts.committed_calls_v4(consultation.incident.incident_id),
+            # The one line that is not v4's.
+            current_state_facts=self._facts.current_state(
+                scenario_id, self._facts.state_projection_paths(scenario_id)
+            ),
+        )
+
+
 class SemanticAdvisoryMonitor(AdvisoryMonitorV2):
     def __init__(
         self,
@@ -469,7 +523,7 @@ class SemanticAdvisoryMonitorV3:
         caller: SemanticMonitorCallerV3,
         facts: RepositoryMonitorFacts,
         manifests: Mapping[str, _Manifest] | None = None,
-        input_version: Literal["v3", "v4"] = "v3",
+        input_version: Literal["v3", "v4", "v5"] = "v3",
     ) -> None:
         self._caller = caller
         # No ``policy`` parameter, and that is the withholding made structural:
@@ -480,19 +534,25 @@ class SemanticAdvisoryMonitorV3:
         # contract -- a v4 projection rendered by a v3 caller would send v3 bytes
         # from a v4 object -- and ``SemanticMonitorConfigurationV4`` is what pairs
         # them, rather than leaving two arguments to be kept in step by hand.
-        self._projection: _MonitorInputV3Projection | _MonitorInputV4Projection = (
-            _MonitorInputV3Projection(facts=facts, manifests=manifests)
-            if input_version == "v3"
-            else _MonitorInputV4Projection(facts=facts, manifests=manifests)
-        )
+        projections: dict[
+            str, _MonitorInputV3Projection | _MonitorInputV4Projection | _MonitorInputV5Projection
+        ] = {
+            "v3": _MonitorInputV3Projection(facts=facts, manifests=manifests),
+            "v4": _MonitorInputV4Projection(facts=facts, manifests=manifests),
+            "v5": _MonitorInputV5Projection(facts=facts, manifests=manifests),
+        }
+        self._projection = projections[input_version]
         # Paired with the projection, because ``last_input_hash`` is the join key
         # between a consultation and the episode position it happened at, and it
         # has to be a digest of the bytes that were actually sent. Rendering a v4
         # input with v3's renderer would produce a hash of bytes nobody saw, and
         # every capture would then be filed against a position nothing observed.
-        self._render: Callable[[Any], str] = (
-            render_monitor_input_v3 if input_version == "v3" else render_monitor_input_v4
-        )
+        renderers: dict[str, Callable[[Any], str]] = {
+            "v3": render_monitor_input_v3,
+            "v4": render_monitor_input_v4,
+            "v5": render_monitor_input_v5,
+        }
+        self._render: Callable[[Any], str] = renderers[input_version]
         self.last_input_hash: str | None = None
         self.last_invocation: ModelInvocationRecord | None = None
         self.last_outcome: MonitorOutcomeV3 | None = None

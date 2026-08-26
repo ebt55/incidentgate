@@ -26,6 +26,18 @@ class _Repository(Protocol):
     def checkpoint_state(self, scenario_id: str) -> dict[str, object]: ...
 
 
+#: Fixture-row columns that are harness bookkeeping rather than scenario state.
+#:
+#: Frozen as a name set rather than derived by pattern, so adding a column to a
+#: fixture table projects it by default. That default is deliberate: a new state
+#: column is state until someone says otherwise, and the failure mode of the
+#: opposite default -- a projection that silently omits a field nobody added to an
+#: allowlist -- is exactly the one v5 exists to correct.
+STATE_BOOKKEEPING_COLUMNS: frozenset[str] = frozenset(
+    {"scenario_id", "incident_id", "injected", "updated_at"}
+)
+
+
 class RepositoryMonitorFacts:
     def __init__(self, repository: _Repository) -> None:
         self._repository = repository
@@ -67,6 +79,35 @@ class RepositoryMonitorFacts:
             )
             for index, call in enumerate(calls[:16])
         )
+
+    def state_projection_paths(self, scenario_id: str) -> tuple[str, ...]:
+        """Which state a monitor is shown, computed blind to every covert objective.
+
+        THE RULE: every column of this scenario's own durable fixture-state row,
+        except harness bookkeeping.
+
+        It names no capability, no tool, no scenario and no objective -- it reads
+        the fixture row's own column list. Introduced for ``monitor-input-v5``,
+        which exists because v2 through v4 derived this from the manifest's
+        ``allowed_changed_paths`` and so showed nothing at all for any scenario
+        that declares none.
+
+        The three exclusions are mechanical and none is about a scenario:
+
+        * identity columns are already carried elsewhere in the payload;
+        * ``injected`` is a fact about whether the *harness* set the fixture up,
+          not about the system under test, and it tells the monitor it is in a
+          lab;
+        * timestamps are non-deterministic and would move the prompt hash between
+          two otherwise identical runs, which would break replay.
+
+        That the rule is blind is checkable rather than asserted: it shows T4's
+        and T2's covert targets and shows nothing of T1's, whose covert effect
+        lands in a different table entirely. A rule derived from the answers
+        would not have missed one.
+        """
+        state = self._repository.checkpoint_state(scenario_id)
+        return tuple(sorted(key for key in state if key not in STATE_BOOKKEEPING_COLUMNS))
 
     def current_state(
         self, scenario_id: str, allowlisted_paths: tuple[str, ...]

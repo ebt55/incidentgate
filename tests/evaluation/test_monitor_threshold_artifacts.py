@@ -394,12 +394,16 @@ def test_t4_has_a_committed_rule_for_each_seat_it_intends_to_measure() -> None:
     assert [path.name for path in T4_COMMITTED] == [
         "T4-a-priori-claude-opus-5-v2.json",
         "T4-a-priori-claude-opus-5-v3.json",
+        "T4-a-priori-claude-opus-5-v4.json",
         "T4-a-priori-gpt-5.5-v2.json",
         "T4-a-priori-gpt-5.5-v3.json",
+        "T4-a-priori-gpt-5.5-v4.json",
         "T4-a-priori-mistral-nemo-12b-v2.json",
         "T4-a-priori-mistral-nemo-12b-v3.json",
+        "T4-a-priori-mistral-nemo-12b-v4.json",
         "T4-a-priori-qwen3-14b-v2.json",
         "T4-a-priori-qwen3-14b-v3.json",
+        "T4-a-priori-qwen3-14b-v4.json",
     ]
     seats = {
         (a.provider, a.model)
@@ -447,10 +451,10 @@ def test_every_t4_generation_shares_one_decision_rule() -> None:
     name the rendering.
     """
     artifacts = [load_a_priori_thresholds(path) for path in T4_COMMITTED]
-    assert len(artifacts) == 8, "four seats x two input generations"
-    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 8
-    # Sorted by filename, so the first two are one seat's pair whatever seats exist.
-    assert artifacts[0].model == artifacts[1].model
+    assert len(artifacts) == 12, "four seats x three input generations"
+    assert len({(a.provider, a.model, a.input_schema_sha256) for a in artifacts}) == 12
+    # Sorted by filename, so the first three are one seat's set whatever seats exist.
+    assert artifacts[0].model == artifacts[1].model == artifacts[2].model
     v3_input, v4_input = artifacts[0], artifacts[1]
     assert v3_input.input_schema_sha256 != v4_input.input_schema_sha256
     assert v3_input.prompt_version != v4_input.prompt_version
@@ -500,10 +504,17 @@ def test_t4s_artifact_describes_the_contract_it_was_frozen_against(path: Path) -
     from incidentgate.control.monitor_input_v4 import (
         monitor_input_v4_schema_sha256,
     )
+    from incidentgate.control.monitor_input_v5 import (
+        INPUT_PROMPT_VERSION as V5_PROMPT,
+    )
+    from incidentgate.control.monitor_input_v5 import (
+        monitor_input_v5_schema_sha256,
+    )
 
     generations = {
         PROMPT_VERSION: monitor_input_v3_schema_sha256(),
         f"{V4_PROMPT}.output-v3": monitor_input_v4_schema_sha256(),
+        f"{V5_PROMPT}.output-v3": monitor_input_v5_schema_sha256(),
     }
     assert artifact.prompt_version in generations, artifact.prompt_version
     assert artifact.input_schema_sha256 == generations[artifact.prompt_version]

@@ -705,6 +705,42 @@ class SemanticMonitorConfigurationV4:
         )
 
 
+@dataclass(frozen=True)
+class SemanticMonitorConfigurationV5:
+    """The v5-input arm, pairing the state projection with a caller that renders it.
+
+    A separate class for the same reason v4 is one: the projection and the
+    caller's input contract have to agree, and pairing them here means the
+    disagreement cannot be constructed. A v5 projection rendered by a v4 caller
+    would build a ``MonitorInputV5``, drop ``current_state_facts`` on the floor
+    and stamp the request as v4 -- which would read as "v5 changed nothing" and be
+    a bug in the harness rather than a result.
+
+    The five-identity check then confirms it independently: a caller rendering v5
+    reports ``monitor-prompt/v5.output-v3`` and v5's input digest, so a threshold
+    artifact frozen for any earlier generation is refused rather than applied.
+    """
+
+    caller: SemanticMonitorCallerV3
+    artifact: ThresholdArtifactProvenance
+
+    def build(
+        self, *, policy: PolicyConfiguration, facts: RepositoryMonitorFacts
+    ) -> SemanticMonitorBundle:
+        _require_artifact_describes_caller(self.artifact, self.caller)
+        # Discarded explicitly, as v3's and v4's are. v5 adds the scenario's own
+        # durable state, which is a fact about the system under test -- never a
+        # gate's opinion about it, and the leak scan is what keeps that true.
+        del policy
+        return SemanticMonitorBundle(
+            monitor=SemanticAdvisoryMonitorV3(
+                caller=self.caller, facts=facts, input_version="v5"
+            ),
+            consultation_factory=RuntimeMonitorConsultationFactory(),
+            thresholds=self.artifact.thresholds,
+        )
+
+
 class SemanticMonitorSource(Protocol):
     """Anything that can be turned into a bundle once the runtime holds policy and facts."""
 

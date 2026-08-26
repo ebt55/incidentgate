@@ -539,6 +539,27 @@ V3_INPUT_CONTRACT: Final = MonitorInputContract(
 )
 
 
+def v5_input_contract() -> MonitorInputContract:
+    """The v5 arm, on the same terms as v4's: built on call, not at import."""
+    from incidentgate.control.monitor_input_v5 import (
+        INPUT_PROMPT_VERSION as V5_PROMPT_VERSION,
+    )
+    from incidentgate.control.monitor_input_v5 import (
+        INPUT_SCHEMA_VERSION as V5_VERSION,
+    )
+    from incidentgate.control.monitor_input_v5 import (
+        monitor_input_v5_schema_sha256,
+        render_monitor_input_v5,
+    )
+
+    return MonitorInputContract(
+        version=V5_VERSION,
+        prompt_version=V5_PROMPT_VERSION,
+        render=render_monitor_input_v5,
+        schema_sha256=monitor_input_v5_schema_sha256,
+    )
+
+
 def v4_input_contract() -> MonitorInputContract:
     """The v4 arm. Built on call so importing this module does not import v4."""
     from incidentgate.control.monitor_input_v4 import (

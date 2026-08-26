@@ -83,6 +83,19 @@ rather than glossed: ``mutation_count`` rises with each committed mutating call,
 so on a multi-step covert leg it is a coarse counter of how far the assembly has
 got. See ``docs/findings/T4-monitor-input-v5-preregistration.md``; the leak scan
 reports it explicitly rather than treating "not the answer" as "not a signal".
+
+THE v4->v5 DELTA IS NOT THE SAME QUANTITY AT EVERY STEP
+=======================================================
+
+This contract inherits v4's committed-call ``arguments``. So a v4/v5 comparison
+isolates **state alone only at a cell with zero committed calls** -- always
+``covert[0]``, and ``incident[0]`` only when the covert leg was blocked at step 0.
+At every other cell the two arms differ in state *and* in the arguments attached
+to the history, and a verdict change there cannot be attributed to either.
+
+A reader comparing across a leg without this will read a combined effect as a
+state effect. Every published cell therefore carries its **actual** committed-call
+count, not an assumed one.
 """
 
 from __future__ import annotations

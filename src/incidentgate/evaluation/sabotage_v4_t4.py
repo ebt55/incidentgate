@@ -271,8 +271,17 @@ def default_monitor_threshold_path(model: str, input_version: str = "v3") -> Pat
     letting a verdict be published under a rule nobody froze.
     """
     # The suffix is the *threshold generation*, which increments when the input
-    # contract moves: -v2 is frozen against monitor-input-v3, -v3 against v4.
-    generation = "v2" if input_version == "v3" else "v3"
+    # contract moves: -v2 is frozen against monitor-input-v3, -v3 against v4, -v4
+    # against v5. Mapped explicitly rather than by arithmetic on the version
+    # string, so an unknown input version fails loudly here instead of resolving
+    # to whichever generation happened to be last.
+    generations = {"v3": "v2", "v4": "v3", "v5": "v4"}
+    generation = generations.get(input_version)
+    if generation is None:
+        raise HarnessAborted(
+            f"{input_version!r} has no frozen threshold generation; a verdict must be "
+            "published under a rule frozen before the capture existed"
+        )
     return _ROOT / "config" / "monitor-thresholds" / f"T4-a-priori-{model}-{generation}.json"
 
 
@@ -323,24 +332,38 @@ def build_monitor(
         # Replay only, structurally: no transport exists on this path, so a miss
         # surfaces as CACHE_MISS rather than reaching for a model.
         client = CacheBackedCompletionClient(cache, provider=provider)
-    from incidentgate.control.monitor_contract_v3 import v4_input_contract
-    from incidentgate.integration.semantic_monitor import SemanticMonitorConfigurationV4
+    from incidentgate.control.monitor_contract_v3 import v4_input_contract, v5_input_contract
+    from incidentgate.integration.semantic_monitor import (
+        SemanticMonitorConfigurationV4,
+        SemanticMonitorConfigurationV5,
+    )
 
+    contracts = {"v3": None, "v4": v4_input_contract, "v5": v5_input_contract}
+    builder = contracts[input_version]
     caller = RecordingMonitorCallerV3(
         StructuredMonitorCallerV3(
             client=client,
             model=model,
-            input_contract=None if input_version == "v3" else v4_input_contract(),
+            input_contract=None if builder is None else builder(),
         )
     )
     # The projection and the caller's contract are paired here so they cannot
     # disagree: a v4 projection rendered by a v3 caller would send v3 bytes from a
-    # v4 object and read as "v4 changed nothing".
-    configuration = (
-        SemanticMonitorConfigurationV3(caller=caller, artifact=artifact)
-        if input_version == "v3"
-        else SemanticMonitorConfigurationV4(caller=caller, artifact=artifact)
-    )
+    # v4 object and read as "v4 changed nothing". The same trap exists for v5,
+    # which is why the pairing is a table rather than a chain of conditionals.
+    configurations: dict[
+        str,
+        type[
+            SemanticMonitorConfigurationV3
+            | SemanticMonitorConfigurationV4
+            | SemanticMonitorConfigurationV5
+        ],
+    ] = {
+        "v3": SemanticMonitorConfigurationV3,
+        "v4": SemanticMonitorConfigurationV4,
+        "v5": SemanticMonitorConfigurationV5,
+    }
+    configuration = configurations[input_version](caller=caller, artifact=artifact)
     bundle = configuration.build(
         policy=load_policy_configuration(), facts=RepositoryMonitorFacts(repository)
     )
@@ -676,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--monitor-input",
-        choices=("v3", "v4"),
+        choices=("v3", "v4", "v5"),
         default="v3",
         help=(
             "which input contract the monitor is shown: v3 (tool names only) or v4 "

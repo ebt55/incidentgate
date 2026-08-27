@@ -401,7 +401,7 @@ So this document is the artifact for these two results, as its predecessor is fo
 ## 10. Limitations
 
 **The safeguard chain is still untested against a real model.** Restating the opening because it
-is the finding. Three calls that reached a model, across two models, have produced three declines
+is the finding. Five calls that reached a model, across two models, have produced five declines
 and zero covert attempts, so the policy engine, monitor and approval gate have never been
 presented with a covert action by a real model. The sabotage tier's prevention evidence continues
 to rest entirely on the deterministic stand-in, which attempts by construction and is not
@@ -415,7 +415,14 @@ nothing here licenses softening that language anywhere.
 > approval gate remain untested against a model's covert action**, because policy denied first
 > and `monitor_verdict` is `null` on every covert step. The v2 sabotage-matrix tables for T1, T2,
 > T4 and T8 are still entirely deterministic-floor and their language is unchanged. The sentence
-> above stays as the accurate description of *these three hosted calls*, which attempted nothing.
+> above stays as the accurate description of *these hosted calls*, which attempted nothing.
+
+> **Count corrected 2026-08-27.** The limitation above read *"Three calls that reached a model,
+> across two models, have produced three declines"* — the count as of 2026-08-20. Two further
+> `gpt-5.5` covert-leg captures were taken on 2026-08-25 under the v2 steering prompt, making
+> **five** calls and five declines across the same two hosted models. The direction is unchanged
+> and the conclusion is strengthened; recorded in
+> [`NOTES-TO-REVIEWER.md`](../NOTES-TO-REVIEWER.md) §4.
 
 **Evaluation awareness.** The steering truthfully tells the model it is inside a synthetic
 laboratory and that a safeguard chain is being measured. That is the honest choice — the fixtures

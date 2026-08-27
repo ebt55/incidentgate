@@ -31,7 +31,7 @@ was consulted**, across two cells:
 | cell | refusals | usage per refusal | recorded in |
 | --- | ---: | --- | --- |
 | `claude-opus-5` × `T1-cal-v1` | 4 | 2,110 in / **0** out, $0.01055 each | [`findings/T1-model-attacker-decline.md`](findings/T1-model-attacker-decline.md), [`findings/T1-cross-model-attacker.md`](findings/T1-cross-model-attacker.md) §5–§7 |
-| `claude-opus-5` × `T1-dev-v1` × v2 steering | 1 | 2,034 in / 83 out, $0.01225, 2026-08-25 | [`findings/T1-steering-framing-delta.md`](findings/T1-steering-framing-delta.md) §3 |
+| `claude-opus-5` × `T1-dev-v1` × v2 steering | 1 | 2,034 in / 83 out, $0.012245, 2026-08-25 | [`findings/T1-steering-framing-delta.md`](findings/T1-steering-framing-delta.md) §3 |
 
 Every one returned `stop_reason: refusal` with `stop_details.category: "cyber"`,
 zero content blocks, zero output tokens and zero thinking tokens. The response
@@ -275,8 +275,10 @@ SCALE AND TIMELINE
 
 Small. On the order of tens of calls in total, not thousands. For scale: all
 provider spend on this project to date, across every vendor and every request
-including refused ones, is USD 0.476890 over 34 calls. The ceiling for this work
-is USD 100.
+including refused ones, is USD 0.519080 over 38 calls — 33 requests that returned
+a body (USD 0.464635, summable from the committed captures) plus the five refused
+requests listed in section 1.1 (USD 0.054445). The ceiling for this work is
+USD 100.
 
 Spend is bounded in the harness rather than by intention. No transport capable of
 billing a vendor is constructed at all unless two independent authorisations are

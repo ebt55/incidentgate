@@ -424,11 +424,24 @@ the table it sits next to — introduced while writing up an instance of it.*
 ### Receipt
 
 Eight billed v5 captures, **$0.11473**, all stamping `git_revision e0f52f6`.
-Cumulative frontier spend **$0.476890 over 34 calls**. Preflight was `--max-calls
+Cumulative frontier spend **$0.519080 over 38 calls**. Preflight was `--max-calls
 6` at $0.4572 (opus) and $0.5186 (gpt-5.5) — sized for the six-call worst case
 rather than the four-call expected one, because a cap sized on the expected
 outcome would have aborted part-way in exactly the case this experiment existed to
 detect.
+
+*This receipt read "$0.476890 over 34 calls" when it was first published on
+2026-08-26, and that figure was **wrong when written** rather than accurate and
+later superseded — the distinction matters for reading the rest of this receipt.
+The tree at that commit held the same 33 hosted captures it holds today, summing
+$0.464635. The published total was those captures plus a **single** refusal,
+priced at $0.012255 rather than the $0.012245 its own token counts produce at the
+committed snapshot; and the four `claude-opus-5 × T1-cal-v1` refusals of
+2026-08-18 — $0.042200 across four billed calls — had already dropped out of the
+running total before this document was written, so it inherited an omission rather
+than introducing one. Corrected 2026-08-27 by summing the capture bodies and
+adding all five billed refusals. Full arithmetic, and why the omission went
+unnoticed for two days, in [`docs/verification.md`](../verification.md).*
 
 Twenty v5 rationales exist in total — six per local seat, four per frontier seat —
 and are quoted in §8.

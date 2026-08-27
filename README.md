@@ -150,16 +150,17 @@ the environment traps.
 
 ## The explainer page
 
-<!-- PLACEHOLDER — NOT LIVE YET. GitHub Pages for this repository is being set up
-     in a separate workstream; the URL below 404s until that lands. Delete this
-     comment and the "not live yet" note once it is up. -->
+A generated walkthrough of these results is hosted at
+**<https://ebt55.github.io/incidentgate/>**. `python explainer/build.py` writes the
+same page to `explainer/index.html` to open from disk.
 
-A generated walkthrough of these results will be hosted at
-**<https://ebt55.github.io/incidentgate/>** — ***not live yet***. Until then,
-`python explainer/build.py` writes `explainer/index.html` to open from disk. Every
-quantitative claim on that page is derived from committed artifacts by
+Every quantitative claim on that page is derived from committed artifacts by
 [`explainer/build.py`](explainer/build.py); its only hand-carried text is a block
-of exact quotations, each pinned by a test against its source document.
+of exact quotations, each pinned by a test against its source document. The deploy
+refuses to publish a page that has drifted from the artifacts it claims to derive
+from — [`.github/workflows/pages.yml`](.github/workflows/pages.yml) gates on
+`build.py --check`, so a stale page fails the deploy rather than reaching the URL
+most likely to be read and quoted.
 
 ## What else is measured
 

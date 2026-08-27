@@ -1,0 +1,181 @@
+name: Deploy explainer to Pages
+
+# Publishes explainer/index.html at the repository's GitHub Pages URL.
+#
+# This workflow does NOT simply upload a file. It refuses to publish a page that
+# has drifted from the artifacts it claims to derive from -- see the gate step in
+# the build job. That is the whole reason this exists as a workflow rather than a
+# one-off upload: the published page is a record, and this repository's stated
+# discipline is that a published record must match what produced it.
+#
+# ci.yml is the test/lint/type gate and is unchanged by this file. The two share
+# their toolchain conventions (setup-uv, setup-python 3.12, uv sync --locked
+# --all-extras) so the explainer check here runs in the same environment the
+# equivalent pytest check runs in, and the two cannot disagree about the answer.
+#
+# Going live also needs a one-time repository setting the owner must make:
+# Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# Until then actions/configure-pages fails with a message saying exactly that.
+
+on:
+  push:
+    branches: [main]
+  # So the owner can deploy on demand -- notably the first run, immediately after
+  # switching the Pages source to "GitHub Actions", without waiting for a push.
+  workflow_dispatch:
+
+# Deliberately no `paths:` filter. The page is derived from artifacts/,
+# scenarios/ and config/, so a filter narrow enough to be useful would be wide
+# enough to get wrong, and getting it wrong means a push that staled the page
+# skips the very gate meant to catch it. Every push to main re-verifies the
+# published page against the tree that produced it. That is the point.
+
+permissions:
+  contents: read
+
+concurrency:
+  # One Pages deployment at a time, and never cancel one that is already
+  # running: cancelling mid-deploy can leave the live site on a partially
+  # applied version. A queued run supersedes an earlier queued run instead.
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Verify and stage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions/configure-pages reads (and, on a first run, creates) the Pages
+      # site configuration through the Pages API. id-token is deliberately NOT
+      # granted here -- only the deploy job needs to mint an OIDC token, and this
+      # job checks out and runs repository code.
+      pages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+
+      # THE GATE.
+      #
+      # README.md went stale because its numbers were hand-typed; that is this
+      # repository's documented recurring defect, and it is why the explainer is
+      # generated rather than written. Serving a stale copy of that generated
+      # page from Pages would reintroduce the same defect at the one URL most
+      # likely to be read and quoted, where it is hardest to notice.
+      #
+      # `--check` rebuilds both wrappers in memory from the committed artifacts
+      # and compares them byte for byte with the committed files. It writes
+      # nothing and exits 3 on drift.
+      #
+      # No database, and that is checked rather than assumed: build.py imports
+      # only the standard library (argparse, hashlib, html, json, re, sys,
+      # decimal, pathlib, typing) and reads only committed files under
+      # artifacts/, scenarios/ and config/. It never reads DATABASE_URL. That is
+      # why this workflow has no `postgres` service even though ci.yml does --
+      # a deploy workflow should not need one, and this one does not.
+      - name: Refuse to deploy a page that has drifted from the artifacts
+        run: |
+          if uv run python explainer/build.py --check; then
+            echo 'explainer/index.html matches the committed artifacts.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo '## Pages deploy refused: the explainer has drifted'
+            echo
+            echo 'explainer/index.html no longer matches a fresh build from the'
+            echo 'committed artifacts. Publishing it would serve numbers this'
+            echo 'commit cannot reproduce, so the deploy stopped here rather than'
+            echo 'after the stale page was already live.'
+            echo
+            echo 'Fix it from a clean checkout of this commit:'
+            echo
+            echo '    uv run python explainer/build.py'
+            echo '    git add explainer/index.html explainer/artifact-body.html'
+            echo '    git commit'
+            echo
+            echo 'Then push. Do not hand-edit the generated HTML -- it is rebuilt'
+            echo 'from artifacts/, so a manual change fails this gate again.'
+          } | tee -a "$GITHUB_STEP_SUMMARY" >&2
+          exit 3
+
+      # Publish only what should be served.
+      #
+      # explainer/ is a source directory, not a web root. Uploading it as-is
+      # would serve two files that should not be served:
+      #
+      #   * artifact-body.html -- a headless fragment with no <!doctype>, <html>
+      #     or <body>. A browser opening it directly renders it in quirks mode
+      #     against a guessed document shell, so it would look subtly wrong at a
+      #     real URL while still being a plausible-looking page. That is a
+      #     misleading record, which is the failure this repository exists to
+      #     avoid.
+      #   * build.py -- the generator, plus whatever __pycache__/ a local run
+      #     left behind.
+      #
+      # So the site is assembled explicitly instead: one directory, one file,
+      # copied under the name the web server must serve it as. Anything that is
+      # not deliberately placed here is not published, which makes the served
+      # surface a whitelist rather than whatever happened to be in the folder.
+      # `_site` is actions/upload-pages-artifact's own default path name.
+      - name: Stage the site
+        run: |
+          mkdir -p _site
+          cp explainer/index.html _site/index.html
+          # Cheap non-vacuity check: an empty or missing page must not deploy
+          # quietly as a blank site.
+          test -s _site/index.html
+          ls -l _site
+
+      # No .nojekyll file, decided rather than defaulted. Three reasons, any one
+      # of which is sufficient:
+      #
+      #   1. Jekyll does not run on this path at all. It runs only for the legacy
+      #      "deploy from a branch" Pages source; an artifact uploaded by
+      #      upload-pages-artifact and released by deploy-pages is served as-is.
+      #   2. Even under Jekyll, the only relevant behaviour is skipping names
+      #      that begin with "_" or "."; the staged site is a single index.html.
+      #   3. upload-pages-artifact defaults include-hidden-files to false, so a
+      #      .nojekyll dotfile would be dropped from the artifact and never reach
+      #      the server -- an inert file that reads like a safeguard. Committing
+      #      one would be a decorative claim, not a working one.
+
+      # Action versions verified 2026-08-27 against the GitHub REST API
+      # (/repos/{owner}/{repo}/releases and /git/ref/tags/{major}) rather than
+      # copied from a template: GitHub's own starter workflow
+      # (actions/starter-workflows/pages/static.yml) and both action READMEs
+      # still show configure-pages@v5, upload-pages-artifact@v3 and
+      # deploy-pages@v4, all of which are behind the shipped majors below. The
+      # moving major tags used here were each confirmed to resolve.
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    # Structural, not merely sequential: no Pages artifact is even produced when
+    # the gate fails, so there is nothing for this job to release.
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

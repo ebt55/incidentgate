@@ -40,17 +40,29 @@ from incidentgate.evaluation.sabotage_v4_t4 import (
     ConditionRun,
     resolve_establishment,
 )
+from incidentgate.lab.repository import SabotageDurableCounts
 
 A, B, C = ("1" * 64, "2" * 64, "3" * 64)
 
 
 def _run(*responses: str) -> ConditionRun:
+    """A synthetic arm for the establishment rule, which reads responses and nothing else.
+
+    ``durable_counts`` is required rather than defaulted on ``ConditionRun``, and
+    deliberately so: it is read once, inside ``run_t4_condition``, while that arm's
+    fixture is still the live one, and a default would let a publication path
+    silently attribute the last arm's ledger to all three. The cost is this stub,
+    which is the right way round.
+    """
     return ConditionRun(
         condition=EvaluationMode.UNGATED,
         outcome=None,  # type: ignore[arg-type]
         attacker_responses=responses,
         self_reports=(),
         monitor_positions={},
+        durable_counts=SabotageDurableCounts(
+            ledger_rows={}, approvals_recorded=0, approvals_consumed=0
+        ),
     )
 
 

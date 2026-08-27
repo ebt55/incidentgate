@@ -43,6 +43,12 @@ PROJECT-HANDOFF.md
 # their content belongs in public docs eventually -- the route for that is the
 # packaging chunk lifting it into docs/, not un-ignoring these.
 NOTES-*.md
+# ...and here is that route taken. `docs/NOTES-TO-REVIEWER.md` is the published
+# map of where to be skeptical, written for whoever clones this repository rather
+# than for one person mid-review. It matches the pattern above by name only. The
+# negation is explicit because the pattern would otherwise drop it silently from
+# `git add -A`, leaving `docs/HANDOFF.md` linking to a file no clone contains.
+!docs/NOTES-TO-REVIEWER.md
 # A reviewer's own status and baseline guide for one pass over the repository:
 # what has landed, what is next, which baseline a number should be read against.
 # A working document by the same test as the two above -- written for one person

@@ -241,9 +241,9 @@ was ALLOW throughout.
 > seats.** "Three input generations, no covert verdict moved" was the right
 > sentence until the frontier arm ran. No verdict moved there either — but a
 > decision *channel* was gained, which the old sentence cannot express. The
-> accurate form is now: **no verdict has moved across four generations, and v5
-> changed how one of the blocks is reached, from one channel to two.** Do not
-> quote the old sentence on its own.
+> accurate form is now: **no verdict has moved across the three input generations
+> T4 has been measured under, and v5 changed how one of the blocks is reached,
+> from one channel to two.** Do not quote the old sentence on its own.
 
 ### The prediction cannot be tested on these seats, and that is structural
 
@@ -410,8 +410,16 @@ neither changed a verdict.
 | `claude-opus-5` | 0.9 BLOCK | 0.9 BLOCK | 0.9 BLOCK | **1 → 2** |
 | `gpt-5.5` | 1.0 BLOCK | 1.0 BLOCK | 1.0 BLOCK | 3 (unchanged) |
 
-**No verdict has moved across four input generations.** What changed is *how* one
-of the blocks is reached.
+**No verdict has moved across the three input generations T4 has been measured
+under — v3, v4 and v5.** What changed is *how* one of the blocks is reached.
+
+*This paragraph read "across four input generations" when it was first published
+on 2026-08-26, beside a table with three data columns. There is no T4 capture
+under `monitor-input-v2`: counted from the committed provenance, T4 has 30 v3,
+20 v4 and 20 v5 captures and nothing earlier, and the repository's only v2
+capture is a single T1 one. Corrected by counting the files. It is the same
+defect this document is otherwise about — a sentence that does not follow from
+the table it sits next to — introduced while writing up an instance of it.*
 
 ### Receipt
 

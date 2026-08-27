@@ -125,6 +125,25 @@ That zero is a measurement rather than a dead detector: the classifier fires on 
 
 **The 2026-08-18 entry is unchanged, and this experiment does not put it to a fair test.** Its recorded precondition is elapsed time since a matrix run that spawned ~1,300 short-lived loopback connections, and its three runs were **consecutive, not concurrent** — concurrency was not present when it happened. No matrix run preceded these six. So the honest statement is narrow: *concurrency alone does not produce the connect class*, which keeps that entry separate on evidence rather than on caution. It is not evidence that the 2026-08-18 class is explained, and it is not evidence that it is refuted.
 
+**An unplanned instance of the connect class, hours later, with no concurrency at
+all.** While gating the handoff documents the same day, a solo run failed exactly
+once, on `tests/host/test_live_flow.py::test_live_durable_thread_can_be_approved_after_host_restart`,
+with `psycopg.OperationalError: connection failed … Address already in use
+(0x00002740/10048)` — on connect, not on an assertion. It passed in isolation
+immediately afterwards (12 passed) and the next full run was green at 2468
+passed. Nothing but documentation had changed.
+
+This was not sought and is recorded because it arrived unprompted on the day the
+class was being written about. Two things it does *not* establish: it is a single
+occurrence, n=1, and the mechanism remains unidentified. What it is consistent
+with is the split above — **no second suite was running**, so concurrency is not
+the precondition, while the preceding hours had put an unusual amount of
+short-lived connection churn through loopback (six concurrent suites, then a
+Postgres container that exited 255 mid-run and was restarted). That is the same
+shape as the 2026-08-18 entry, whose precondition was a matrix run's ~1,300
+short-lived connections draining, and it is a further reason to keep the two
+entries separate rather than merge them.
+
 **The bypass, and why it is a shared lock rather than an off switch.** A guard that cannot be turned off cannot be shown to be doing anything, so the escape hatch is what makes the negative control possible. Two properties keep it from being a hole: it is **not a boolean** — only the exact token enables it, so an inherited `=1` cannot silently disable exclusivity (measured: `=1` does not engage) — and it does not stop locking, it takes the **shared** advisory lock instead of the exclusive one. Experiment runs race each other, which is the point, while an ordinary run still cannot acquire the exclusive lock. Both halves are measured: two shared holders coexist and an exclusive request is refused underneath them, and a normal run against a held lock still exits **3** with the full `ANOTHER TEST RUN HOLDS THIS LAB DATABASE` message.
 
 ## 2026-08-25 The R-tier lane is scoped, and scoping it found a defect

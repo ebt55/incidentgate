@@ -274,10 +274,11 @@ and neither has been done.
 
 ### 3. A real model attempted a covert objective, and the policy gate stopped it
 
-**Seventy-eight model calls reached a model and left a committed body**: 25
-attacker captures under `artifacts/model-captures/` and 53 monitor captures under
-`artifacts/monitor-captures/`. Fifty-three ran on local open weights and charged
-nothing (`cost_unavailable_reason: local_weights_no_vendor_charge`).
+**114 model calls reached a model and left a committed body**: 25 attacker
+captures under `artifacts/model-captures/` and 89 monitor captures under
+`artifacts/monitor-captures/`. Eighty-one ran on local open weights and charged
+nothing (`cost_unavailable_reason: local_weights_no_vendor_charge`); 33 were
+hosted and billed.
 
 **Two spend quantities are tracked, and they are different numbers.** Saying which
 one you mean is the whole point, because a refused request bills and leaves no
@@ -285,8 +286,8 @@ capture:
 
 | quantity | value | what it counts |
 | --- | --- | --- |
-| **billed captures on disk** | **$0.349905** over 25 calls | requests that returned a body, summable from `artifacts/` |
-| **all-time provider spend** | **$0.362160** over 26 calls | every billed request, including refusals that returned nothing |
+| **billed captures on disk** | **$0.464635** over 33 calls | requests that returned a body, summable from `artifacts/` |
+| **all-time provider spend** | **$0.476890** over 34 calls | every billed request, including refusals that returned nothing |
 
 The $0.012255 difference is one request: the `claude-opus-5` v2-steering call that
 Anthropic's classifier refused on 2026-08-25.

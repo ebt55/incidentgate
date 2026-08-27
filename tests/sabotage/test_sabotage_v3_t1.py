@@ -96,7 +96,15 @@ HONEST_BODY = json.dumps({
 
 
 class FakeProvider:
-    """Stands exactly where ``AnthropicCompletionClient`` stands. Contacts nothing."""
+    """Stands exactly where ``AnthropicCompletionClient`` stands. Contacts nothing.
+
+    ``bills_vendor = False`` turns that docstring sentence into something the
+    spend gate can read. The gate treats a transport that declares nothing as
+    able to bill, so every fake in this suite has to say it contacts nothing --
+    which is exactly the property each of them was already claiming in prose.
+    """
+
+    bills_vendor = False
 
     def __init__(self, raw_json: str = COVERT_BODY, *, cost: float = 0.007315) -> None:
         self.raw_json, self.cost = raw_json, cost
@@ -236,6 +244,101 @@ def test_a_second_provider_does_not_arrive_with_a_softer_spend_path(
     ).calls == 0
 
 
+def test_a_billing_transport_nobody_registered_is_refused_rather_than_charged(
+    pricing: PricingSnapshot,
+) -> None:
+    """The gate must refuse a transport it has never been told about at all.
+
+    THE TWO TESTS ABOVE COULD NOT HAVE CAUGHT THE DEFECT THEY DESCRIBE.
+
+    Both name a class that exists. The check they were pinning was
+    ``isinstance(inner, (AnthropicCompletionClient, OpenAICompletionClient))``, so
+    naming either of those two was guaranteed to pass whatever the gate did about
+    anything else. The failure mode -- a *third* billing transport added later and
+    left out of the tuple -- had no test, because writing one meant inventing a
+    transport that did not exist.
+
+    So this test invents one. It stands where an OpenRouter or xAI client will
+    stand: a class the gate has never heard of, that has not declared itself
+    unable to bill. It must be refused on that silence alone. If it is accepted,
+    the gate has gone back to enumerating what to stop, and the next real
+    transport that misses the list spends money without authorisation.
+    """
+
+    class UnregisteredVendorTransport:
+        """A billing transport nobody added to any list. Contacts nothing."""
+
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise AssertionError("the gate must refuse before anything can call this")
+
+    with pytest.raises(t1.SpendRefused, match="without spend authorization"):
+        t1.SpendMeter(
+            inner=UnregisteredVendorTransport(),
+            pricing=pricing,
+            max_calls=1,
+            max_usd=1.0,
+            authorized=False,
+        )
+    # And the exemption is a positive declaration, never an absence of one.
+    class DeclaredFree(UnregisteredVendorTransport):
+        bills_vendor = False
+
+    assert t1.SpendMeter(
+        inner=DeclaredFree(), pricing=None, max_calls=1, max_usd=0.0, authorized=False
+    ).calls == 0
+
+
+@pytest.mark.parametrize("declaration", [None, True, "no", 0, ()])
+def test_only_the_exact_value_false_exempts_a_transport(
+    declaration: object, pricing: PricingSnapshot
+) -> None:
+    """Anything that is not ``False`` reads as billing, including a falsy stand-in.
+
+    A transport whose declaration is ``0`` or ``""`` almost certainly meant "no",
+    and the gate still refuses it. Guessing at intent is what an allowlist did;
+    the only two outcomes here are a charge and a refusal, and a refusal is the
+    one that is recoverable.
+    """
+
+    class Ambiguous:
+        def complete(self, request: CompletionRequest) -> CompletionResult:
+            raise AssertionError("the gate must refuse before anything can call this")
+
+    transport = Ambiguous()
+    if declaration is not None:
+        transport.bills_vendor = declaration  # type: ignore[attr-defined]
+    with pytest.raises(t1.SpendRefused, match="without spend authorization"):
+        t1.SpendMeter(inner=transport, pricing=pricing, max_calls=1, max_usd=1.0)
+
+
+def test_every_registered_transport_states_whether_it_bills() -> None:
+    """The registry rows and the transports they name must agree, in both directions.
+
+    A Phase 2 row whose transport forgot the declaration reads as billing, so the
+    row is then held to needing a credential variable and a committed price list
+    -- which is the coherent outcome, not a loophole. What this asserts is that
+    the three shipped transports say what they are, so no future reader has to
+    infer it from a class name.
+    """
+    from incidentgate.control.local_weights import OllamaWeightsCompletionClient
+    from incidentgate.control.provider_registry import (
+        PROVIDER_REGISTRY,
+        transport_bills_a_vendor,
+    )
+
+    assert AnthropicCompletionClient.bills_vendor is True
+    assert OpenAICompletionClient.bills_vendor is True
+    assert OllamaWeightsCompletionClient.bills_vendor is False
+    for name, entry in PROVIDER_REGISTRY.items():
+        if entry.billing_transport is None:
+            assert not entry.bills_vendor, f"{name} names no transport but claims to bill"
+            continue
+        assert transport_bills_a_vendor(entry.billing_transport), (
+            f"{name} is registered as a billing provider but its transport does not say so"
+        )
+        assert entry.api_key_env_var and entry.pricing_snapshot is not None
+
+
 def test_every_billing_provider_has_a_committed_pricing_snapshot_that_loads() -> None:
     """Every provider that can bill needs a snapshot; one that cannot must not have a fake one.
 
@@ -304,6 +407,8 @@ def test_a_local_call_that_reports_a_cost_is_refused_rather_than_treated_as_free
     """
 
     class LyingLocal:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             invocation = ModelInvocationRecord(
                 invocation_kind="local_weights_call",
@@ -408,6 +513,8 @@ def test_a_call_that_raises_after_the_provider_billed_is_counted_not_ignored(
     """
 
     class BilledThenRejected:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             raise ValueError("incomplete response")
 
@@ -431,6 +538,8 @@ def test_the_meter_only_bills_a_real_call(pricing: PricingSnapshot) -> None:
     """A cache replay costs nothing and must not consume the budget."""
 
     class Replaying:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             return CompletionResult(
                 raw_json=COVERT_BODY,
@@ -1228,6 +1337,8 @@ def test_a_policy_refusal_is_priced_and_counted_not_left_unaccounted(
     """
 
     class Refusing:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             raise _policy_refusal()
 
@@ -1256,6 +1367,8 @@ def test_a_policy_block_is_not_a_decline_a_transport_fault_or_a_covert_attempt(
     """
 
     class Refusing:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             raise _policy_refusal()
 
@@ -1309,6 +1422,8 @@ def test_a_transport_failure_is_never_reported_as_model_behaviour(
     """
 
     class Unreachable:
+        bills_vendor = False
+
         def complete(self, request: CompletionRequest) -> CompletionResult:
             raise TimeoutError("provider unreachable")
 

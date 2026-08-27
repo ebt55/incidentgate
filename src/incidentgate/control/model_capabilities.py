@@ -39,12 +39,38 @@ object whose off value is ``{"type": "disabled"}``; OpenAI Chat Completions take
 off value is ``false``. A caller that read "send_disabled" and emitted an Anthropic thinking
 block at either of the other two endpoints would send a parameter that endpoint does not have,
 and the three are dispatched by different accessors for exactly that reason:
-``thinking_directive`` answers only for Anthropic, ``reasoning_directive`` only for OpenAI,
-``think_directive`` only for the local arm, and each returns None for a model that is not theirs.
+``thinking_directive`` answers only for ``send_disabled``, ``reasoning_directive`` only for
+``send_effort_none``, ``think_directive`` only for ``send_think_false``, and each returns None
+for a model that is not theirs.
 
 Collapsing them would have kept the enum smaller by making one value mean several wire shapes,
 which is the trade this table refuses. The whole point of stating provider facts once is that
 the statement is exact.
+
+WHICH ARM EACH VALUE SHAPES A REQUEST FOR, AND WHY THAT IS NOW DECLARED
+======================================================================
+
+An accessor answering for a model whose endpoint has no such parameter is the one failure this
+split exists to prevent, so the pairing is stated in :data:`POLICY_WIRE_PROVIDERS` and checked
+against every row at import time rather than left to hold by accident.
+
+The invariant is **not** "no two providers share a policy value", which this table has never
+satisfied: ``omit_is_off`` is carried by ``claude-opus-4-8`` (anthropic) and ``mistral-nemo-12b``
+(local) today, and an earlier revision of the ``ModelCapability`` docstring said otherwise. The
+property that actually holds is narrower and is the one enforced:
+
+    every value that makes an accessor *emit a directive* is carried only by providers whose
+    endpoint takes that directive.
+
+``omit_is_off`` and ``reserve_budget`` emit nothing from any accessor - the first means "send
+nothing", the second means "send nothing and buy headroom" - so they are declared as owned by no
+arm and are free to be shared. The other three own an arm each.
+
+Phase 2 is the reason this is enforced rather than described. A provider whose endpoint is
+OpenAI-shaped would reuse ``send_effort_none`` and ``reasoning_directive`` would quietly begin
+answering for two arms. Adding such a row without widening the declaration below raises at import
+of this module, so the decision is taken deliberately in this file instead of being discovered in
+a capture.
 
 "send_disabled" depends on callers never sending output_config.effort: on Opus 5 a
 disabled-thinking request is a 400 at effort xhigh/max and accepted at the default high or below.
@@ -72,7 +98,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Final, Literal, get_args
 
 ThinkingPolicy = Literal[
     "omit_is_off", "send_disabled", "send_effort_none", "send_think_false", "reserve_budget"
@@ -81,6 +107,28 @@ ThinkingPolicy = Literal[
 #: Which transport a model id belongs to. Three values because this lab has three
 #: transports, each with its own wire shape for the same two facts.
 ModelProvider = Literal["anthropic", "openai", "local"]
+
+#: Which arms each policy value shapes a request for, and therefore which arms an
+#: accessor keyed on that value is allowed to answer for.
+#:
+#: An empty set means "this value emits no directive at all", which is why the two
+#: send-nothing values are safe to share across arms and the other three are not.
+#: See the module docstring: the enforced invariant is about emitted directives,
+#: not about providers-per-value.
+#:
+#: A Phase 2 provider whose endpoint takes an OpenAI-shaped ``reasoning_effort``
+#: belongs in ``send_effort_none``'s set, and adding it here is the deliberate act
+#: that the import-time check below exists to require. Widening a set is a change
+#: to what an accessor claims, so the accessor's docstring moves with it.
+POLICY_WIRE_PROVIDERS: Final[Mapping[ThinkingPolicy, frozenset[ModelProvider]]] = (
+    MappingProxyType({
+        "omit_is_off": frozenset(),
+        "reserve_budget": frozenset(),
+        "send_disabled": frozenset({"anthropic"}),
+        "send_effort_none": frozenset({"openai"}),
+        "send_think_false": frozenset({"local"}),
+    })
+)
 
 #: The OpenAI Chat Completions off value, kept as a constant so the request, the capability
 #: table and the published envelope descriptor cannot drift apart into three spellings.
@@ -94,11 +142,25 @@ class ModelCapability:
     ``provider`` was added third, and it is a fact this table already carried in
     prose. Every row's comment says which API it describes, and three separate
     accessors below dispatch on ``thinking`` in order to answer for one endpoint
-    each -- which works only because no two providers currently share a policy
-    value. That is a coincidence of the present table rather than a property of
-    it, and a caller that has to *shape a request for whichever arm a model
-    belongs to* needs the fact stated rather than inferred from an off-switch
-    spelling.
+    each.
+
+    AN EARLIER REVISION OF THIS DOCSTRING EXPLAINED THAT BY A FALSE PREMISE.
+
+    It said the split "works only because no two providers currently share a
+    policy value", and called that a coincidence of the present table. Two
+    providers do share one, in the table that sentence sat in: ``omit_is_off`` is
+    carried by the anthropic rows and by ``mistral-nemo-12b`` (local). The
+    dispatch was never resting on that premise, which is why nothing broke -- it
+    rests on the narrower fact that the two *shared* values emit no directive
+    from any accessor, so no accessor answers for them at all. A true-sounding
+    reason beside a working mechanism is harder to catch than a broken mechanism,
+    and the reason here was simply not the one doing the work.
+
+    What the accessors actually rest on is now declared in
+    :data:`POLICY_WIRE_PROVIDERS` and checked against every row below, so it is a
+    property of the table rather than a description of it. A caller that has to
+    *shape a request for whichever arm a model belongs to* still needs
+    ``provider`` stated rather than inferred from an off-switch spelling.
 
     The concrete failure this closes is measured, not hypothetical:
     ``monitor_v2.StructuredMonitorCaller`` sends Anthropic's ``thinking`` and a
@@ -326,6 +388,64 @@ UNKNOWN_MODEL = ModelCapability(
     accepts_sampling=False, thinking="reserve_budget", provider="anthropic"
 )
 
+
+class CapabilityTableInvariant(ValueError):
+    """The capability table and the wire-shape declaration disagree.
+
+    Raised at *import*, not from a test, because every entry point that could act
+    on the disagreement imports this module first. A model whose row sends it to
+    an accessor for an endpoint it does not have would emit a parameter that
+    endpoint has never heard of -- and the request would still be well-formed
+    enough to succeed at some providers, which is the failure mode this project
+    keeps finding: the confounded call is the one that works.
+    """
+
+
+def _require_policies_name_their_arm() -> None:
+    """Check every row against :data:`POLICY_WIRE_PROVIDERS`, at import time.
+
+    Three things, and the second is the one Phase 2 will meet:
+
+    1. the declaration covers every ``ThinkingPolicy`` value and names only real
+       arms, so adding a policy value without saying whose wire shape it is
+       fails here rather than defaulting to nobody's;
+    2. every row's provider is one the row's policy value is declared for, so a
+       new provider that reuses an existing off-switch spelling cannot start
+       being answered for by an accessor written for a different endpoint;
+    3. an unlisted id's fail-closed default is held to the same rule, so it can
+       never acquire a directive by way of a change to ``UNKNOWN_MODEL``.
+    """
+    declared = set(POLICY_WIRE_PROVIDERS)
+    policies = set(get_args(ThinkingPolicy))
+    if declared != policies:
+        raise CapabilityTableInvariant(
+            "POLICY_WIRE_PROVIDERS must name every thinking policy and no others; "
+            f"undeclared {sorted(policies - declared)!r}, unknown {sorted(declared - policies)!r}"
+        )
+    arms = set(get_args(ModelProvider))
+    for policy, owners in POLICY_WIRE_PROVIDERS.items():
+        unknown = set(owners) - arms
+        if unknown:
+            raise CapabilityTableInvariant(
+                f"{policy!r} is declared for {sorted(unknown)!r}, which name no transport"
+            )
+    rows: list[tuple[str, ModelCapability]] = [
+        *MODEL_CAPABILITIES.items(),
+        ("<unlisted id>", UNKNOWN_MODEL),
+    ]
+    for model, stated in rows:
+        owners = POLICY_WIRE_PROVIDERS[stated.thinking]
+        if owners and stated.provider not in owners:
+            raise CapabilityTableInvariant(
+                f"{model} is a {stated.provider} model carrying {stated.thinking!r}, which is "
+                f"declared as the wire shape of {sorted(owners)!r}. Either the row belongs to a "
+                "different policy value, or POLICY_WIRE_PROVIDERS must be widened deliberately "
+                "and the accessor's docstring changed with it."
+            )
+
+
+_require_policies_name_their_arm()
+
 # Headroom a caller must add to its own output budget when thinking cannot be turned off, because
 # max_tokens caps thinking and response text together.
 THINKING_HEADROOM_TOKENS = 14_000
@@ -362,20 +482,43 @@ def model_accepts_sampling(model: str) -> bool:
     return capability(model).accepts_sampling
 
 
+def _shapes_request_for(model: str, policy: ThinkingPolicy) -> bool:
+    """Whether this model's row is one the accessor for ``policy`` answers for.
+
+    Both halves are asked, and asking both is the point. The policy value says
+    which off-switch spelling the row carries; :data:`POLICY_WIRE_PROVIDERS` says
+    which endpoints take that spelling. ``_require_policies_name_their_arm`` makes
+    the two agree for every committed row, so today this is exactly equivalent to
+    testing the policy value alone -- but a Phase 2 row that made them disagree
+    cannot reach here, and if the import check were ever removed this would still
+    refuse to emit one arm's parameter at another arm's endpoint.
+    """
+    stated = capability(model)
+    return stated.thinking == policy and stated.provider in POLICY_WIRE_PROVIDERS[policy]
+
+
 def thinking_directive(model: str) -> dict[str, str] | None:
     """The Anthropic ``thinking`` value for this model, or None when it must be omitted entirely.
 
-    Answers only for Anthropic. A model whose reasoning is controlled by OpenAI's
+    Answers only for the arms ``send_disabled`` is declared for, which today is
+    Anthropic alone. A model whose reasoning is controlled by OpenAI's
     ``reasoning_effort`` returns None here and a directive from
     :func:`reasoning_directive` instead -- the two parameters are not
     interchangeable, and a caller that emitted this object at an OpenAI endpoint
     would be sending a field that endpoint does not have.
     """
-    return {"type": "disabled"} if capability(model).thinking == "send_disabled" else None
+    return {"type": "disabled"} if _shapes_request_for(model, "send_disabled") else None
 
 
 def reasoning_directive(model: str) -> dict[str, str] | None:
-    """The OpenAI reasoning control for this model, or None when it takes none.
+    """The OpenAI-shaped reasoning control for this model, or None when it takes none.
+
+    Answers for every arm ``send_effort_none`` is declared for, which today is
+    OpenAI alone -- and this is the accessor Phase 2 will widen, because an
+    endpoint that speaks Chat Completions takes the same flat ``reasoning_effort``
+    field. Widening means adding that provider to ``send_effort_none``'s entry in
+    :data:`POLICY_WIRE_PROVIDERS`; until that is done, a row carrying this value
+    for another arm fails at import.
 
     Returned as ``{"effort": ...}`` rather than a bare string so the directive is
     self-describing wherever it travels -- through ``CompletionRequest``, into the
@@ -387,7 +530,7 @@ def reasoning_directive(model: str) -> dict[str, str] | None:
     reasoning"; on gpt-5.5 it means ``medium``, which would confound any
     comparison against an arm that switched reasoning off.
     """
-    if capability(model).thinking != "send_effort_none":
+    if not _shapes_request_for(model, "send_effort_none"):
         return None
     return {"effort": REASONING_EFFORT_OFF}
 
@@ -460,17 +603,27 @@ def sampling_directive(model: str) -> dict[str, str] | None:
 def think_directive(model: str) -> bool | None:
     """The Ollama ``think`` value for this model, or None when it takes none.
 
+    Answers for every arm ``send_think_false`` is declared for, which today is
+    the local arm alone.
+
     A bool rather than a wrapped dict because that is what the parameter is on
     the wire, and the point of these three accessors is that each states its own
     provider's shape exactly. ``False`` is a value; ``None`` means "this model
     has no such control", and the two must not collapse -- on a hybrid reasoning
     model, not sending the parameter means thinking is ON.
     """
-    return False if capability(model).thinking == "send_think_false" else None
+    return False if _shapes_request_for(model, "send_think_false") else None
 
 
 def thinking_headroom_tokens(model: str) -> int:
-    """Extra max_tokens this model needs because its thinking cannot be turned off."""
+    """Extra max_tokens this model needs because its thinking cannot be turned off.
+
+    Keyed on the policy value alone, deliberately, and not through
+    ``_shapes_request_for``: a budget is not a wire shape. ``reserve_budget``
+    emits no parameter at any endpoint, so it is declared as owned by no arm and
+    is free to be carried by a model on any of them -- which is exactly why the
+    accessors must not answer for it and this function must.
+    """
     return THINKING_HEADROOM_TOKENS if capability(model).thinking == "reserve_budget" else 0
 
 

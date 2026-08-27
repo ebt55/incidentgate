@@ -36,7 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import Annotated, Any, Final, Literal, Protocol, cast
+from typing import Annotated, Any, ClassVar, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -719,6 +719,14 @@ def anthropic_envelope_descriptor(thinking: dict[str, str] | None = None) -> dic
 
 class AnthropicCompletionClient:
     """Real transport: bounded, secret-free, structured output against the pinned anthropic SDK."""
+
+    #: This transport authenticates to a paid API and its calls are billed.
+    #:
+    #: Declared rather than inferred, because the spend gate reads it: a transport
+    #: that says nothing is treated as billing, so the cost of forgetting to add
+    #: this line to a new transport is a refusal and not a charge. See
+    #: ``provider_registry.transport_bills_a_vendor``.
+    bills_vendor: ClassVar[bool] = True
 
     def __init__(
         self,

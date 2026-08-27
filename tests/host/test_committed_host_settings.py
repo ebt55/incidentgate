@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from incidentgate.host.app import (
+    _NEVER_COMMITTED,
     HOST_SETTINGS_PATH,
     HostSettings,
     committed_host_settings,
@@ -39,37 +40,46 @@ def test_the_committed_file_exists_and_is_read() -> None:
     assert committed_host_settings() != {}
 
 
-@pytest.mark.parametrize(
-    "secret",
-    [
+def test_the_guard_names_every_provider_credential_this_repository_can_hold() -> None:
+    """The list is checked against the names, not only exercised name by name.
+
+    ``OPENROUTER_API_KEY`` and ``XAI_API_KEY`` are asserted here before the
+    providers that read them exist. That is the point of listing them early: the
+    guard has to be in place before the first key does, because the mistake it
+    stops is made the day a credential first needs somewhere to live.
+    """
+    assert {
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
         "DATABASE_URL",
         "INCIDENTGATE_ALLOW_PROVIDER_SPEND",
-    ],
-)
+    } <= _NEVER_COMMITTED
+
+
+@pytest.mark.parametrize("secret", sorted(_NEVER_COMMITTED))
 def test_a_committed_file_naming_a_secret_is_refused(secret: str, tmp_path: Path) -> None:
-    """Refused at load, so it is a startup failure and not a later discovery."""
+    """Refused at load, so it is a startup failure and not a later discovery.
+
+    Parametrised over the guard's own set rather than over a copy of it. The copy
+    that used to be here listed six names and would have kept passing while a
+    seventh went unexercised -- a test agreeing with a list it restates is not the
+    same as a test agreeing with the code.
+    """
     path = tmp_path / "host-settings.json"
     path.write_text(json.dumps({secret: "value"}), encoding="utf-8")
     with pytest.raises(ValueError, match="must not contain credentials"):
         committed_host_settings(path)
 
 
-def test_the_real_committed_file_names_none_of_them() -> None:
+@pytest.mark.parametrize("secret", sorted(_NEVER_COMMITTED))
+def test_the_real_committed_file_names_none_of_them(secret: str) -> None:
     """The property asserted against the file actually in the repository."""
     payload = json.loads(HOST_SETTINGS_PATH.read_text(encoding="utf-8"))
-    for secret in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "LANGFUSE_PUBLIC_KEY",
-        "LANGFUSE_SECRET_KEY",
-        "DATABASE_URL",
-        "INCIDENTGATE_ALLOW_PROVIDER_SPEND",
-    ):
-        assert secret not in payload
+    assert secret not in payload
 
 
 def test_the_spend_authorisation_is_absent_for_a_stated_reason() -> None:

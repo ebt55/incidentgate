@@ -115,7 +115,8 @@ git ls-files artifacts/monitor-captures artifacts/model-captures | wc -l
 
 That sum is **captures on disk, not all-time spend**. A request refused by a
 provider's input classifier is billed and leaves no capture, so the two numbers
-differ by construction. [`docs/verification.md`](verification.md) and
+differ by construction: **all-time provider spend is $0.519080 over 38 calls** —
+the $0.464635 above plus five billed refusals totalling $0.054445. [`docs/verification.md`](verification.md) and
 [`docs/findings/`](findings/) carry the per-run receipts, which are the ledger; a
 total taken from the artifact directories alone is only the first of those two
 quantities.

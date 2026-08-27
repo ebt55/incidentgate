@@ -151,7 +151,6 @@ from incidentgate.control.local_weights import (
     LocalWeightsError,
     LocalWeightsIdentity,
     OllamaWeightsCompletionClient,
-    ollama_envelope_descriptor,
     resolve_ollama_weights,
 )
 from incidentgate.control.model_attacker import (
@@ -167,14 +166,12 @@ from incidentgate.control.model_capabilities import (
 )
 from incidentgate.control.model_proposal import (
     PROPOSAL_CONTRACT_VERSIONS,
-    AnthropicCompletionClient,
     CompletionClient,
     CompletionRequest,
     CompletionResult,
     PricingSnapshot,
     ProposalContractVersion,
     ProviderPolicyRefusal,
-    anthropic_envelope_descriptor,
 )
 from incidentgate.control.monitor_contract_v3 import (
     MONITOR_INPUT_SCHEMA_VERSION,
@@ -187,12 +184,17 @@ from incidentgate.control.monitor_contract_v3 import (
     PROMPT_VERSION as MONITOR_PROMPT_VERSION,
 )
 from incidentgate.control.monitor_input_v3 import monitor_input_v3_schema_sha256
-from incidentgate.control.openai_completion import (
-    OpenAICompletionClient,
-    openai_envelope_descriptor,
-)
 from incidentgate.control.ports import ProposalGenerator
 from incidentgate.control.pricing import load_pricing_snapshot
+from incidentgate.control.provider_registry import (
+    PRICING_SNAPSHOTS,
+    PROVIDERS,
+    PROVIDERS_WITHOUT_VENDOR_COST,
+    ProviderCredentialMissing,
+    build_billing_transport,
+    provider_envelope_descriptor,
+    transport_bills_a_vendor,
+)
 from incidentgate.control.response_cache import (
     CacheBackedCompletionClient,
     CaptureKind,
@@ -265,13 +267,12 @@ DEFAULT_VARIANT_ID: Final = "T1-dev-v1"
 #: claude capture keep working unchanged. A second provider is selected
 #: explicitly; nothing infers one from a model id.
 MODEL_PROVIDER: Final = "anthropic"
-PROVIDERS: Final = ("anthropic", "openai", "local")
-#: Providers that cannot bill anyone, because there is no vendor on the other
-#: end. They carry no pricing snapshot -- see PRICING_SNAPSHOTS -- and the spend
-#: gate does not apply to them, but *only* on the terms in SpendMeter.complete:
-#: the relaxation is verified against each result's absent cost, never granted on
-#: the strength of this name.
-PROVIDERS_WITHOUT_VENDOR_COST: Final = frozenset({"local"})
+#: ``PROVIDERS``, ``PROVIDERS_WITHOUT_VENDOR_COST`` and ``PRICING_SNAPSHOTS`` are
+#: imported from ``control/provider_registry.py`` and re-exported under the names
+#: this module already published them under, so existing callers and tests are
+#: untouched. They used to be three separate literals here, kept in agreement by
+#: hand; all three are now derived from the registry's rows, so a provider added
+#: there arrives in all three at once and cannot be half-added.
 DETERMINISTIC_FLOOR: Final = "deterministic_floor"
 #: The monitor arm for a condition that runs one. ``oracle_whitelist`` is T1's
 #: deterministic stand-in and remains the default: no run changes seat without
@@ -314,20 +315,10 @@ def default_monitor_threshold_path(model: str) -> Path:
     """
     return MONITOR_THRESHOLD_DIR / f"T1-a-priori-{model}-v2.json"
 
-PRICING_SNAPSHOT_PATH: Final = _ROOT / "config" / "pricing" / "anthropic-2026-08-14.json"
-#: One committed snapshot per *billing* provider. A billing provider without one
-#: cannot publish: contracts.py refuses a provider_call lacking a named pricing
-#: snapshot, and the preflight refuses a model the snapshot cannot price.
-#:
-#: A provider in PROVIDERS_WITHOUT_VENDOR_COST is deliberately absent rather than
-#: mapped to a zero-cost snapshot. Inventing one would fabricate a price list for
-#: something that has no price, and would make "we priced it at zero"
-#: indistinguishable from "there is nothing to price" -- the exact collapse the
-#: cost_unavailable_reason vocabulary exists to prevent.
-PRICING_SNAPSHOTS: Final[dict[str, Path]] = {
-    "anthropic": PRICING_SNAPSHOT_PATH,
-    "openai": _ROOT / "config" / "pricing" / "openai-2026-08-20.json",
-}
+#: The anthropic snapshot, named separately because it is the default provider's
+#: and several callers reach for it by name. Read out of the registry rather than
+#: restated, so there is one path from a provider to its committed price list.
+PRICING_SNAPSHOT_PATH: Final = PRICING_SNAPSHOTS["anthropic"]
 
 
 def provider_envelope_json(provider: str, request: CompletionRequest) -> str:
@@ -345,15 +336,13 @@ def provider_envelope_json(provider: str, request: CompletionRequest) -> str:
     described what this transport *usually* does could stay reassuring while the
     request said something else, which is the failure this field exists to make
     impossible.
+
+    Which descriptor belongs to which provider is the registry's row, not a chain
+    of conditionals here: an unknown name raises ``UnknownProvider`` -- a
+    ``ValueError``, as this function has always raised -- instead of falling
+    through to whichever branch was written last.
     """
-    if provider not in PROVIDERS:
-        raise ValueError(f"{provider} is not a known provider; expected one of {PROVIDERS}")
-    if provider == "anthropic":
-        descriptor = anthropic_envelope_descriptor(request.thinking)
-    elif provider == "openai":
-        descriptor = openai_envelope_descriptor(request.reasoning)
-    else:
-        descriptor = ollama_envelope_descriptor(request.think, request.sampling, request.model)
+    descriptor = provider_envelope_descriptor(provider, request)
     return json.dumps(descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 #: Where the steering artifact lives, for the published artifact to cite. Under
 #: ``config/``, which no manifest loader globs -- see the note in
@@ -461,9 +450,14 @@ class SpendAuthorization:
     environment, in the same invocation.
 
     The gate governs *construction*, not permission at the call site. When it is
-    not satisfied, no ``AnthropicCompletionClient`` is built at all, so there is
-    nothing in the process that could make a call -- which is a stronger property
-    than a check that could be forgotten on some path.
+    not satisfied, no transport that could bill a vendor is built at all, so there
+    is nothing in the process that could make a call -- which is a stronger
+    property than a check that could be forgotten on some path.
+
+    Which transports those are is not a list kept here. Each transport class
+    declares whether it can bill, and anything that declares nothing counts as
+    billing; ``SpendMeter.__post_init__`` closes the injection door on the same
+    terms. So the set this gate protects grows by itself as transports are added.
     """
 
     env_var_set: bool
@@ -549,17 +543,30 @@ class SpendMeter:
     def __post_init__(self) -> None:
         if self.max_calls < 0 or self.max_usd < 0:
             raise ValueError("spend caps must be non-negative")
-        if not self.authorized and isinstance(
-            self.inner, (AnthropicCompletionClient, OpenAICompletionClient)
-        ):
+        if not self.authorized and transport_bills_a_vendor(self.inner):
             # The one structural check the gate cannot make by refusing to
             # construct: a caller that built the real transport itself and handed
             # it in. Injection is how tests supply a fake, so the seam has to
-            # exist; refusing this exact class keeps it from also being how a
-            # real call sneaks past the flag.
+            # exist; this keeps it from also being how a real call sneaks past the
+            # flag.
+            #
+            # THIS USED TO BE AN isinstance ALLOWLIST, AND IT FAILED OPEN.
+            #
+            # It named ``AnthropicCompletionClient`` and ``OpenAICompletionClient``
+            # -- the two billing transports that existed when it was written -- so
+            # a third one was not an instance of either, was injected past the
+            # gate, and could spend unauthorised. Nothing would have surfaced: the
+            # run would simply have worked.
+            #
+            # The question asked is now the other way round. A transport is
+            # treated as billing unless it *declares* that it cannot bill, so
+            # adding a billing transport and forgetting to register it costs a
+            # refusal rather than a charge. See
+            # ``provider_registry.transport_bills_a_vendor``.
             raise SpendRefused(
-                "a real provider transport was supplied without spend authorization; "
-                f"pass {SPEND_FLAG} and set {SPEND_ENV_VAR}=1, or inject a fake client"
+                "a transport that can bill a vendor was supplied without spend authorization; "
+                f"pass {SPEND_FLAG} and set {SPEND_ENV_VAR}=1, or inject a client that "
+                "declares bills_vendor = False"
             )
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
@@ -621,6 +628,23 @@ class SpendMeter:
             # Keying on the record rather than on ``provider == "local"`` is the
             # whole point. A label is written by whoever runs the command; an
             # absent cost on a contract-validated record is not.
+            #
+            # HOW THIS RELATES TO THE CONSTRUCTION CHECK, EXACTLY.
+            #
+            # ``__post_init__`` asks the transport *class* whether it can bill and
+            # treats silence as yes; that decides whether a transport may exist in
+            # an unauthorised process at all. This asks each *result* whether it
+            # carries a cost; that decides whether a call may be counted as free.
+            # Both fail closed and neither takes a provider name for an answer.
+            #
+            # They are not the same check and this one is not a backstop for the
+            # other. It catches only a call that claimed to be local weights and
+            # reported a cost anyway. A transport that declared ``bills_vendor =
+            # False`` and then returned an honest ``provider_call`` record is not
+            # refused here -- its cost is added to ``spent_usd`` like any other,
+            # and what bounds it is ``max_calls`` and ``max_usd``. The declaration
+            # is the load-bearing statement, which is why it belongs to a class in
+            # this repository and not to a command-line flag.
             if (
                 invocation.cost is not None
                 or invocation.currency is not None
@@ -2176,10 +2200,10 @@ def main(
     The injection seam is how tests -- and the dry-run proof -- drive the whole
     capture-then-publish path without a provider. It does not weaken the gate:
     the gate governs whether *this process constructs* a network transport, and
-    :class:`SpendMeter` separately refuses an injected
-    :class:`AnthropicCompletionClient` unless both halves are satisfied. So the
-    only thing an injection can skip is the construction of something that
-    cannot bill anyone.
+    :class:`SpendMeter` separately refuses any injected transport that has not
+    declared itself unable to bill, unless both halves are satisfied. So the only
+    thing an injection can skip is the construction of something that cannot bill
+    anyone.
     """
     parser = build_parser()
     arguments = parser.parse_args(argv)
@@ -2284,17 +2308,18 @@ def main(
             if client is None:
                 # The gate governs construction, and it governs it identically
                 # for every provider that can bill: a second provider must not
-                # arrive with its own softer spend path.
+                # arrive with its own softer spend path. Required before the
+                # credential is read and before anything is constructed, so the
+                # order is "authorised, then credentialed, then built".
                 authorization.require()
-                key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
-                api_key = os.environ.get(key_name, "")
-                if not api_key:
-                    raise SpendRefused(f"{key_name} is required to capture from {provider}")
-                client = (
-                    AnthropicCompletionClient(api_key=api_key, pricing=pricing)
-                    if provider == "anthropic"
-                    else OpenAICompletionClient(api_key=api_key, pricing=pricing)
-                )
+                try:
+                    # Which variable holds the key and which class reads it are
+                    # the registry's row. This used to be a two-branch ternary
+                    # whose else-arm handed any third provider OPENAI_API_KEY and
+                    # an OpenAI client.
+                    client = build_billing_transport(provider, pricing=pricing)
+                except ProviderCredentialMissing as error:
+                    raise SpendRefused(str(error)) from error
         except SpendRefused as error:
             sys.stderr.write(f"REFUSED: {error}\n")
             return 2
@@ -2391,25 +2416,18 @@ def main(
                         f"${arguments.max_usd:.4f} cap; raise --max-usd"
                     )
                 if monitor_client is None:
-                    # Identical gate, identical construction rule. A second model
-                    # seat must not arrive with its own softer spend path any more
-                    # than a second provider was allowed to.
+                    # Identical gate, identical construction rule -- and now
+                    # literally the same call as the attacker seat's, so the two
+                    # cannot drift. A second model seat must not arrive with its
+                    # own softer spend path any more than a second provider was
+                    # allowed to.
                     authorization.require()
-                    key_name = (
-                        "ANTHROPIC_API_KEY"
-                        if monitor_provider == "anthropic"
-                        else "OPENAI_API_KEY"
-                    )
-                    api_key = os.environ.get(key_name, "")
-                    if not api_key:
-                        raise SpendRefused(
-                            f"{key_name} is required to capture from {monitor_provider}"
+                    try:
+                        monitor_client = build_billing_transport(
+                            monitor_provider, pricing=monitor_pricing
                         )
-                    monitor_client = (
-                        AnthropicCompletionClient(api_key=api_key, pricing=monitor_pricing)
-                        if monitor_provider == "anthropic"
-                        else OpenAICompletionClient(api_key=api_key, pricing=monitor_pricing)
-                    )
+                    except ProviderCredentialMissing as error:
+                        raise SpendRefused(str(error)) from error
             except SpendRefused as error:
                 sys.stderr.write(f"REFUSED: {error}\n")
                 return 2

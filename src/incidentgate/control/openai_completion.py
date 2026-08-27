@@ -94,7 +94,7 @@ conform. The provider-facing schema is a hint here, exactly as
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from incidentgate.contracts import ModelInvocationRecord
 from incidentgate.reasons import PROPOSAL_MODEL_OUTPUT_TRUNCATED
@@ -195,6 +195,11 @@ def openai_envelope_descriptor(reasoning: dict[str, str] | None = None) -> dict[
 
 class OpenAICompletionClient:
     """Real OpenAI transport: bounded, secret-free, and fail-closed like its sibling."""
+
+    #: This transport authenticates to a paid API and its calls are billed. See
+    #: ``provider_registry.transport_bills_a_vendor`` for why the declaration is
+    #: positive and its absence reads as billing.
+    bills_vendor: ClassVar[bool] = True
 
     def __init__(
         self,

@@ -101,10 +101,20 @@ HOST_SETTINGS_PATH = Path(__file__).resolve().parents[3] / "config" / "host-sett
 #: reason, and ``INCIDENTGATE_ALLOW_PROVIDER_SPEND`` for a less obvious one: it is
 #: an authorisation rather than a setting, and committing it would turn a
 #: deliberate act in one shell into a standing property of the repository.
+#:
+#: ``OPENROUTER_API_KEY`` and ``XAI_API_KEY`` are listed ahead of the providers
+#: that read them. Nothing in this repository sets or reads either today, which is
+#: exactly why they are here now: the moment a credential first exists is the
+#: moment somebody puts it in the settings file that already exists and looks like
+#: where configuration goes, and a guard added after that is a guard added after
+#: the commit it was meant to stop. Listing a name costs nothing while it is
+#: unused -- the check only ever refuses a file that names it.
 _NEVER_COMMITTED = frozenset(
     {
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
         "DATABASE_URL",

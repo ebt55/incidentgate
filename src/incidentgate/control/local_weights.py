@@ -80,7 +80,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 from urllib.parse import urlparse
 
 from incidentgate.contracts import ModelInvocationRecord
@@ -509,6 +509,19 @@ class OllamaWeightsCompletionClient:
     authenticate to a paid API cannot bill one, whatever URL it is pointed at --
     and it can only be pointed at loopback anyway.
     """
+
+    #: The one transport in this lab that can state this, and it states it because
+    #: of the two structural facts above rather than because of its name: there is
+    #: no ``api_key`` parameter to authenticate with, and ``_require_loopback``
+    #: refuses any endpoint that is not this machine.
+    #:
+    #: This is the *only* way anything is exempted from the spend gate's
+    #: construction check -- see ``provider_registry.transport_bills_a_vendor`` --
+    #: so the exemption is a property of a class in this repository rather than of
+    #: a label typed on a command line. The gate's second enforcement, in
+    #: ``SpendMeter.complete``, does not trust even this: it re-checks each
+    #: result's record for an absent cost before treating a call as free.
+    bills_vendor: ClassVar[bool] = False
 
     def __init__(
         self,

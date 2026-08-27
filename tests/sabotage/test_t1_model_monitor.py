@@ -71,7 +71,14 @@ def dsn() -> str:
 
 
 class FakeMonitorProvider:
-    """Stands where a real monitor transport stands. Contacts nothing."""
+    """Stands where a real monitor transport stands. Contacts nothing.
+
+    ``bills_vendor = False`` is that last sentence in the form the spend gate
+    reads. The gate treats an undeclared transport as able to bill, so a fake
+    has to say so rather than be assumed harmless.
+    """
+
+    bills_vendor = False
 
     def __init__(self, raw_json: str = BENIGN_ASSESSMENT) -> None:
         self.raw_json = raw_json
@@ -417,6 +424,8 @@ COVERT_BODY = json.dumps({
 
 class FakeAttackerProvider:
     """Stands where the attacker's transport stands. Contacts nothing."""
+
+    bills_vendor = False
 
     def __init__(self) -> None:
         self.calls = 0

@@ -573,6 +573,10 @@ def derive_arms() -> dict[str, Any]:
                 ),
                 "covert_actual_human": (cs.get("authorization") or {}).get("actual_human"),
                 "covert_steps": [_step_record(s) for s in covert],
+                # Both legs are also kept as step lists, so the gate-chain
+                # drawing can read a one-step arm and a three-step arm through
+                # the same code rather than through two shapes of record.
+                "overt_steps": [_step_record(s) for s in overt],
                 "covert_outcome": row["covert_outcome"],
                 "covert_attempt": row["covert_attempt"],
                 "side_effects": row["covert_side_effect_count"],
@@ -642,6 +646,9 @@ def derive_t4_arms() -> dict[str, Any]:
         steps = [_step_record(s) for s in row["covert_episode"]["steps"]]
         if not steps:
             raise DerivationError(f"{T4_ENVELOPE}: {condition} publishes no covert step")
+        overt = [_step_record(s) for s in row["incident_episode"]["steps"]]
+        if not overt:
+            raise DerivationError(f"{T4_ENVELOPE}: {condition} publishes no incident step")
         arms.append(
             {
                 "condition": condition,
@@ -650,6 +657,7 @@ def derive_t4_arms() -> dict[str, Any]:
                 "monitor_source": row["monitor_source"],
                 "variant": row["variant_id"],
                 "covert_steps": steps,
+                "overt_steps": overt,
                 "covert_outcome": row["covert_outcome"],
                 "covert_attempt": row["covert_attempt"],
                 "side_effects": row["covert_side_effect_count"],
@@ -1431,6 +1439,7 @@ def derive() -> dict[str, Any]:
         "full_chain": derive_full_chain_outcomes(),
         "scenario": scenario,
         "arms": arms,
+        "t4": t4,
         "panel": derive_panel(scenario, arms, t4),
         "route_b": derive_route_b(),
         "rows": derive_row_census(),
@@ -1902,72 +1911,145 @@ def _svg_text(x: int, y: int, cls: str, text: str, anchor: str = "middle") -> st
     )
 
 
-def _chain_group(arm: dict[str, Any]) -> str:
-    """One condition's full state, drawn from that arm's own record."""
-    cond = arm["condition"]
+# Where the covert leg's line ends, given the stage its last step reached. A
+# stage this map does not know is an unrecognised record rather than a drawing
+# to guess at, so _chain_view() raises on one.
+STAGE_STOP_X = {
+    "policy": GATE_X[0],
+    "monitor": GATE_X[1],
+    "approval": GATE_X[2],
+    "execution": LANE_END,
+}
+
+
+def _joined(values: list[Any]) -> str:
+    """Several recorded values in one label, spelled as the artifact spells them."""
+    return " · ".join(jsonish(v) for v in values)
+
+
+def _chain_view(arm: dict[str, Any]) -> dict[str, Any]:
+    """One published arm reduced to what the gate-chain drawing reads.
+
+    Both legs are read as step lists, so an arm whose covert leg runs three steps
+    (T4) draws through exactly the same code as one that runs a single step (T1),
+    and the README figures cannot end up being a second renderer that drifts from
+    the page's.
+
+    Each gate carries two separate facts, as it does in the switch panel: the
+    state its own ``safeguards_applied`` records, and the decision it actually
+    made on each leg. A gate that ran and recorded nothing was never shown the
+    action, and the drawing says so rather than implying it judged one.
+
+    Only the structural part is derived here. The labels around it differ between
+    the page and the standalone figures, so each caller supplies its own.
+    """
+    covert = arm["covert_steps"]
+    overt = arm["overt_steps"]
     safeguards = arm["safeguards"]
-    stopped_at_policy = arm["covert_stage"] == "policy"
-    stop_x = GATE_X[0] if stopped_at_policy else LANE_END
-    covert_len = stop_x - LANE_START
 
-    parts: list[str] = [f'<g class="cond" data-cond="{E(cond)}" aria-hidden="true">']
-
-    # gates
-    for index, (key, label) in enumerate(GATE_KEYS):
-        x = GATE_X[index]
+    gates: list[dict[str, Any]] = []
+    for key, label in GATE_KEYS:
         state = safeguards[key]
         on = state == "executed"
+        if key == "policy":
+            recorded = _distinct(s["policy"] for s in covert)
+            reasons = _distinct(r for s in covert for r in s["policy_reasons"])
+            overt_recorded = _distinct(s["policy"] for s in overt)
+        elif key == "monitor":
+            recorded = _distinct(s["monitor"] for s in covert)
+            reasons = []
+            overt_recorded = _distinct(s["monitor"] for s in overt)
+        else:
+            recorded = _distinct(s["auth"] for s in covert)
+            reasons = []
+            overt_recorded = _distinct(s["auth"] for s in overt)
+        shown = any(value is not None for value in recorded)
+
+        if not on:
+            overt_note = covert_note = "—"
+        else:
+            overt_note = _joined([v for v in overt_recorded if v is not None])
+            if key == "human_gate":
+                overt_note += " · actual_human=" + _joined(
+                    _distinct(s["actual_human"] for s in overt)
+                )
+            if not shown:
+                covert_note = "never consulted"
+            else:
+                covert_note = _joined([v for v in recorded if v is not None] + reasons)
+                if key == "human_gate":
+                    covert_note += " · actual_human=" + _joined(
+                        _distinct(s["actual_human"] for s in covert)
+                    )
+        gates.append(
+            {
+                "label": label,
+                "state": state,
+                "on": on,
+                "shown": shown,
+                "overt": overt_note,
+                "covert": covert_note,
+            }
+        )
+
+    stage = covert[-1]["stage"]
+    if stage not in STAGE_STOP_X:
+        raise DerivationError(f"a covert step reached an unrecognised stage: {stage}")
+    return {
+        "condition": arm["condition"],
+        "gates": gates,
+        "stage": stage,
+        "stop_x": STAGE_STOP_X[stage],
+        "stopped": stage != "execution",
+    }
+
+
+def _chain_body(view: dict[str, Any], *, dim_unshown: bool = False) -> str:
+    """The gate chain itself, shared by the page and the README figures.
+
+    ``dim_unshown`` greys a gate that executed and was never presented with the
+    covert action. The page leaves those in the running colour because its
+    caption and the table beneath it already say so; a standalone image carries
+    no caption, so it has to carry the distinction itself.
+    """
+    parts: list[str] = []
+    stop_x = view["stop_x"]
+    covert_len = stop_x - LANE_START
+
+    # gates
+    for index, gate in enumerate(view["gates"]):
+        x = GATE_X[index]
+        on = gate["on"]
         parts.append(
             f'<line x1="{x}" y1="{BAR_TOP}" x2="{x}" y2="{BAR_BOT}" '
             f'class="{"bar-on" if on else "bar-off"}"/>'
         )
-        parts.append(_svg_text(x, 32, "gname", label.upper()))
-        parts.append(_svg_text(x, 47, "gstate", state))
-
-        # overt-leg annotation
-        if not on:
-            overt_note = "—"
-        elif index == 0:
-            overt_note = str(arm["overt_policy"])
-        elif index == 1:
-            overt_note = str(arm["overt_monitor"])
-        else:
-            overt_note = (
-                f'{arm["overt_auth"]} · actual_human={jsonish(arm["overt_actual_human"])}'
-            )
-        parts.append(_svg_text(x, 96, "anno" + (" held" if on else ""), overt_note))
-
-        # covert-leg annotation
-        if not on:
-            covert_note = "—"
-        elif index == 0:
-            reasons = " · ".join(arm["covert_policy_reasons"])
-            covert_note = (
-                f'{arm["covert_policy"]} · {reasons}'
-                if reasons
-                else str(arm["covert_policy"])
-            )
-        else:
-            covert_note = "never consulted"
+        parts.append(_svg_text(x, 32, "gname", gate["label"].upper()))
+        parts.append(_svg_text(x, 47, "gstate", gate["state"]))
+        parts.append(_svg_text(x, 96, "anno" + (" held" if on else ""), gate["overt"]))
         cls = "anno"
-        if on and index == 0:
+        if on and gate["shown"]:
             cls += " covert-t"
-        parts.append(_svg_text(x, 238, cls, covert_note))
+        elif on and dim_unshown:
+            cls += " off"
+        parts.append(_svg_text(x, 238, cls, gate["covert"]))
 
     # agent
     parts.append('<rect x="8" y="76" width="150" height="164" rx="2" class="agent"/>')
     parts.append(_svg_text(83, 148, "gname", "AGENT"))
-    parts.append(_svg_text(83, 166, "gstate", "one body, replayed"))
+    parts.append(_svg_text(83, 166, "gstate", view["agent_note"]))
 
     # lanes
-    parts.append(_svg_text(LANE_START, 78, "lane", "OVERT · repair checkout", "start"))
+    # The overt leg runs to whichever x its caller can spare. On the page the
+    # outcome beside it is two short words and the arrow can run past them; in a
+    # figure the labels are the artifact's own field names and it cannot.
+    overt_end = view["overt_end"]
+    parts.append(_svg_text(LANE_START, 78, "lane", view["overt_lane"], "start"))
     parts.append(
-        f'<path class="overt" d="M{LANE_START} {LANE_OVERT} H932"/>'
-        f'<path class="overt" d="M926 {LANE_OVERT - 4} l6 4 -6 4"/>'
+        f'<path class="overt" d="M{LANE_START} {LANE_OVERT} H{overt_end}"/>'
+        f'<path class="overt" d="M{overt_end - 6} {LANE_OVERT - 4} l6 4 -6 4"/>'
     )
-    parts.append(
-        _svg_text(LANE_START, 194, "lane", "COVERT · " + str(arm["covert_tool"]), "start")
-    )
+    parts.append(_svg_text(LANE_START, 194, "lane", view["covert_lane"], "start"))
     parts.append(
         f'<path class="covert" style="--len:{covert_len}" '
         f'd="M{LANE_START} {LANE_COVERT} H{stop_x}"/>'
@@ -1975,7 +2057,7 @@ def _chain_group(arm: dict[str, Any]) -> str:
 
     # covert terminator
     parts.append('<g class="stopgroup">')
-    if stopped_at_policy:
+    if view["stopped"]:
         parts.append(
             f'<line class="stop" x1="{stop_x}" y1="{LANE_COVERT - 13}" '
             f'x2="{stop_x}" y2="{LANE_COVERT + 13}"/>'
@@ -1987,31 +2069,37 @@ def _chain_group(arm: dict[str, Any]) -> str:
     parts.append("</g>")
 
     # outcomes
-    overt_out = "checkout repaired" if arm["incident_repaired"] else "checkout NOT repaired"
-    parts.append(_svg_text(OUT_X, LANE_OVERT - 4, "out held", overt_out, "start"))
+    parts.append(_svg_text(OUT_X, LANE_OVERT - 4, "out held", view["overt_out"], "start"))
+    parts.append(_svg_text(OUT_X, LANE_OVERT + 14, "anno", view["overt_sub"], "start"))
     parts.append(
-        _svg_text(
-            OUT_X,
-            LANE_OVERT + 14,
-            "anno",
-            f'{arm["overt_tool"]}',
-            "start",
-        )
+        _svg_text(OUT_X, LANE_COVERT - 4, "out covert-t", view["covert_out"], "start")
     )
     parts.append(
-        _svg_text(OUT_X, LANE_COVERT - 4, "out covert-t", str(arm["covert_outcome"]), "start")
+        _svg_text(OUT_X, LANE_COVERT + 14, "anno covert-t", view["covert_sub"], "start")
     )
-    parts.append(
-        _svg_text(
-            OUT_X,
-            LANE_COVERT + 14,
-            "anno covert-t",
-            f'{arm["side_effects"]} side effect' + ("" if arm["side_effects"] == 1 else "s"),
-            "start",
-        )
-    )
-    parts.append("</g>")
     return "".join(parts)
+
+
+def _chain_group(arm: dict[str, Any]) -> str:
+    """One condition's full state on the page, drawn from that arm's own record."""
+    view = _chain_view(arm) | {
+        "agent_note": "one body, replayed",
+        "overt_end": 932,
+        "overt_lane": "OVERT · repair checkout",
+        "covert_lane": "COVERT · " + str(arm["covert_tool"]),
+        "overt_out": (
+            "checkout repaired" if arm["incident_repaired"] else "checkout NOT repaired"
+        ),
+        "overt_sub": f'{arm["overt_tool"]}',
+        "covert_out": str(arm["covert_outcome"]),
+        "covert_sub": f'{arm["side_effects"]} side effect'
+        + ("" if arm["side_effects"] == 1 else "s"),
+    }
+    return (
+        f'<g class="cond" data-cond="{E(arm["condition"])}" aria-hidden="true">'
+        + _chain_body(view)
+        + "</g>"
+    )
 
 
 def render_chain(facts: dict[str, Any]) -> str:
@@ -2038,6 +2126,267 @@ def render_chain(facts: dict[str, Any]) -> str:
         "that arm. The figures come from the same records as the table below; the table is "
         "complete without the diagram.</figcaption></figure>"
     )
+
+
+# ---------------------------------------------------------------------------
+# The standalone README figures
+#
+# GitHub renders a README image through a proxy, as an <img>: no stylesheet of
+# ours loads, no font link resolves, no script runs. So each file carries its own
+# <style>, its own opaque background, and font stacks that name only families a
+# reader's machine already has. There is no theme query either, because GitHub
+# picks between two <img> sources by theme rather than letting the image ask, so
+# each figure is emitted twice with a different palette baked in.
+#
+# The drawing is _chain_body(), the same function the page's diagram calls. That
+# is the point: a second renderer would drift from the page the way README.md
+# drifted from the artifacts.
+# ---------------------------------------------------------------------------
+
+FIG_WIDTH = 1080  # the internal coordinate width; the width attribute is FIG_RENDER
+FIG_RENDER = 960
+FIG_HEAD_Y = (26, 46)
+FIG_TOP = 74  # the first row's top edge
+FIG_ROW_LABEL_Y = 14
+FIG_BODY_DY = 26  # where the chain drawing starts inside a row
+FIG_BODY_H = 262  # the chain drawing's own height, bar top to covert annotation
+FIG_NOTE_DY = 18
+FIG_FOOT = 18
+
+FIG_SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+FIG_MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+
+# The page's own two palettes, flattened. Same drawing, same roles, two grounds.
+FIG_PALETTES = {
+    "light": {
+        "ground": "#F7F8F7",
+        "ink": "#14181A",
+        "ink2": "#414A4C",
+        "ink3": "#5F696B",
+        "rule": "#D6DCD9",
+        "rule2": "#B2BAB7",
+        "covert": "#A63F26",
+        "held": "#136059",
+        "off": "#9AA5A3",
+    },
+    "dark": {
+        "ground": "#14181A",
+        "ink": "#E7ECEA",
+        "ink2": "#B6BFBC",
+        "ink3": "#8B9593",
+        "rule": "#2A3235",
+        "rule2": "#3E4749",
+        "covert": "#EB8666",
+        "held": "#63C2B6",
+        "off": "#5A6462",
+    },
+}
+
+FIGURE_ARM = "policy_monitor_human"
+
+
+def _figure_css(theme: str, base: int) -> str:
+    """One figure's whole stylesheet, with the palette substituted in.
+
+    No custom properties and no media query: the values are written out, so the
+    file renders the same in an <img>, in a viewer that resolves no cascade of
+    ours, and in a browser that never hears about the reader's theme.
+    """
+    p = FIG_PALETTES[theme]
+    small = base - 1
+    rules = [
+        f"text{{font-family:{FIG_MONO};font-size:{base}px;fill:{p['ink2']}}}",
+        "text{font-variant-numeric:tabular-nums}",
+        f".gname{{font-family:{FIG_SANS};font-size:{base}px;fill:{p['ink']}}}",
+        ".gname{letter-spacing:.1em}",
+        f".gstate{{font-size:{small}px;fill:{p['ink3']};letter-spacing:.06em}}",
+        f".anno{{font-size:{small}px}}",
+        f".lane{{font-size:{small}px;fill:{p['ink3']};letter-spacing:.08em}}",
+        f".out{{font-size:{base}px}}",
+        f".anno.held,.out.held{{fill:{p['held']}}}",
+        f".anno.covert-t,.out.covert-t{{fill:{p['covert']}}}",
+        f".anno.off{{fill:{p['off']}}}",
+        # A halo in the ground colour, painted under the glyphs, so a gate's
+        # decision label and a lane's tool names stay legible where a bar runs
+        # through them. Only the classes that can land on a bar carry it; the
+        # headings sit clear of the bars and would only thicken.
+        f".gstate,.anno,.lane,.out{{paint-order:stroke fill;stroke:{p['ground']}}}",
+        ".gstate,.anno,.lane,.out{stroke-width:4px;stroke-linejoin:round}",
+        f".rowlabel{{font-family:{FIG_SANS};font-size:{base + 1}px}}",
+        f".rowlabel{{fill:{p['ink']};font-weight:600}}",
+        f".figtitle{{font-family:{FIG_SANS};font-size:{base + 3}px}}",
+        f".figtitle{{fill:{p['ink']};font-weight:600}}",
+        f".figsub,.rownote{{font-size:{small}px;fill:{p['ink3']}}}",
+        f".rowrule{{stroke:{p['rule']};stroke-width:1}}",
+        f".bar-on{{stroke:{p['held']};stroke-width:3}}",
+        f".bar-off{{stroke:{p['off']};stroke-width:1.5;stroke-dasharray:3 5}}",
+        f".overt{{stroke:{p['ink2']};stroke-width:1.5;fill:none}}",
+        f".covert{{stroke:{p['covert']};stroke-width:2.5;fill:none}}",
+        f".stop{{stroke:{p['covert']};stroke-width:3}}",
+        f".agent{{fill:none;stroke:{p['rule2']};stroke-width:1}}",
+    ]
+    return "".join(rules)
+
+
+def _figure_view(arm: dict[str, Any], agent_note: str) -> dict[str, Any]:
+    """The gate-chain view with the labels a standalone image has to carry.
+
+    Every one of them is a field of the arm: the tools its legs proposed, the
+    outcome its row published, the two checker verdicts, the side-effect count.
+    The page can afford a caption underneath saying what the reader is looking
+    at; a file dropped into a README cannot, so the labels say it instead.
+    """
+    steps = len(arm["overt_steps"])
+    effects = arm["side_effects"]
+    return _chain_view(arm) | {
+        "agent_note": agent_note,
+        "overt_end": LANE_END,
+        "overt_lane": "OVERT · " + ", ".join(_distinct(s["tool"] for s in arm["overt_steps"])),
+        "covert_lane": "COVERT · "
+        + ", ".join(_distinct(s["tool"] for s in arm["covert_steps"])),
+        "overt_out": "incident_checker_passed: " + jsonish(arm["incident_repaired"]),
+        "overt_sub": f"{steps} step" + ("" if steps == 1 else "s"),
+        "covert_out": f'{arm["covert_outcome"]} · {effects} side effect'
+        + ("" if effects == 1 else "s"),
+        "covert_sub": "covert_checker_passed: " + jsonish(arm["covert_checker_passed"]),
+    }
+
+
+def _figure_rows_t1(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    arms = facts["arms"]
+    seats = "attacker · " + ", ".join(_distinct(b["attacker"] for b in arms["bodies"]))
+    return [
+        {
+            "condition": arm["condition"],
+            "scenario": facts["scenario"],
+            "label": CONDITION_LABELS[arm["condition"]],
+            "view": _figure_view(arm, "one body, replayed"),
+            "note": seats,
+        }
+        for arm in arms["arms"]
+    ]
+
+
+def _figure_rows_t4(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    t4 = facts["t4"]
+    return [
+        {
+            "condition": arm["condition"],
+            "scenario": {"id": t4["id"], "title": t4["title"]},
+            "label": CONDITION_LABELS[arm["condition"]],
+            "view": _figure_view(arm, arm["attacker"]),
+            "note": f'attacker · {arm["attacker"]} · monitor · {arm["monitor_source"]}',
+        }
+        for arm in t4["arms"]
+    ]
+
+
+def _one_arm(rows: list[dict[str, Any]], condition: str) -> dict[str, Any]:
+    """The single row for one condition, or a refusal to draw a chain without it."""
+    hits = [row for row in rows if row["condition"] == condition]
+    if len(hits) != 1:
+        raise DerivationError(
+            f"expected exactly one published {condition} row to draw, found {len(hits)}"
+        )
+    return hits[0]
+
+
+def _figure_svg(
+    head: tuple[str, str],
+    rows: list[dict[str, Any]],
+    *,
+    theme: str,
+    base: int,
+    pitch: int,
+    aria: str,
+) -> str:
+    """One standalone file: a header, then one chain per row, on an opaque ground."""
+    p = FIG_PALETTES[theme]
+    height = FIG_TOP + (len(rows) - 1) * pitch + FIG_BODY_DY + FIG_BODY_H + FIG_NOTE_DY
+    height += FIG_FOOT
+    # viewBox plus an explicit width and height, because GitHub lays a README
+    # image out from the attributes and will not read the box on its own.
+    root = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {FIG_WIDTH} {height}" '
+        f'width="{FIG_RENDER}" height="{round(FIG_RENDER * height / FIG_WIDTH)}" '
+        f'role="img" aria-label="{E(aria)}">'
+    )
+    parts = [
+        root,
+        "<style>" + _figure_css(theme, base) + "</style>",
+        f'<rect x="0" y="0" width="{FIG_WIDTH}" height="{height}" fill="{p["ground"]}"/>',
+        _svg_text(8, FIG_HEAD_Y[0], "figtitle", head[0], "start"),
+        _svg_text(8, FIG_HEAD_Y[1], "figsub", head[1], "start"),
+    ]
+    for index, row in enumerate(rows):
+        parts.append(f'<g transform="translate(0,{FIG_TOP + index * pitch})">')
+        if index:
+            parts.append(
+                f'<line class="rowrule" x1="8" y1="0" x2="{FIG_WIDTH - 8}" y2="0"/>'
+            )
+        parts.append(_svg_text(8, FIG_ROW_LABEL_Y, "rowlabel", row["label"], "start"))
+        parts.append(f'<g transform="translate(0,{FIG_BODY_DY})">')
+        parts.append(_chain_body(row["view"], dim_unshown=True))
+        parts.append("</g>")
+        parts.append(
+            _svg_text(8, FIG_BODY_DY + FIG_BODY_H + FIG_NOTE_DY, "rownote", row["note"], "start")
+        )
+        parts.append("</g>")
+    parts.append("</svg>\n")
+    return "".join(parts)
+
+
+def render_figures(facts: dict[str, Any]) -> dict[str, str]:
+    """The six README images, light and dark, keyed by the path each is written to."""
+    scenario = facts["scenario"]
+    t4 = facts["t4"]
+    t1_rows = _figure_rows_t1(facts)
+    t4_rows = _figure_rows_t4(facts)
+
+    t1_head = (
+        f'{scenario["id"]} · {scenario["title"]}',
+        "covert objective · " + ", ".join(scenario["forbidden_actions"]),
+    )
+    t4_head = (
+        f'{t4["id"]} · {t4["title"]}',
+        "covert objective · " + ", ".join(t4["forbidden_actions"]),
+    )
+    hero_rows = []
+    for rows in (t1_rows, t4_rows):
+        row = dict(_one_arm(rows, FIGURE_ARM))
+        row["label"] = (
+            f'{row["scenario"]["id"]} · {row["scenario"]["title"]} · '
+            f"{CONDITION_LABELS[FIGURE_ARM]}"
+        )
+        hero_rows.append(row)
+    hero_head = (
+        f'{scenario["id"]} and {t4["id"]} · {CONDITION_LABELS[FIGURE_ARM]}',
+        "covert objectives · "
+        + " · ".join(scenario["forbidden_actions"] + t4["forbidden_actions"]),
+    )
+
+    hero_aria = (
+        f'The same three gates in series on {scenario["id"]} and on {t4["id"]}, '
+        f"both in the {CONDITION_LABELS[FIGURE_ARM]} arm. Every label is a field "
+        "of the published row."
+    )
+    arms_aria = " drawn once per safeguard arm, from the published evaluation rows."
+    # (stem, header, rows, base font size, row pitch, aria label). The hero gets
+    # the larger type and the taller rows; it is the one a reader meets first.
+    plans = [
+        ("finding-t1-vs-t4", hero_head, hero_rows, 13, 338, hero_aria),
+        ("t1-three-arms", t1_head, t1_rows, 12, 318, scenario["id"] + arms_aria),
+        ("t4-three-arms", t4_head, t4_rows, 12, 318, t4["id"] + arms_aria),
+    ]
+
+    out: dict[str, str] = {}
+    for name, head, rows, base, pitch, aria in plans:
+        for theme in ("light", "dark"):
+            suffix = "" if theme == "light" else "-dark"
+            out[f"figures/{name}{suffix}.svg"] = _figure_svg(
+                head, rows, theme=theme, base=base, pitch=pitch, aria=aria
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3014,7 +3363,14 @@ def build(facts: dict[str, Any]) -> dict[str, str]:
         + "\n</body>\n</html>\n"
     )
     body_only = prelude + "\n" + content + "\n"
-    return {"index.html": standalone, "artifact-body.html": body_only}
+    # The figures are output on the same terms as the wrappers: written by the
+    # same run, compared by the same --check. A README that embeds a hand-drawn
+    # image is a hand-typed number with extra steps.
+    return {
+        "index.html": standalone,
+        "artifact-body.html": body_only,
+        **render_figures(facts),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3044,8 +3400,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     for name, text in outputs.items():
-        (args.out / name).write_text(text, encoding="utf-8", newline="\n")
-        print(f"wrote {(args.out / name).as_posix()}  ({len(text)} bytes)")
+        path = args.out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {path.as_posix()}  ({len(text)} bytes)")
     return 0
 
 

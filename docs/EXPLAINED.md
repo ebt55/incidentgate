@@ -71,9 +71,9 @@ state, injected fault, allowed evidence, acceptable diagnoses, allowed and
 forbidden actions and a checker, and it does so before any runtime exists for it
 ([`scenarios/`](../scenarios/)).
 
-**A write-up in progress.** Nothing here is released. It is a development
-checkpoint pushed for review, and results are published with their bounds
-attached, negative ones included.
+**Closed at a baseline.** This repository was closed at a baseline on 2026-09-06
+and is kept for review. Results are published with their bounds attached,
+negative ones included.
 
 ## What "the attacker seat is constrained" means
 

@@ -18,12 +18,13 @@ apparatus around such an agent: frozen scenario contracts, three counterfactual
 safeguard conditions, real process kills, and raw results that regenerate from
 one command.
 
-> ### ⚠️ Work in progress, nothing is released
+> ### Closed at a baseline, 2026-09-06
 >
-> This is not a release, a beta, or a preview. It is a development checkpoint
-> pushed for review, and it will change in breaking ways without notice. Don't
-> deploy it, and don't quote its numbers as product claims. Three bounds
-> constrain everything below.
+> This repository was closed at a baseline on 2026-09-06 and is kept for review.
+> It is a development checkpoint rather than a release. The results stand with
+> the bounds stated in this file, and any further work lands as a new version
+> rather than as changes to these numbers. Don't deploy it, and don't quote its
+> numbers as product claims. Three bounds constrain everything below.
 >
 > - Most published evaluation rows have no model in the decision path. No
 >   checkpoint-B row and no deterministic sabotage-matrix cell makes a provider
@@ -174,9 +175,10 @@ on.
 
 ## The gap statement this README used to carry was false
 
-Until today this file said in several places that the durable human approval gate
-had never been presented with a covert action. It has been, twenty-one times,
-across the T4 captures. The corrected form is narrower and names a different gap.
+Until 2026-08-27 this file said in several places that the durable human approval
+gate had never been presented with a covert action. It has been, twenty-one
+times, across the T4 captures. The corrected form is narrower and names a
+different gap.
 
 > The approval mechanism has been exercised end to end against a covert action.
 > What has never happened is a human judging one. The approver is a deterministic

@@ -51,6 +51,7 @@ import json
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from decimal import Decimal
 from pathlib import Path
 
@@ -61,7 +62,19 @@ EXPLAINER = ROOT / "explainer"
 BUILD = EXPLAINER / "build.py"
 WRAPPERS = ("index.html", "artifact-body.html")
 
+# The README's figures are the same build's output as the page, and are held to
+# the same two rules: current with the artifacts, and byte-identical run to run.
+# A README that embeds a drawing nobody regenerates is the stale-number failure
+# this whole file exists to catch, moved into an image where it is harder to see.
+FIGURES = tuple(
+    f"figures/{stem}{suffix}.svg"
+    for stem in ("finding-t1-vs-t4", "t1-three-arms", "t4-three-arms")
+    for suffix in ("", "-dark")
+)
+OUTPUTS = WRAPPERS + FIGURES
+
 FONT_HOSTS = ("https://fonts.googleapis.com", "https://fonts.gstatic.com")
+SVG_TEXT = "{http://www.w3.org/2000/svg}text"
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +131,9 @@ def test_committed_output_matches_a_fresh_build() -> None:
         check=False,
     )
     assert result.returncode == 0, (
-        "explainer/*.html is stale relative to the artifacts it claims to derive "
-        f"from. Run `python explainer/build.py`.\n{result.stdout}{result.stderr}"
+        "explainer/ output (the two wrappers and the six README figures) is stale "
+        "relative to the artifacts it claims to derive from. Run "
+        f"`python explainer/build.py`.\n{result.stdout}{result.stderr}"
     )
 
 
@@ -133,9 +147,10 @@ def test_two_builds_are_byte_identical(tmp_path: Path) -> None:
             capture_output=True,
             cwd=str(ROOT),
         )
-        digests.append({name: (out / name).read_bytes() for name in WRAPPERS})
+        digests.append({name: (out / name).read_bytes() for name in OUTPUTS})
     assert digests[0] == digests[1], "the build is not idempotent"
-    assert all(len(v) > 10_000 for v in digests[0].values()), "build produced stubs"
+    assert all(len(digests[0][n]) > 10_000 for n in WRAPPERS), "build produced stubs"
+    assert all(len(digests[0][n]) > 3_000 for n in FIGURES), "a figure is a stub"
 
 
 def test_both_wrappers_share_one_template(page: str) -> None:
@@ -621,6 +636,131 @@ def test_only_the_default_panel_state_is_visible(page: str) -> None:
         f"the panel opens on {visible} rather than T1 with no safeguards"
     )
     assert len(blocks) - len(visible) == 5, "the other five states are not hidden"
+
+
+# ---------------------------------------------------------------------------
+# The README figures: the same rows, drawn, in a file that stands on its own
+# ---------------------------------------------------------------------------
+
+
+def _figure_text(name: str) -> str:
+    """Every <text> node in one figure, joined by a separator no label contains.
+
+    Parsed as XML rather than scanned as a string, so a label that never made it
+    into a text node -- left in an attribute, or dropped -- cannot satisfy an
+    assertion below. The separator keeps two adjacent labels from accidentally
+    spelling a third.
+    """
+    root = ET.parse(EXPLAINER / name).getroot()
+    return " | ".join(el.text or "" for el in root.iter() if el.tag == SVG_TEXT)
+
+
+def _end_label(row: dict, offset: int = 0) -> str:
+    """The covert leg's end label, as the artifact's own two fields spell it."""
+    count = row["covert_side_effect_count"] + offset
+    return f'{row["covert_outcome"]} · {count} side effect' + ("" if count == 1 else "s")
+
+
+def test_each_figure_states_the_outcomes_of_the_rows_it_draws() -> None:
+    """Every arm drawn, against the envelope row for that scenario and arm.
+
+    Read off the artifacts here rather than asked of the generator, and mirrored
+    by an assertion that the same label with the side-effect count one higher is
+    absent -- a figure showing ``landed`` with no number, or every number, would
+    otherwise satisfy a bare substring scan.
+    """
+    t1, t4 = _t1_rows(), _t4_rows()
+    assert set(t1) == set(t4) and len(t1) == 3, "the lane no longer runs three shared arms"
+    drawn = {
+        "figures/t1-three-arms.svg": list(t1.values()),
+        "figures/t4-three-arms.svg": list(t4.values()),
+        "figures/finding-t1-vs-t4.svg": [
+            t1["policy_monitor_human"],
+            t4["policy_monitor_human"],
+        ],
+    }
+
+    checked = 0
+    for name, rows in drawn.items():
+        dark = name.replace(".svg", "-dark.svg")
+        text = _figure_text(name)
+        assert _figure_text(dark) == text, (
+            f"{dark} is not the same drawing as {name}; the two palettes have "
+            "drifted into two figures"
+        )
+        assert len(text) > 400, f"{name} carries almost no text"
+
+        for row in rows:
+            assert _end_label(row) in text, (
+                f"{name} does not carry the {row['scenario_id']} "
+                f"{row['condition']} end label {_end_label(row)!r}"
+            )
+            assert _end_label(row, 1) not in text, (
+                f"{name} carries a wrong side-effect count for {row['condition']}"
+            )
+            assert row["scenario_id"] in text
+
+            gates = row["safeguards_applied"]
+            for step in row["covert_episode"]["steps"]:
+                recorded = (
+                    ("policy", step["policy_decision"]),
+                    ("monitor", step["monitor_verdict"]),
+                    ("human_gate", (step.get("authorization") or {}).get("decision")),
+                )
+                for key, decision in recorded:
+                    assert gates[key] in text, f"{name} omits the {key} gate's state"
+                    if gates[key] != "executed":
+                        continue
+                    if decision is None:
+                        # A gate that ran and decided nothing was never shown the
+                        # covert action. The figure has no caption to say so, so
+                        # the drawing has to.
+                        assert "never consulted" in text, (
+                            f"{name}: {key} ran and judged nothing in "
+                            f"{row['condition']}, and the figure does not say so"
+                        )
+                    else:
+                        assert decision in text, (
+                            f"{name} does not show {key} deciding {decision!r} in "
+                            f"{row['condition']}"
+                        )
+                for reason in step["policy_reasons"] if gates["policy"] == "executed" else []:
+                    assert reason in text, f"{name} drops the policy reason {reason!r}"
+            checked += 1
+
+    assert checked == 8, f"the figure comparison ran on {checked} rows, not 8"
+
+    # The hero draws one arm, so it must not be showing any of the others.
+    hero = _figure_text("figures/finding-t1-vs-t4.svg")
+    assert "policy + monitor + human" in hero
+    for absent in ("ungated", "policy only"):
+        assert absent not in hero, f"the hero figure also draws the {absent} arm"
+
+
+def test_the_figures_carry_nothing_they_cannot_fetch() -> None:
+    """GitHub renders these through a proxy, as images: nothing external loads.
+
+    A font link, a stylesheet, or an <image> href would not fail visibly -- it
+    would simply render as something other than what was checked here, on a
+    surface where this project's numbers are read first.
+    """
+    for name in FIGURES:
+        raw = (EXPLAINER / name).read_text(encoding="utf-8")
+        urls = re.findall(r"https?://[^\"'\s<>]+", raw)
+        assert urls == ["http://www.w3.org/2000/svg"], f"{name} references {urls}"
+        assert raw.count("http") == 1, f"{name} names http outside its xmlns"
+
+        for forbidden in ("<script", "<link", "<image", "@import", "xlink", "url("):
+            assert forbidden not in raw, f"{name} contains {forbidden}"
+
+        root = ET.fromstring(raw)
+        assert root.get("viewBox") and root.get("width") and root.get("height"), (
+            f"{name} does not size itself, so GitHub cannot lay it out"
+        )
+        assert raw.count("<style>") == 1, f"{name} does not carry exactly one stylesheet"
+        # An opaque ground: the dark figure has to read on GitHub's dark theme
+        # and the light one on its light theme, and neither may show through.
+        assert "<rect x=\"0\" y=\"0\"" in raw, f"{name} has no background rect"
 
 
 # ---------------------------------------------------------------------------

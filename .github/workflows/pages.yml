@@ -73,9 +73,10 @@ jobs:
       # page from Pages would reintroduce the same defect at the one URL most
       # likely to be read and quoted, where it is hardest to notice.
       #
-      # `--check` rebuilds both wrappers in memory from the committed artifacts
-      # and compares them byte for byte with the committed files. It writes
-      # nothing and exits 3 on drift.
+      # `--check` rebuilds both wrappers and the README figures under
+      # explainer/figures/ in memory from the committed artifacts and compares
+      # them byte for byte with the committed files. It writes nothing and
+      # exits 3 on drift.
       #
       # No database, and that is checked rather than assumed: build.py imports
       # only the standard library (argparse, hashlib, html, json, re, sys,
@@ -92,15 +93,16 @@ jobs:
           {
             echo '## Pages deploy refused: the explainer has drifted'
             echo
-            echo 'explainer/index.html no longer matches a fresh build from the'
-            echo 'committed artifacts. Publishing it would serve numbers this'
-            echo 'commit cannot reproduce, so the deploy stopped here rather than'
-            echo 'after the stale page was already live.'
+            echo 'A generated explainer file no longer matches a fresh build'
+            echo 'from the committed artifacts. Publishing the page would serve'
+            echo 'numbers this commit cannot reproduce, so the deploy stopped'
+            echo 'here rather than after the stale page was already live. The'
+            echo 'build.py line in the job log names the files that drifted.'
             echo
             echo 'Fix it from a clean checkout of this commit:'
             echo
             echo '    uv run python explainer/build.py'
-            echo '    git add explainer/index.html explainer/artifact-body.html'
+            echo '    git add explainer/index.html explainer/artifact-body.html explainer/figures/'
             echo '    git commit'
             echo
             echo 'Then push. Do not hand-edit the generated HTML -- it is rebuilt'
@@ -111,7 +113,7 @@ jobs:
       # Publish only what should be served.
       #
       # explainer/ is a source directory, not a web root. Uploading it as-is
-      # would serve two files that should not be served:
+      # would serve three things that should not be served:
       #
       #   * artifact-body.html -- a headless fragment with no <!doctype>, <html>
       #     or <body>. A browser opening it directly renders it in quirks mode
@@ -121,6 +123,11 @@ jobs:
       #     avoid.
       #   * build.py -- the generator, plus whatever __pycache__/ a local run
       #     left behind.
+      #   * figures/ -- the SVGs build.py emits for README.md, verified by the
+      #     gate above but not part of the page. index.html embeds its own
+      #     diagram inline and references nothing under figures/, so leaving
+      #     them out breaks no link; uploading them would publish a second copy
+      #     at a URL nothing points at.
       #
       # So the site is assembled explicitly instead: one directory, one file,
       # copied under the name the web server must serve it as. Anything that is

@@ -21,7 +21,7 @@ Three places in this repository say some version of:
 
 — [`docs/NOTES-TO-REVIEWER.md`](../NOTES-TO-REVIEWER.md) §2, `README.md` (front
 matter and "Next milestones"), and
-[`HANDOVER-07-EXECUTOR-STATE.md`](../../HANDOVER-07-EXECUTOR-STATE.md).
+[`HANDOVER-07-EXECUTOR-STATE.md`](../archive/HANDOVER-07-EXECUTOR-STATE.md).
 
 **The first sentence is true. The second sentence is false, and it is contradicted
 by a table fifty lines above it in the same document.** The conclusion drawn from

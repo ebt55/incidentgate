@@ -211,7 +211,7 @@ spend gate guards, and you do not need them to reproduce anything published.
   them use one. Only local capture runs do, and on CPU they are slow enough to be
   impractical rather than impossible. Free the VRAM before a capture run; ordinary
   desktop applications were observed holding enough to matter.
-- **`HANDOVER-07-EXECUTOR-STATE.md` in the repository root is not addressed to
+- **`docs/archive/HANDOVER-07-EXECUTOR-STATE.md` is not addressed to
   you.** It is a dated internal snapshot from an earlier working session, kept
   for history. Nothing in it is a prerequisite for this document.
 

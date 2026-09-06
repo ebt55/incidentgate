@@ -3,7 +3,7 @@
 Two things live here. **Part 1** records what each provider says about work of this
 kind, because in this project a provider's position is part of the methodology
 record rather than an obstacle to route around. **Part 2** is the approval
-application to OpenRouter, ready to send.
+application to OpenRouter, sent on 2026-08-27 and still awaiting a reply.
 
 The standing rule that governs both: **a blocked measurement stays visibly
 unmeasured.** Five requests have been refused by a provider classifier here, and
@@ -164,7 +164,9 @@ the reading has not been confirmed by OpenRouter.
 
 **Apply first, and run no paid provider calls at all until approval arrives.**
 Not "start small and disclose later", not "the monitor seat is fine so begin
-there". Nothing paid runs.
+there". Nothing paid runs. The application went out on **2026-08-27** (Part 2) and
+no reply has come back as of 2026-09-06, so the rule is in force exactly as
+written: nothing paid has run, and nothing paid runs until an approval arrives.
 
 That is enforceable rather than aspirational, because the harness cannot make a
 billable call by accident: adding a provider is a row in `PROVIDER_REGISTRY`
@@ -178,14 +180,38 @@ already on the never-committed list, added before any credential existed.
 
 ## Part 2 — the application
 
-Send from the owner's own account, after filling the placeholders listed in
-[§2.1](#21-before-sending). Text below is the message body.
+**Status, 2026-09-06.** Sent from the owner's own account on **2026-08-27 at
+17:49 IST**, to the `safety@openrouter.ai` address [§1.3](#13-openrouter--prior-written-approval-and-policies-that-stack)
+names. **No reply has arrived as of 2026-09-06**, which is past the roughly five
+business days §1.3 records as the stated turnaround. The owner will send one short
+follow-up on **2026-09-08**, the first day of the window the application proposed.
+Nothing paid runs in the meantime: that is
+[§1.7](#17-the-decision-this-document-supports), and a silent inbox does not
+change it.
+
+**The body below is the sent text**, put here in place of the draft that stood in
+this section, so the file records what OpenRouter actually received. It differs
+from that draft in two places. The sent message opens with a TL;DR paragraph the
+draft did not carry, and it gives all-time spend as USD 0.476890 over 34 calls,
+where the draft had since been updated to the corrected figure. Nothing else
+moved: same model list, same window, same budget ceiling, same disclosure.
+
+**That spend figure is superseded.** USD 0.476890 over 34 calls predates the
+correction filed the same day in [`verification.md`](verification.md), which found
+it had mispriced one refusal and omitted four others; the corrected all-time total
+is **USD 0.519080 over 38 calls**, of which $0.464635 over 33 calls is billed
+captures summable from `artifacts/`. The sent text is left as sent rather than
+edited to match, because what it records is what the recipient read.
 
 ```text
 To: safety@openrouter.ai
 Subject: Red-teaming approval request — layered-safeguard control evaluation
 
-Hello,
+TL;DR: I am requesting prior written approval to route a small number of calls
+through OpenRouter for an AI-control evaluation. The research tests a mock
+incident-response agent using strictly synthetic, local data, meaning no real
+cyber capabilities or risks are involved. The timeline is 2026-09-08 to 2026-10-31
+with a budget capped at USD 100.
 
 I am requesting written approval under your red-teaming policy
 (https://openrouter.ai/docs/guides/evaluate-and-optimize/red-teaming) to route a
@@ -275,10 +301,8 @@ SCALE AND TIMELINE
 
 Small. On the order of tens of calls in total, not thousands. For scale: all
 provider spend on this project to date, across every vendor and every request
-including refused ones, is USD 0.519080 over 38 calls — 33 requests that returned
-a body (USD 0.464635, summable from the committed captures) plus the five refused
-requests listed in section 1.1 (USD 0.054445). The ceiling for this work is
-USD 100.
+including refused ones, is USD 0.476890 over 34 calls. The ceiling for this work
+is USD 100.
 
 Spend is bounded in the harness rather than by intention. No transport capable of
 billing a vendor is constructed at all unless two independent authorisations are
@@ -333,28 +357,29 @@ Independent AI safety engineer
 ebinbabuthomas@gmail.com · https://ebinbt.dev/ · https://www.linkedin.com/in/ebinbt/
 ```
 
-### 2.1 What was filled in, and how each value was established
+### 2.1 What the sent message contained, and how each value was established
 
-Every placeholder in the draft above is now filled. This table records where each
-value came from, because a value that was checked and one that was assumed should
-not be indistinguishable later.
+Nothing above is a placeholder; these are the values that went out on 2026-08-27.
+This table records where each one came from, because a value that was checked and
+one that was assumed should not be indistinguishable later.
 
 | field | value | how it was established |
 | --- | --- | --- |
 | attacker model slugs | `z-ai/glm-5.2`, `moonshotai/kimi-k2.6`, `qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `deepseek/deepseek-v3.2`, `mistralai/mistral-small-2603` | **Verified 2026-08-27** against an unauthenticated `GET https://openrouter.ai/api/v1/models?output_modalities=all` (562 models returned). All six exist and all six list `structured_outputs` in `supported_parameters`. |
 | budget ceiling | USD 100 | Owner's decision. A separate, lower per-session authorisation governs actual runs; this is the program bound, not a spending commitment. |
-| window | 2026-09-08 to 2026-10-31 | Chosen to start after the stated ~5-business-day review from the 2026-08-27 drafting date. Nothing is scheduled against it. |
+| window | 2026-09-08 to 2026-10-31 | Chosen to start after the stated ~5-business-day review from the 2026-08-27 send date. Nothing is scheduled against it, and nothing runs on 2026-09-08 without a reply. |
 | repository | <https://github.com/ebt55/incidentgate> | Supplied by the owner. |
 | sign-off | Ebin Babu Thomas · Independent AI safety engineer · email, site, LinkedIn | Supplied by the owner. |
 | xAI AUP URL | <https://x.ai/legal/acceptable-use-policy> | **Verified 2026-08-27** by loading the page in a browser and confirming both quoted clauses verbatim, the 2026-08-14 effective date, and the `SpaceXAI LLC` attribution. An automated fetch of the same URL returns HTTP 403. |
 
 **A deliberate omission.** The owner supplied a phone number; it is **not** recorded
-here and not in the email text. This file is committed to a public repository, and
-a phone number is the one item in that set that is not already published on the
-owner's own site or profiles. Add it directly to the outgoing message if you want
-it there — it does not need to live in git to do that job.
+here and not in the message text above. This file is committed to a public
+repository, and a phone number is the one item in that set that is not already
+published on the owner's own site or profiles. Whether the owner added it to the
+outgoing message directly is his own business; it does not need to live in git to
+do that job.
 
-Two further checks the owner should make before this is treated as a record:
+Two gaps that were open when the message went out, and are open still:
 
 1. **§1.2 has an open gap.** OpenAI's written usage policies were not reviewed.
    The row records what was served, not what OpenAI says.

@@ -2333,8 +2333,9 @@ def render_footer(facts: dict[str, Any]) -> str:
         "reproduction are in <code class=\"m\">docs/HANDOFF.md</code>. The durability matrix on "
         f'this page was produced at revision <code class="m">{E(dur["revision"][:12])}</code> with '
         f'<code class="m">git_dirty: {str(dur["dirty"]).lower()}</code>.</p>'
-        "<p><code class=\"m\">README.md</code> is stale at this commit and is being rewritten "
-        "separately; no number on this page came from it.</p>"
+        "<p>No number on this page comes from <code class=\"m\">README.md</code>. Both are "
+        "written from the same committed artifacts, so where they state the same quantity "
+        "they cite the same file.</p>"
         "</div></div></div></footer>"
     )
 

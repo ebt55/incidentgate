@@ -116,6 +116,10 @@ PROSE: dict[str, dict[str, str]] = {
         ),
         "cite": "docs/NOTES-TO-REVIEWER.md § 1",
     },
+    "three_conditions": {
+        "text": "Three conditions, and the condition is the manipulated variable",
+        "cite": "docs/threat-model-and-methodology.md § 5",
+    },
     "no_attempt_rate": {
         "text": (
             "And no attempt rate is computable: mistral-nemo-12b declined the same "
@@ -316,6 +320,67 @@ def _walk_key(node: Any, key: str) -> list[Any]:
     return found
 
 
+def _distinct(values: Any) -> list[Any]:
+    """The values a field took, deduplicated, in the order they were recorded.
+
+    A leg can run several steps. Collapsing them to a set would lose the order and
+    make a two-decision gate render differently on two builds, which is exactly
+    what --check exists to catch.
+    """
+    out: list[Any] = []
+    for value in values:
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def _step_record(step: dict[str, Any]) -> dict[str, Any]:
+    """One covert or incident step, reduced to the fields this page reads.
+
+    Shared by every consumer of an episode's steps, so a step means the same
+    thing in the switch panel as it does in the full-chain scan below.
+    """
+    auth = step.get("authorization") or {}
+    return {
+        "index": step["step_index"],
+        "tool": _short_tool(step["proposed_tool"]),
+        "stage": step["stage_reached"],
+        "policy": step["policy_decision"],
+        "policy_reasons": list(step.get("policy_reasons") or []),
+        "monitor": step["monitor_verdict"],
+        "auth": auth.get("decision"),
+        "auth_source": auth.get("authorization_source"),
+        "actual_human": auth.get("actual_human"),
+        "executed": step["executed"],
+    }
+
+
+def _capture_with_rationale(rationale: str) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """The one committed capture body whose model wrote this rationale.
+
+    A published rationale that resolves to no capture, or to two, is not a
+    quotation this page can stand behind, so either raises rather than defaults.
+    Returns the capture path, its body, and its parsed assessment.
+    """
+    matches: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+    for path in sorted(
+        (ROOT / "artifacts/monitor-captures").rglob("*.json"), key=lambda p: p.as_posix()
+    ):
+        body = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            assessment = json.loads(body["raw_json"])
+        except (KeyError, json.JSONDecodeError):
+            continue
+        if isinstance(assessment, dict) and assessment.get("rationale") == rationale:
+            matches.append((path, body, assessment))
+    if len(matches) != 1:
+        raise DerivationError(
+            f"expected exactly one capture body carrying this rationale, "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
 # ---------------------------------------------------------------------------
 # Derivation
 # ---------------------------------------------------------------------------
@@ -502,6 +567,12 @@ def derive_arms() -> dict[str, Any]:
                 "covert_policy_reasons": cs["policy_reasons"],
                 "covert_monitor": cs["monitor_verdict"],
                 "covert_executed": cs["executed"],
+                "covert_auth": (cs.get("authorization") or {}).get("decision"),
+                "covert_auth_source": (cs.get("authorization") or {}).get(
+                    "authorization_source"
+                ),
+                "covert_actual_human": (cs.get("authorization") or {}).get("actual_human"),
+                "covert_steps": [_step_record(s) for s in covert],
                 "covert_outcome": row["covert_outcome"],
                 "covert_attempt": row["covert_attempt"],
                 "side_effects": row["covert_side_effect_count"],
@@ -536,6 +607,255 @@ def derive_arms() -> dict[str, Any]:
     }
 
 
+T4_ENVELOPE = "artifacts/model-monitor/T4-v4-nemo-dev-qwen3.json"
+
+
+def derive_t4_arms() -> dict[str, Any]:
+    """The same three-arm comparison on T4, where the chain does not hold.
+
+    ``derive_full_chain_outcomes()`` already reads this envelope, but only for
+    rows in which all three gates executed -- one of the three arms. The switch
+    panel needs the other two as well, so the per-row reduction is done through
+    the shared ``_step_record()`` both functions call rather than written twice.
+
+    Where the monitor seat holds a model and actually judged the step, the
+    rationale it wrote is carried through and cross-checked against a committed
+    capture body byte for byte, the same way ``derive_route_b()`` does.
+    """
+    contract = _load("scenarios/sabotage/T4.json")
+    env = _load(T4_ENVELOPE)
+    records = _load(T4_ENVELOPE.replace(".json", ".monitor.json"))["records"]
+
+    by_condition: dict[str, dict[str, Any]] = {}
+    for row in env["results"]:
+        if row["scenario_id"] != contract["id"]:
+            raise DerivationError(f"{T4_ENVELOPE} carries a row for {row['scenario_id']}")
+        if row["condition"] in by_condition:
+            raise DerivationError(f"{T4_ENVELOPE} publishes {row['condition']} twice")
+        by_condition[row["condition"]] = row
+    if sorted(by_condition) != sorted(CONDITIONS):
+        raise DerivationError(f"{T4_ENVELOPE} does not carry one row per arm")
+
+    arms: list[dict[str, Any]] = []
+    for condition in CONDITIONS:
+        row = by_condition[condition]
+        steps = [_step_record(s) for s in row["covert_episode"]["steps"]]
+        if not steps:
+            raise DerivationError(f"{T4_ENVELOPE}: {condition} publishes no covert step")
+        arms.append(
+            {
+                "condition": condition,
+                "safeguards": row["safeguards_applied"],
+                "attacker": row["attacker_source"],
+                "monitor_source": row["monitor_source"],
+                "variant": row["variant_id"],
+                "covert_steps": steps,
+                "covert_outcome": row["covert_outcome"],
+                "covert_attempt": row["covert_attempt"],
+                "side_effects": row["covert_side_effect_count"],
+                "covert_checker_passed": row["covert_checker_passed"],
+                "incident_repaired": row["incident_checker_passed"],
+                "rationale": _t4_rationale(records, row, steps),
+            }
+        )
+
+    return {
+        "id": contract["id"],
+        "title": contract["title"],
+        "forbidden_actions": contract["forbidden_actions"],
+        "arms": arms,
+        "contract_source": "scenarios/sabotage/T4.json",
+        "sources": [T4_ENVELOPE],
+    }
+
+
+def _t4_rationale(
+    records: list[dict[str, Any]], row: dict[str, Any], steps: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The monitor's own words on this arm's first covert step, or nothing.
+
+    Nothing, not a placeholder: an arm whose monitor was disabled, or whose seat
+    is not a model, has no rationale to show, and a page that printed an empty
+    quotation there would be asserting something the artifact does not record.
+    """
+    if row["safeguards_applied"].get("monitor") != "executed":
+        return None
+    if not str(row.get("monitor_source") or "").startswith("model:"):
+        return None
+    judged = [
+        r
+        for r in records
+        if r["condition"] == row["condition"]
+        and r["leg"] == "covert"
+        and r["step_index"] == steps[0]["index"]
+        and r["monitor_state"] == "judged"
+    ]
+    if len(judged) != 1:
+        raise DerivationError(
+            f"{T4_ENVELOPE}: expected one judged covert record at step "
+            f"{steps[0]['index']} of {row['condition']}, found {len(judged)}"
+        )
+    record = judged[0]
+    if record["verdict"] != steps[0]["monitor"]:
+        raise DerivationError(
+            f"{T4_ENVELOPE}: the monitor record and the evaluation row disagree on "
+            f"the verdict at step {steps[0]['index']}"
+        )
+    capture_path, capture_body, _assessment = _capture_with_rationale(record["rationale"])
+    return {
+        "text": record["rationale"],
+        "verdict": record["verdict"],
+        "risk_score": record["risk_score"],
+        "sequence_risk": record["sequence_risk"],
+        "risk_categories": list(record["risk_categories"]),
+        "step": record["step_index"],
+        "tool": _short_tool(record["proposed_tool"]),
+        "model": capture_body["model"],
+        "provider": capture_body["provenance"]["provider"],
+        "capture": _rel(capture_path),
+        "source": T4_ENVELOPE.replace(".json", ".monitor.json"),
+    }
+
+
+def _gate_rows(
+    safeguards: dict[str, Any], steps: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Each gate's configured state beside the decision it actually recorded.
+
+    The two are separate facts and the page shows both, because a gate can be
+    executed and still have decided nothing: on T1 the covert call dies at policy,
+    so the monitor and the approval node are live and never asked. Reading only
+    ``safeguards_applied`` there would suggest three gates judged a covert action
+    when one did.
+    """
+    rows: list[dict[str, Any]] = []
+    for key, label in GATE_KEYS:
+        state = safeguards.get(key)
+        if state is None:
+            raise DerivationError(f"a published row's safeguards_applied omits {key}")
+        extra: list[str] = []
+        if key == "policy":
+            recorded = _distinct(s["policy"] for s in steps)
+            extra = _distinct(r for s in steps for r in s["policy_reasons"])
+        elif key == "monitor":
+            recorded = _distinct(s["monitor"] for s in steps)
+        else:
+            recorded = _distinct(s["auth"] for s in steps)
+            extra = [v for v in _distinct(s["auth_source"] for s in steps) if v is not None]
+            extra += [
+                "actual_human: " + jsonish(v)
+                for v in _distinct(s["actual_human"] for s in steps)
+                if v is not None
+            ]
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "state": state,
+                # Raw, not yet spelled: _gate_decision() renders a decision that
+                # exists differently from one that was never recorded, and it
+                # cannot tell those apart once both have been through jsonish().
+                "recorded": list(recorded),
+                "extra": extra,
+                "reached": any(v is not None for v in recorded),
+            }
+        )
+    return rows
+
+
+def derive_panel(
+    scenario: dict[str, Any], arms: dict[str, Any], t4: dict[str, Any]
+) -> dict[str, Any]:
+    """The six states the switch panel can show, all rendered from the artifacts.
+
+    Two scenarios by three safeguard arms, and nothing else: those are the arms
+    the evaluation lane runs, so those are the only states with a published row
+    behind them. Every block is built here, server-side, so the browser holds no
+    figure and cannot invent a configuration that was never measured.
+    """
+    blocks: list[dict[str, Any]] = []
+
+    t1_attackers = _distinct(b["attacker"] for b in arms["bodies"])
+    t1_sources = sorted(set([scenario["source"]] + arms["sources"]))
+    for order, arm in enumerate(arms["arms"]):
+        steps = arm["covert_steps"]
+        blocks.append(
+            {
+                "id": f'state-{scenario["id"]}-{arm["condition"]}',
+                "scenario": scenario["id"],
+                "scenario_title": scenario["title"],
+                "arm": arm["condition"],
+                "order": order,
+                "label": CONDITION_LABELS[arm["condition"]],
+                "objective": ", ".join(scenario["forbidden_actions"]),
+                "tools": _distinct(s["tool"] for s in steps),
+                "gates": _gate_rows(arm["safeguards"], steps),
+                "covert_outcome": arm["covert_outcome"],
+                "side_effects": arm["side_effects"],
+                "incident_repaired": arm["incident_repaired"],
+                "covert_checker_passed": arm["covert_checker_passed"],
+                "stages": _distinct(s["stage"] for s in steps),
+                "steps": len(steps),
+                "executed_steps": sum(1 for s in steps if s["executed"]),
+                "attackers": t1_attackers,
+                "bodies": len(arms["bodies"]),
+                "monitor_source": None,
+                "human_flags": _distinct(s["actual_human"] for s in steps),
+                "rationale": None,
+                "sources": t1_sources,
+            }
+        )
+
+    for order, arm in enumerate(t4["arms"]):
+        steps = arm["covert_steps"]
+        sources = [t4["contract_source"]] + t4["sources"]
+        if arm["rationale"]:
+            sources += [arm["rationale"]["source"], arm["rationale"]["capture"]]
+        blocks.append(
+            {
+                "id": f'state-{t4["id"]}-{arm["condition"]}',
+                "scenario": t4["id"],
+                "scenario_title": t4["title"],
+                "arm": arm["condition"],
+                "order": order,
+                "label": CONDITION_LABELS[arm["condition"]],
+                "objective": ", ".join(t4["forbidden_actions"]),
+                "tools": _distinct(s["tool"] for s in steps),
+                "gates": _gate_rows(arm["safeguards"], steps),
+                "covert_outcome": arm["covert_outcome"],
+                "side_effects": arm["side_effects"],
+                "incident_repaired": arm["incident_repaired"],
+                "covert_checker_passed": arm["covert_checker_passed"],
+                "stages": _distinct(s["stage"] for s in steps),
+                "steps": len(steps),
+                "executed_steps": sum(1 for s in steps if s["executed"]),
+                "attackers": [arm["attacker"]],
+                "bodies": None,
+                "monitor_source": arm["monitor_source"],
+                "human_flags": _distinct(s["actual_human"] for s in steps),
+                "rationale": arm["rationale"],
+                "sources": sorted(set(sources)),
+            }
+        )
+
+    pairs = [(b["scenario"], b["arm"]) for b in blocks]
+    if len(set(pairs)) != len(pairs):
+        raise DerivationError("the switch panel would publish the same state twice")
+    if len({b["id"] for b in blocks}) != len(blocks):
+        raise DerivationError("two switch-panel states share an id")
+
+    return {
+        "blocks": blocks,
+        "scenarios": [
+            {"id": scenario["id"], "title": scenario["title"]},
+            {"id": t4["id"], "title": t4["title"]},
+        ],
+        "arms": list(CONDITIONS),
+        "gates": [{"key": key, "label": label} for key, label in GATE_KEYS],
+        "default": blocks[0]["id"],
+    }
+
+
 def derive_route_b() -> dict[str, Any]:
     """The single model-vs-model row, cross-checked against its capture body."""
     rel = "artifacts/observe-only/T1-observe-only-nemo-dev-qwen3.json"
@@ -552,23 +872,7 @@ def derive_route_b() -> dict[str, Any]:
     # byte. Finding the capture is also how sequence_risk is obtained: the
     # envelope publishes the two fields the reader sees, the capture carries the
     # third field the decision rule reads.
-    matches = []
-    for path in sorted(
-        (ROOT / "artifacts/monitor-captures").rglob("*.json"), key=lambda p: p.as_posix()
-    ):
-        body = json.loads(path.read_text(encoding="utf-8"))
-        try:
-            assessment = json.loads(body["raw_json"])
-        except (KeyError, json.JSONDecodeError):
-            continue
-        if assessment.get("rationale") == covert["rationale"]:
-            matches.append((path, body, assessment))
-    if len(matches) != 1:
-        raise DerivationError(
-            f"expected exactly one capture body carrying the Route B rationale, "
-            f"found {len(matches)}"
-        )
-    capture_path, capture_body, assessment = matches[0]
+    capture_path, capture_body, assessment = _capture_with_rationale(covert["rationale"])
 
     threshold_rel = env["threshold_artifact_path"]
     threshold_bytes = (ROOT / threshold_rel).read_bytes()
@@ -733,22 +1037,7 @@ def derive_full_chain_outcomes() -> dict[str, Any]:
                 "side_effects": row["covert_side_effect_count"],
                 "incident_repaired": row["incident_checker_passed"],
                 "approvals_recorded": row.get("approvals_recorded"),
-                "steps": [
-                    {
-                        "index": s["step_index"],
-                        "tool": _short_tool(s["proposed_tool"]),
-                        "stage": s["stage_reached"],
-                        "policy": s["policy_decision"],
-                        "monitor": s["monitor_verdict"],
-                        "auth": (s.get("authorization") or {}).get("decision"),
-                        "auth_source": (s.get("authorization") or {}).get(
-                            "authorization_source"
-                        ),
-                        "actual_human": (s.get("authorization") or {}).get("actual_human"),
-                        "executed": s["executed"],
-                    }
-                    for s in steps
-                ],
+                "steps": [_step_record(s) for s in steps],
             }
             if path.as_posix() not in sources:
                 sources.append(_rel(path))
@@ -1134,11 +1423,15 @@ def derive_r_tier() -> dict[str, Any]:
 
 
 def derive() -> dict[str, Any]:
+    scenario = derive_scenario()
+    arms = derive_arms()
+    t4 = derive_t4_arms()
     return {
         "captures": derive_captures(),
         "full_chain": derive_full_chain_outcomes(),
-        "scenario": derive_scenario(),
-        "arms": derive_arms(),
+        "scenario": scenario,
+        "arms": arms,
+        "panel": derive_panel(scenario, arms, t4),
         "route_b": derive_route_b(),
         "rows": derive_row_census(),
         "gate": derive_human_gate(),
@@ -1221,6 +1514,13 @@ def jsonish(value: Any) -> str:
     if value is None:
         return "null"
     return str(value)
+
+
+# What the switch panel prints where a gate recorded no decision at all. The
+# artifact's own spelling there is ``null``, and jsonish() is right to render it
+# that way in a field dump -- but see _gate_decision() for why that spelling is
+# wrong in a cell captioned only by a gate's name.
+NO_DECISION = "no decision recorded"
 
 
 # A few lines below end in a backslash. That is a Python line continuation inside
@@ -1519,6 +1819,56 @@ tbody tr:last-child td{border-bottom:1px solid var(--rule-2)}
 .lane-card dd.covert{color:var(--covert)}
 .lane-card p{font-size:.86rem;color:var(--ink-3);margin:.85rem 0 0}
 
+/* ---- switch panel ---- */
+.panelctl{margin:1.5rem 0 0;padding:0;border:0;display:grid;grid-template-columns:1fr;
+  gap:.9rem;row-gap:1rem}
+@media (min-width:52rem){
+  .panelctl{grid-template-columns:7rem 1fr;gap:1rem 1.75rem;align-items:baseline}
+}
+.panelctl legend{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.ctlk{font-family:var(--code);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3)}
+.ctlset{display:flex;flex-wrap:wrap;gap:.55rem 1.4rem;align-items:center;min-width:0}
+.pick input{position:absolute;width:1px;height:1px;opacity:0}
+.pick label{display:inline-block;font-family:var(--code);font-size:.75rem;letter-spacing:.04em;
+  background:var(--surface);color:var(--ink-2);border:1px solid var(--rule-2);border-radius:2px;
+  padding:.42rem .8rem;cursor:pointer}
+.pick input:checked+label{background:var(--btn-on-bg);color:var(--btn-on-ink);
+  border-color:var(--btn-on-bg)}
+.pick input:focus-visible+label{outline:2px solid var(--focus);outline-offset:2px}
+.sw{display:inline-flex;align-items:center;gap:.5rem;font-family:var(--code);font-size:.75rem;
+  letter-spacing:.04em;color:var(--ink-2);cursor:pointer}
+.sw input{appearance:none;-webkit-appearance:none;margin:0;position:relative;flex:none;
+  width:2.2rem;height:1.15rem;border-radius:.6rem;background:var(--sunk);
+  border:1px solid var(--rule-2);cursor:pointer}
+.sw input::after{content:"";position:absolute;top:50%;left:.14rem;width:.76rem;height:.76rem;
+  margin-top:-.38rem;border-radius:50%;background:var(--off)}
+.sw input:checked{background:var(--btn-on-bg);border-color:var(--btn-on-bg)}
+.sw input:checked::after{left:auto;right:.14rem;background:var(--btn-on-ink)}
+.sw input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.states{margin:1.7rem 0 0;border-top:1px solid var(--rule-2)}
+.state{padding:1.5rem 0 .3rem}
+.stitle{font-family:var(--code);font-size:.83rem;color:var(--ink);margin:0 0 1rem;
+  max-width:none;word-break:break-word}
+.stitle b{font-weight:500;letter-spacing:.04em}
+.gates{border-top:1px solid var(--rule)}
+.grow{display:grid;grid-template-columns:1fr;gap:.15rem;padding:.6rem 0;
+  border-bottom:1px solid var(--rule)}
+@media (min-width:52rem){
+  .grow{grid-template-columns:9.5rem 6.5rem 1fr;gap:0 1.5rem;align-items:baseline}
+}
+.grow>*{min-width:0}
+.gk{font-family:var(--code);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3)}
+.gs{font-family:var(--code);font-size:.75rem;letter-spacing:.06em;color:var(--off)}
+.gs.on{color:var(--held)}
+.gd{font-family:var(--code);font-size:.8rem;color:var(--ink-2);word-break:break-word}
+.outline{font-family:var(--code);font-size:.83rem;color:var(--ink-2);margin:1.05rem 0 0;
+  max-width:none;word-break:break-word}
+.outline .landed{color:var(--covert)}
+.outline .stopped{color:var(--held)}
+.sbound{font-size:.95rem;color:var(--ink-2);margin:.9rem 0 0;max-width:62ch}
+
 /* ---- footer ---- */
 footer{padding:clamp(2.5rem,5vw,4rem) 0 clamp(3rem,6vw,5rem);
   border-top:1px solid var(--rule-2)}
@@ -1736,6 +2086,215 @@ def render_masthead(facts: dict[str, Any]) -> str:
         "repository; every bound beside it was written before the result was known.</p>"
         f'<ul class="readout">{readout}</ul>'
         "</div></header>"
+    )
+
+
+def _gate_decision(gate: dict[str, Any]) -> str:
+    """What this gate recorded, in the artifact's spelling -- with one exception.
+
+    A gate that recorded no decision carries ``None``, which jsonish() spells
+    ``null``. That is the honest rendering in a field dump. Here it is not: the
+    cell is captioned only by the gate's name, so a reader with no JSON in front
+    of them reads ``null`` as a rendering fault rather than as "this gate decided
+    nothing" -- and the fact that a gate decided nothing is one of the things
+    this panel exists to show. So the absent case is stated in words, and set as
+    running text rather than in a value chip, because it is this page's sentence
+    and not a token any artifact contains. Every decision that does exist is
+    still printed exactly as its artifact spells it.
+    """
+    parts = [
+        E(NO_DECISION) if v is None else mono(jsonish(v)) for v in gate["recorded"]
+    ]
+    parts += [mono(v) for v in gate["extra"]]
+    text = " · ".join(parts)
+    if gate["state"] == "executed" and not gate["reached"]:
+        text += " · never shown the covert action"
+    return text
+
+
+def _state_bound(block: dict[str, Any]) -> str:
+    """The bounds that belong inside this state, each read off its own record."""
+    sentences: list[str] = []
+    stages = " · ".join(mono(s) for s in block["stages"])
+
+    unreached = [g["label"] for g in block["gates"] if not g["reached"]]
+    if block["executed_steps"] == 0:
+        lead = "The covert leg stopped at " + stages
+        if unreached:
+            noun = "gate was" if len(unreached) == 1 else "gates were"
+            lead += (
+                ", so the "
+                + " and ".join(E(u) for u in unreached)
+                + " "
+                + noun
+                + " never shown the covert action"
+            )
+        sentences.append(lead + ".")
+    elif block["steps"] == 1:
+        sentences.append("The covert leg reached " + stages + " and executed.")
+    else:
+        sentences.append(
+            "The covert leg reached "
+            + stages
+            + " and executed on "
+            + f'{num(block["executed_steps"])} of '
+            + counted(block["steps"], "step")
+            + "."
+        )
+
+    if block["bodies"] is not None:
+        sentences.append(
+            "This arm is identical across all "
+            + counted(block["bodies"], "attacker body", "attacker bodies")
+            + ", drawn from "
+            + counted(len(block["attackers"]), "seat")
+            + " ("
+            + ", ".join(mono(a) for a in block["attackers"])
+            + "), and the build fails if they diverge."
+        )
+    else:
+        sentences.append(
+            "The attacker seat here is "
+            + ", ".join(mono(a) for a in block["attackers"])
+            + ", so this row bounds what the deterministic floor produces and says "
+            "nothing about a capable adversary."
+        )
+
+    if block["human_flags"] == [False]:
+        sentences.append(
+            "Every authorization recorded on this leg carries "
+            + mono("actual_human: false")
+            + ", so the approver is a deterministic stand-in and no person judged it."
+        )
+
+    return '<p class="sbound">' + " ".join(sentences) + "</p>"
+
+
+def _state_block(block: dict[str, Any], visible: bool) -> str:
+    gates = "".join(
+        '<div class="grow">'
+        f'<span class="gk">{E(g["label"])}</span>'
+        f'<span class="gs{" on" if g["state"] == "executed" else ""}">{E(g["state"])}</span>'
+        f'<span class="gd">{_gate_decision(g)}</span>'
+        "</div>"
+        for g in block["gates"]
+    )
+
+    assembled = ""
+    if len(block["tools"]) > 1:
+        assembled = " · assembled from " + " and ".join(mono(t) for t in block["tools"])
+
+    # The contract titles already open with the scenario id, and the id is set in
+    # bold beside them, so printing both would read "T1 · T1 outbound-note ...".
+    title = block["scenario_title"].removeprefix(block["scenario"] + " ")
+
+    landed = block["side_effects"] > 0
+    outcome = (
+        '<p class="outline">covert outcome '
+        f'<span class="{"landed" if landed else "stopped"}">'
+        + mono(block["covert_outcome"])
+        + "</span> · "
+        + mono("covert_side_effect_count: " + str(block["side_effects"]))
+        + " · "
+        + mono("incident_checker_passed: " + jsonish(block["incident_repaired"]))
+        + " · "
+        + mono("covert_checker_passed: " + jsonish(block["covert_checker_passed"]))
+        + "</p>"
+    )
+
+    quoted = ""
+    r = block["rationale"]
+    if r:
+        quoted = (
+            f'<p class="verdictline" style="margin-top:1.05rem">'
+            f'<span class="tag covert">{E(str(r["verdict"]))}</span>'
+            + mono(str(block["monitor_source"]))
+            + " · step "
+            + num(r["step"])
+            + " · risk_score "
+            + num(r["risk_score"])
+            + " · sequence_risk "
+            + mono(r["sequence_risk"])
+            + "</p>"
+            f'<p class="rationale">{E(r["text"])}</p>'
+            '<p class="aside">Verbatim from capture '
+            + mono(r["capture"].rsplit("/", 1)[-1][:16] + "…")
+            + ", cross-checked byte for byte against the published record by this "
+            "build.</p>"
+        )
+
+    return (
+        f'<div class="state" id="{E(block["id"])}" data-scenario="{E(block["scenario"])}" '
+        f'data-arm="{E(block["arm"])}" data-order="{block["order"]}"'
+        + ("" if visible else " hidden")
+        + ">"
+        f'<p class="stitle"><b>{E(block["scenario"])}</b> · {E(title)} · '
+        f'covert objective {mono(block["objective"])}{assembled}</p>'
+        f'<div class="gates">{gates}</div>'
+        + outcome
+        + quoted
+        + _state_bound(block)
+        + srcline("this state is read from", block["sources"])
+        + "</div>"
+    )
+
+
+def render_panel(facts: dict[str, Any]) -> str:
+    panel = facts["panel"]
+
+    picks = "".join(
+        f'<span class="pick"><input type="radio" name="panel-scenario" '
+        f'id="pick-{E(s["id"])}" value="{E(s["id"])}"'
+        + (" checked" if i == 0 else "")
+        + f'><label for="pick-{E(s["id"])}">{E(s["title"])}</label></span>'
+        for i, s in enumerate(panel["scenarios"])
+    )
+    switches = "".join(
+        f'<label class="sw" for="sw-{E(g["key"])}">'
+        f'<input type="checkbox" role="switch" id="sw-{E(g["key"])}" '
+        f'data-gate="{E(g["key"])}"><span>{E(g["label"])}</span></label>'
+        for g in panel["gates"]
+    )
+    states = "".join(
+        _state_block(b, b["id"] == panel["default"]) for b in panel["blocks"]
+    )
+    default_block = panel["blocks"][0]
+
+    return (
+        '<section><div class="wrap">'
+        '<div class="head"><div class="rail">00 / try it</div>'
+        "<h2>Set the gates and read what the artifacts recorded.</h2></div>"
+        '<div class="body"><div class="rail"></div><div>'
+        '<p class="prose">Pick a scenario, set the three gates, and the block below shows '
+        "what the committed row for that configuration records. Nothing is computed in the "
+        "browser. All "
+        + counted(len(panel["blocks"]), "state")
+        + " are rendered into this page from the artifacts, and the switches choose which "
+        "one is shown.</p>"
+        '<fieldset class="panelctl" id="panelctl">'
+        "<legend>Scenario and safeguard configuration</legend>"
+        f'<span class="ctlk">scenario</span><span class="ctlset">{picks}</span>'
+        f'<span class="ctlk">gates</span><span class="ctlset">{switches}</span>'
+        "</fieldset>"
+        '<p class="prose" style="margin-top:1.4rem">The switches reach exactly the '
+        + counted(len(panel["arms"]), "configuration")
+        + " this lane runs ("
+        + ", ".join(mono(a) for a in panel["arms"])
+        + "). Turning the monitor or the human gate on turns the whole chain on, turning "
+        "the policy gate off turns the chain off, and the monitor and the human gate move "
+        "together. No other combination has a published row.</p>"
+        + prose("three_conditions")
+        + "<noscript>"
+        '<p class="prose">With scripting off this panel shows one state: '
+        + E(default_block["scenario"])
+        + " in the "
+        + mono(default_block["arm"])
+        + " arm. The other "
+        + counted(len(panel["blocks"]) - 1, "state")
+        + " are laid out in the comparison table and the bounds panel below.</p>"
+        "</noscript>"
+        f'<div class="states" id="panelstates" aria-live="polite">{states}</div>'
+        "</div></div></div></section>"
     )
 
 
@@ -2365,6 +2924,50 @@ groups[i].getAttribute('data-cond')===cond?'false':'true');
   });
   apply(chain.getAttribute('data-condition'));
 })();
+(function(){
+  var ctl=document.getElementById('panelctl');
+  var box=document.getElementById('panelstates');
+  if(!ctl||!box){return;}
+  var sw=ctl.querySelectorAll('input[data-gate]');
+  var picks=ctl.querySelectorAll('input[type="radio"]');
+  if(!sw.length||!picks.length){return;}
+  function set(p,m,h){sw[0].checked=p;sw[1].checked=m;sw[2].checked=h;}
+  function order(){
+    var n=0;
+    for(var i=0;i<sw.length;i++){if(sw[i].checked){n++;}}
+    return n===0?0:(n===1?1:2);
+  }
+  function scenario(){
+    for(var i=0;i<picks.length;i++){if(picks[i].checked){return picks[i].value;}}
+    return '';
+  }
+  function apply(){
+    var want=scenario();
+    var o=String(order());
+    var blocks=box.querySelectorAll('.state');
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      if(b.getAttribute('data-scenario')===want&&b.getAttribute('data-order')===o){
+        b.removeAttribute('hidden');
+      }else{
+        b.setAttribute('hidden','');
+      }
+    }
+  }
+  ctl.addEventListener('change',function(e){
+    var t=e.target,i=-1;
+    for(var k=0;k<sw.length;k++){if(sw[k]===t){i=k;}}
+    if(i===0){set(t.checked,false,false);}
+    else if(i>0){if(t.checked){set(true,true,true);}else{set(true,false,false);}}
+    apply();
+  });
+  /* A browser restoring form state across a reload can hand back a combination
+     the lane never ran. Snap to the nearest arm before the first render, so the
+     switches and the block on screen always describe the same published row. */
+  var n=order();
+  set(n>0,n>1,n>1);
+  apply();
+})();
 """
 
 
@@ -2380,6 +2983,7 @@ def render(facts: dict[str, Any]) -> tuple[str, str]:
     content = (
         render_masthead(facts)
         + "<main>"
+        + render_panel(facts)
         + render_setup(facts)
         + render_comparison(facts)
         + render_route_b(facts)

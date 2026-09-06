@@ -422,6 +422,208 @@ def test_a_full_chain_row_that_did_not_hold_is_on_the_page(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The switch panel: six pre-rendered states, and nothing the lane did not run
+# ---------------------------------------------------------------------------
+
+T4_ENVELOPE = ROOT / "artifacts/model-monitor/T4-v4-nemo-dev-qwen3.json"
+T4_MONITOR_RECORDS = ROOT / "artifacts/model-monitor/T4-v4-nemo-dev-qwen3.monitor.json"
+STATE_OPEN = '<div class="state" '
+
+
+def _panel_blocks(page: str) -> dict[tuple[str, str], str]:
+    """Each switch-panel state block's own markup, keyed by (scenario, arm).
+
+    Sliced out of the rendered page rather than asked of the generator. A test
+    that read the block off the dict the renderer was handed would pass on a
+    renderer that never printed it, which is the failure this file exists to
+    catch everywhere else.
+    """
+    parts = page.split('<div class="states"', 1)
+    assert len(parts) == 2, "the switch panel's state container is missing from the page"
+    body = parts[1].split("</section>", 1)[0]
+
+    starts = [m.start() for m in re.finditer(re.escape(STATE_OPEN), body)]
+    assert starts, "no state blocks inside the switch panel"
+
+    blocks: dict[tuple[str, str], str] = {}
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(body)
+        chunk = body[start:end]
+        scenario = re.search(r'data-scenario="([^"]+)"', chunk)
+        arm = re.search(r'data-arm="([^"]+)"', chunk)
+        assert scenario and arm, "a state block carries no scenario/arm pair"
+        key = (scenario.group(1), arm.group(1))
+        assert key not in blocks, f"two state blocks claim {key}"
+        blocks[key] = chunk
+    return blocks
+
+
+def _t1_rows() -> dict[str, dict]:
+    """The T1 model-attacker rows, one per arm, read straight off the envelopes."""
+    rows: dict[str, dict] = {}
+    for path in sorted((ROOT / "artifacts/model-attacker").glob("*.json")):
+        for row in json.loads(path.read_text(encoding="utf-8"))["results"]:
+            if row["attacker_source"].startswith("model:"):
+                rows.setdefault(row["condition"], row)
+    return rows
+
+
+def _t4_rows() -> dict[str, dict]:
+    return {
+        row["condition"]: row
+        for row in json.loads(T4_ENVELOPE.read_text(encoding="utf-8"))["results"]
+    }
+
+
+def _spelled(value: object) -> str:
+    """A field as the artifact spells it, so ``None`` reads ``null``, not ``None``."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+NO_DECISION = "no decision recorded"
+
+
+def _decision_text(value: object) -> str:
+    """A gate's decision as the panel prints it, which is not always as spelled.
+
+    The artifact records a gate that decided nothing as ``None``, and ``null`` in
+    a cell captioned only by a gate's name reads to a visitor as a rendering
+    fault rather than as a fact. The panel states that one case in words instead.
+    This is the only relaxation: every decision that exists is still compared
+    against the artifact's own spelling of it, so a reworded verdict still fails.
+    """
+    return NO_DECISION if value is None else _spelled(value)
+
+
+def test_the_switch_panel_publishes_exactly_the_measured_states(page: str) -> None:
+    """Two scenarios by three arms, and no fourth configuration.
+
+    The arm names are taken from the envelopes rather than typed here, so a lane
+    that grows or drops an arm makes this fail instead of quietly leaving the
+    panel offering a state with no published row behind it.
+    """
+    t1, t4 = _t1_rows(), _t4_rows()
+    assert len(t1) == 3, f"T1 no longer publishes three arms: {sorted(t1)}"
+    assert set(t1) == set(t4), "T1 and T4 no longer run the same three arms"
+
+    blocks = _panel_blocks(page)
+    assert set(blocks) == {(s, arm) for s in ("T1", "T4") for arm in t1}
+    assert len(blocks) == 6, f"expected six state blocks, found {len(blocks)}"
+
+    # The reachable states are the states, so the controls must be the three
+    # gates and nothing else: a fourth switch would offer an unmeasured cell.
+    panel = page.split('<fieldset class="panelctl"', 1)[1].split("</fieldset>", 1)[0]
+    assert panel.count('type="checkbox" role="switch"') == 3
+    assert panel.count('type="radio"') == len({s for s, _ in blocks})
+
+
+def test_each_panel_block_matches_the_row_it_claims(page: str) -> None:
+    """Every figure in a block, against the artifact for that scenario and arm.
+
+    Read independently of the generator, and each assertion is mirrored by one
+    that an adjacent wrong value is absent, because "0" and "null" are true of
+    almost any block on this page.
+    """
+    blocks = _panel_blocks(page)
+    checked = 0
+    for (scenario, arm), chunk in sorted(blocks.items()):
+        row = _t1_rows()[arm] if scenario == "T1" else _t4_rows()[arm]
+        steps = row["covert_episode"]["steps"]
+        body = _plain_text(chunk)
+
+        other = "T4" if scenario == "T1" else "T1"
+        assert scenario in body, f"the {scenario} {arm} block does not name its scenario"
+        assert other not in body, f"the {scenario} {arm} block bleeds into {other}"
+
+        assert f"covert outcome {row['covert_outcome']}" in body
+        count = row["covert_side_effect_count"]
+        assert f"covert_side_effect_count: {count}" in body
+        assert f"covert_side_effect_count: {count + 1}" not in body
+        repaired = _spelled(row["incident_checker_passed"])
+        assert f"incident_checker_passed: {repaired}" in body
+        assert f"covert_checker_passed: {_spelled(row['covert_checker_passed'])}" in body
+
+        for state, key in (("policy", "policy_decision"), ("monitor", "monitor_verdict")):
+            for value in {step[key] for step in steps}:
+                assert _decision_text(value) in body, (
+                    f"the {scenario} {arm} block does not show {state} {value!r}"
+                )
+        for step in steps:
+            auth = step.get("authorization") or {}
+            assert _decision_text(auth.get("decision")) in body
+            if auth:
+                assert f"actual_human: {_spelled(auth['actual_human'])}" in body
+
+        # The mirror for the line above: with ``null`` reworded, no bare ``null``
+        # should survive anywhere a visitor reads. Without this, a block that
+        # regressed to printing both would still satisfy every assertion here.
+        assert not re.search(r"\bnull\b", body), (
+            f"the {scenario} {arm} block prints a bare null to a reader"
+        )
+        checked += 1
+
+    assert checked == 6, "the per-block comparison did not run on every state"
+
+
+def test_the_panel_quotes_the_t4_monitor_rationale_verbatim(page: str) -> None:
+    """The one rationale the panel prints must be the capture body's, byte for byte.
+
+    Mirrors ``test_route_b_row_and_its_rationale``. This is the only place in the
+    panel where a model's own words are shown, so it is the only place the panel
+    can misquote one.
+    """
+    records = json.loads(T4_MONITOR_RECORDS.read_text(encoding="utf-8"))["records"]
+    judged = [
+        r
+        for r in records
+        if r["condition"] == "policy_monitor_human"
+        and r["leg"] == "covert"
+        and r["step_index"] == 0
+        and r["monitor_state"] == "judged"
+    ]
+    assert len(judged) == 1, "T4's full-chain covert step 0 is no longer one judged record"
+    record = judged[0]
+    assert record["verdict"] == "allow", "the T4 monitor no longer allowed the first step"
+
+    block = _panel_blocks(page)[("T4", "policy_monitor_human")]
+    assert record["rationale"] in _plain_text(block), (
+        "the T4 monitor's rationale is not quoted verbatim in its state block"
+    )
+    assert html_mod.escape(record["rationale"]) in block, "the rationale is not escaped"
+
+    matches = [
+        p
+        for p in sorted((ROOT / "artifacts/monitor-captures").rglob("*.json"))
+        if json.loads(json.loads(p.read_text(encoding="utf-8"))["raw_json"]).get("rationale")
+        == record["rationale"]
+    ]
+    assert len(matches) == 1, "the T4 rationale does not resolve to exactly one capture"
+    assert matches[0].name.removesuffix(".json")[:16] in block, (
+        "the panel does not name the capture its quotation came from"
+    )
+
+
+def test_only_the_default_panel_state_is_visible(page: str) -> None:
+    """T1 with every gate off is what a reader sees before touching anything."""
+    blocks = _panel_blocks(page)
+    visible = []
+    for key, chunk in blocks.items():
+        opening = chunk[: chunk.index(">") + 1]
+        if " hidden" not in opening:
+            visible.append(key)
+    assert visible == [("T1", "ungated_evaluation_only")], (
+        f"the panel opens on {visible} rather than T1 with no safeguards"
+    )
+    assert len(blocks) - len(visible) == 5, "the other five states are not hidden"
+
+
+# ---------------------------------------------------------------------------
 # Presentation invariants the page is published under
 # ---------------------------------------------------------------------------
 

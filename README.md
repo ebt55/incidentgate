@@ -1,8 +1,9 @@
 # incidentgate
 
-An AI-control evaluation harness that measures whether a
-`policy → monitor → human` safeguard chain stops an adversarial
-incident-response agent, and which of the three layers does the work.
+A lab that measures whether a chain of a policy gate, an action monitor
+and an approval step stops an adversarial incident-response agent, and
+which of the three layers does the work. The approver in every row is a
+scripted stand-in; no human has judged an action here.
 
 [![CI](https://github.com/ebt55/incidentgate/actions/workflows/ci.yml/badge.svg)](https://github.com/ebt55/incidentgate/actions/workflows/ci.yml) [![Pages](https://github.com/ebt55/incidentgate/actions/workflows/pages.yml/badge.svg)](https://ebt55.github.io/incidentgate/) [![MIT licence](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 

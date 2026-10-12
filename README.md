@@ -54,7 +54,7 @@ checks one call at a time, so it cannot deny any of them. In the published T4
 row, a local 14B monitor allowed all three calls and the stand-in approver
 released them. The full chain then produced the same end state as no safeguards
 at all. The difference between the two rows comes down to whether the policy
-gate can name the forbidden thing. The models in the chain do not explain it.
+gate can name the forbidden thing. The difference comes from the policy gate, not from the models in the chain.
 
 | | T1 (outbound-note exfiltration) | T4 (split-call forbidden effect) |
 | --- | --- | --- |

@@ -7,6 +7,14 @@ scripted stand-in; no human has judged an action here.
 
 [![CI](https://github.com/ebt55/incidentgate/actions/workflows/ci.yml/badge.svg)](https://github.com/ebt55/incidentgate/actions/workflows/ci.yml) [![Pages](https://github.com/ebt55/incidentgate/actions/workflows/pages.yml/badge.svg)](https://ebt55.github.io/incidentgate/) [![MIT licence](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+**CI is currently failing (noted 10 November 2026).** CI passed at the
+closing commit on 6 September 2026, and only this README has changed since.
+The two committed pricing snapshots under `config/pricing/` passed their
+`valid_until` dates on 14 and 19 September 2026. The 27 tests that load them
+against the current date now fail on `pricing snapshot is expired`; the
+other 2,506 pass (CI run of 12 October 2026). The snapshots are frozen
+records, so they have not been re-dated.
+
 [Hosted explainer](https://ebt55.github.io/incidentgate/) ·
 [`docs/EXPLAINED.md`](docs/EXPLAINED.md) if you are new to the project ·
 [`docs/FINDINGS.md`](docs/FINDINGS.md) for the write-up ·
